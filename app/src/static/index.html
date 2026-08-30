@@ -98,8 +98,17 @@ main { padding: 18px; }
 .person input { width: 100%; margin-top: 6px; padding: 5px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); }
 .person .merge-btn { margin-top: 6px; width: 100%; background: var(--panel2); color: var(--muted); border: 1px solid var(--border); }
 .person .merge-btn:hover { color: var(--text); border-color: var(--accent); }
-.dups { margin-bottom: 18px; padding: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
-.dups h3 { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+.dups { margin-bottom: 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.duphead {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  background: none; border: 0; color: var(--text); font-size: 14px; font-weight: 600;
+  padding: 12px 14px; cursor: pointer; border-radius: 0;
+}
+.duphead:hover { background: var(--panel2); }
+.duphead .dupcount { background: var(--accent); color: #fff; font-size: 11px; padding: 1px 7px; border-radius: 10px; }
+.duphead .dupchev { margin-left: auto; color: var(--muted); }
+.dupbody { padding: 0 12px 12px; display: none; }
+#dups.open .dupbody { display: block; }
 .dup { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; }
 .dup:hover { background: var(--panel2); }
 .dupthumb { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; background: var(--panel2); flex: none; }
@@ -571,10 +580,21 @@ function renderPeopleGrid(people) {
     el.innerHTML = '<div class="empty">No people found yet.</div>';
     return;
   }
-  el.innerHTML = `<div class="dups" id="dups"><h3>Suggested merges</h3><div class="dup"><span class="dupsim">Checking…</span></div></div>
+  el.innerHTML = `<div class="dups" id="dups">
+      <button class="duphead" id="duphead">Suggested merges<span class="dupcount" id="dupcount" style="display:none"></span><span class="dupchev">&#9656;</span></button>
+      <div class="dupbody" id="dupbody"><div class="dup"><span class="dupsim">Expand to check for suggested merges.</span></div></div>
+    </div>
     <div class="people-grid">${people.map(personCardHtml).join("")}</div>`;
+  $("#duphead").addEventListener("click", toggleDups);
   bindPersonCards(people);
-  loadDuplicates();
+}
+
+function toggleDups() {
+  const box = $("#dups");
+  const willOpen = !box.classList.contains("open");
+  box.classList.toggle("open");
+  $("#duphead .dupchev").textContent = willOpen ? "\u25BE" : "\u25B6";
+  if (willOpen && (box.dataset.dirty || !box.dataset.loaded)) loadDuplicates();
 }
 
 function bindPersonCards(people) {
@@ -673,13 +693,20 @@ function closeMergePicker() {
 async function loadDuplicates() {
   const box = $("#dups");
   if (!box) return;
+  if (!box.classList.contains("open")) { box.dataset.dirty = "1"; return; }
+  const body = $("#dupbody");
+  const count = $("#dupcount");
   try {
     const dd = await api("/api/people/duplicates?limit=50");
-    if (!dd.duplicates || !dd.duplicates.length) {
-      box.innerHTML = '<h3>Suggested merges</h3><div class="dup"><span class="dupsim">No suggested merges.</span></div>';
+    box.dataset.loaded = "1";
+    delete box.dataset.dirty;
+    const n = (dd.duplicates || []).length;
+    if (count) { count.style.display = n ? "" : "none"; count.textContent = n; }
+    if (!n) {
+      body.innerHTML = '<div class="dup"><span class="dupsim">No suggested merges.</span></div>';
       return;
     }
-    box.innerHTML = `<h3>Suggested merges</h3>${dd.duplicates.map((d) => `
+    body.innerHTML = dd.duplicates.map((d) => `
       <div class="dup" data-a="${d.a.id}" data-b="${d.b.id}">
         ${d.a.cover_url ? `<img class="dupthumb" loading="lazy" src="${d.a.cover_url}" title="${esc(d.a.name || "Person " + d.a.id)} (${d.a.id})" alt="">` : '<div class="dupthumb dupthumb-empty"></div>'}
         <span class="dupnames">${esc(d.a.name || "Person " + d.a.id)}</span>
@@ -688,8 +715,8 @@ async function loadDuplicates() {
         <span class="dupnames">${esc(d.b.name || "Person " + d.b.id)}</span>
         <span class="dupsim">${Math.round(d.similarity * 100)}% similar</span>
         <button class="small" data-merge="1">Merge</button>
-      </div>`).join("")}`;
-    box.querySelectorAll(".dup").forEach((d) => {
+      </div>`).join("");
+    body.querySelectorAll(".dup").forEach((d) => {
       d.querySelector("button[data-merge]").addEventListener("click", async () => {
         const a = +d.dataset.a, b = +d.dataset.b;
         const r = await api(`/api/people/${a}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: b }) });
@@ -698,7 +725,10 @@ async function loadDuplicates() {
       });
     });
   } catch (e) {
-    box.innerHTML = '<h3>Suggested merges</h3><div class="dup"><span class="dupsim">Unavailable.</span></div>';
+    box.dataset.loaded = "1";
+    delete box.dataset.dirty;
+    if (count) count.style.display = "none";
+    body.innerHTML = '<div class="dup"><span class="dupsim">Unavailable.</span></div>';
   }
 }
 
