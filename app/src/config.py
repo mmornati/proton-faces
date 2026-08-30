@@ -19,6 +19,7 @@ class Settings:
         self.sync_limit = int(os.environ.get("SYNC_LIMIT", "0"))  # 0 = all photos
         self.workers = int(os.environ.get("WORKERS", "2"))
         self.cluster_interval = int(os.environ.get("CLUSTER_INTERVAL", "1800"))
+        self.gps_interval = int(os.environ.get("GPS_INTERVAL", "21600"))  # 6h
         self.face_sim_threshold = float(os.environ.get("FACE_SIM_THRESHOLD", "0.45"))
         self.min_cluster_size = int(os.environ.get("MIN_CLUSTER_SIZE", "2"))
         self.log_level = os.environ.get("LOG_LEVEL", "INFO")

@@ -380,6 +380,21 @@ def search_photos_by_place(query: str, limit: int = 200) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def place_stats(limit: int = 500) -> list[sqlite3.Row]:
+    """Aggregate distinct places with photo counts, most popular first.
+
+    Returns rows with (place, city, photo_count) where city is the first
+    segment of `place` (before the comma).
+    """
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT place, COUNT(*) AS photo_count FROM photos "
+            "WHERE status='done' AND place IS NOT NULL "
+            "GROUP BY place ORDER BY photo_count DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+
 def done_photos(limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(

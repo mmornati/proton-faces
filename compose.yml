@@ -52,7 +52,7 @@ services:
     volumes:
       - ${DATA_MOUNT:-data}:/data
       # Optional Google Takeout export for GPS backfill (read-only).
-      # - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
+      - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
     environment:
       - DATA_DIR=/data
       - MODELS_DIR=/models
@@ -63,6 +63,7 @@ services:
       - SYNC_LIMIT=${SYNC_LIMIT:-0}
       - WORKERS=${WORKERS:-2}
       - CLUSTER_INTERVAL=${CLUSTER_INTERVAL:-1800}
+      - GPS_INTERVAL=${GPS_INTERVAL:-21600}
       - FACE_SIM_THRESHOLD=${FACE_SIM_THRESHOLD:-0.45}
       - MIN_CLUSTER_SIZE=${MIN_CLUSTER_SIZE:-2}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}

@@ -27,7 +27,7 @@ from clip import embed_pil
 from cluster import cluster_once
 from config import settings
 from faces import detect_faces
-from geocode import reverse_geocode
+from geocode import reverse_geocode, reverse_geocode_many
 from store import (
     claim_photo_for_download,
     claim_photo_for_processing,
@@ -262,18 +262,6 @@ def _cluster_loop() -> None:
             log.exception("cluster loop error: %s", exc)
 
 
-# --- GPS enrichment (local Takeout sidecars) ------------------------------
-
-def _gps_from_local(photo_uid: str) -> None:
-    """Backfill GPS from a local Google Takeout export when available.
-
-    Matches by photo uid <-> filename heuristics is fragile; this is a no-op
-    unless a future implementation provides a lookup. Left as an extension
-    point — see README.
-    """
-    _ = photo_uid
-
-
 # --- public entry point ----------------------------------------------------
 
 def start() -> list[threading.Thread]:
@@ -283,6 +271,7 @@ def start() -> list[threading.Thread]:
         threading.Thread(target=_sync_loop, name="sync", daemon=True),
         threading.Thread(target=_downloader_loop, name="downloader", daemon=True),
         threading.Thread(target=_cluster_loop, name="cluster", daemon=True),
+        threading.Thread(target=_gps_loop, name="gps", daemon=True),
     ]
     for i in range(settings.workers):
         threads.append(threading.Thread(target=_worker_loop, name=f"worker-{i}", daemon=True))
@@ -301,12 +290,18 @@ def _sync_loop() -> None:
         time.sleep(settings.sync_interval)
 
 
-def backfill_gps() -> int:
-    """One-shot: attach GPS from a local Takeout export by sha1 match.
+# --- GPS enrichment (local Takeout sidecars) ------------------------------
+
+def backfill_gps(rebuild_cache: bool = False) -> int:
+    """Attach GPS from a local Takeout export by sha1 match.
 
     Google Takeout stores one `<photo>.<ext>.supplemental-metadata.json` sidecar
     next to each photo. We sha1 the local photo file (which equals Proton's
     contentHash) and join it against the indexed timeline.
+
+    The sha1 -> (lat, lng) map is expensive to build (~136k hashes on the
+    server), so it is persisted to data/gps_sha1_cache.json and reloaded on
+    later runs unless rebuild_cache=True.
     """
     if not settings.photos_dir:
         return 0
@@ -315,6 +310,9 @@ def backfill_gps() -> int:
         return 0
 
     import hashlib
+    import json as _json
+
+    cache_path = settings.data_dir / "gps_sha1_cache.json"
 
     def _sha1(path: Path) -> str:
         h = hashlib.sha1()
@@ -323,10 +321,19 @@ def backfill_gps() -> int:
                 h.update(chunk)
         return h.hexdigest()
 
-    # Map local file sha1 -> (lat, lng) by deriving the photo path from each sidecar.
-    import json as _json
-
     sha1_to_gps: dict[str, tuple[float, float]] = {}
+    if not rebuild_cache and cache_path.exists():
+        try:
+            raw = _json.loads(cache_path.read_text())
+            sha1_to_gps = {
+                k: (float(v[0]), float(v[1])) for k, v in raw.items()
+            }
+            log.info("gps backfill: loaded %d entries from cache", len(sha1_to_gps))
+            return _apply_gps(sha1_to_gps)
+        except Exception as exc:  # pragma: no cover
+            log.warning("gps cache unreadable (%s); rebuilding", exc)
+
+    # Map local file sha1 -> (lat, lng) by deriving the photo path from each sidecar.
     for sidecar in root.rglob("*.supplemental-metadata.json"):
         try:
             data = _json.loads(sidecar.read_text())
@@ -343,6 +350,18 @@ def backfill_gps() -> int:
         sha1_to_gps[_sha1(photo_path)] = (lat, lng)
     log.info("gps backfill: %d local photos with GPS", len(sha1_to_gps))
 
+    try:
+        cache_path.write_text(
+            _json.dumps({k: list(v) for k, v in sha1_to_gps.items()})
+        )
+        log.info("gps backfill: wrote %d entries to cache", len(sha1_to_gps))
+    except Exception as exc:  # pragma: no cover
+        log.warning("gps cache write failed: %s", exc)
+
+    return _apply_gps(sha1_to_gps)
+
+
+def _apply_gps(sha1_to_gps: dict[str, tuple[float, float]]) -> int:
     matched = 0
     with _db_conn() as conn:
         photos = conn.execute(
@@ -358,6 +377,44 @@ def backfill_gps() -> int:
                 matched += 1
     log.info("gps backfill matched %d photos", matched)
     return matched
+
+
+def enrich_places() -> int:
+    """Reverse-geocode every photo that has GPS but no place yet (idempotent)."""
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT uid, gps_lat, gps_lng FROM photos "
+            "WHERE gps_lat IS NOT NULL AND gps_lng IS NOT NULL AND place IS NULL"
+        ).fetchall()
+    if not rows:
+        return 0
+
+    points = [(r["gps_lat"], r["gps_lng"]) for r in rows]
+    by_point = reverse_geocode_many(points)
+    matched = 0
+    with _db_conn() as conn:
+        for row, place in zip(rows, [by_point[(r["gps_lat"], r["gps_lng"])] for r in rows]):
+            if not place:
+                continue
+            conn.execute(
+                "UPDATE photos SET place=? WHERE uid=?", (place, row["uid"])
+            )
+            matched += 1
+    log.info("gps place enrichment: %d photos", matched)
+    return matched
+
+
+def _gps_loop() -> None:
+    while True:
+        time.sleep(settings.gps_interval)
+        try:
+            backfill_gps()
+        except Exception as exc:  # pragma: no cover
+            log.exception("gps backfill loop error: %s", exc)
+        try:
+            enrich_places()
+        except Exception as exc:  # pragma: no cover
+            log.exception("gps place enrichment error: %s", exc)
 
 
 def cleanup_deleted() -> None:

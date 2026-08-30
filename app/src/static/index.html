@@ -76,6 +76,14 @@ main { padding: 18px; }
   padding: 10px; text-align: center; cursor: pointer;
 }
 .person:hover { border-color: var(--accent); }
+.places-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.place {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+}
+.place:hover { border-color: var(--accent); }
+.place .city { font-size: 15px; font-weight: 600; }
+.place .count { color: var(--muted); font-size: 13px; }
 .person img {
   width: 84px; height: 84px; border-radius: 50%; object-fit: cover;
   background: var(--panel2); margin-bottom: 8px;
@@ -150,6 +158,7 @@ main { padding: 18px; }
   <nav>
     <a href="#" data-view="photos" class="active">Photos</a>
     <a href="#" data-view="people">People</a>
+    <a href="#" data-view="places">Places</a>
     <a href="#" data-view="unassigned">Unassigned</a>
   </nav>
   <div id="searchbar">
@@ -365,6 +374,30 @@ async function loadPeople() {
   });
 }
 
+async function loadPlaces() {
+  const data = await api("/api/places?limit=500");
+  const el = $("#view");
+  if (!data.places.length) {
+    el.innerHTML = '<div class="empty">No places yet — GPS enrichment is still running or no photos have GPS.</div>';
+    return;
+  }
+  $("#counts").textContent = `${data.places.length} places`;
+  el.innerHTML = `<div class="places-grid">${data.places.map((p) => `
+    <div class="place" data-place="${esc(p.place)}">
+      <span class="city">${esc(p.city)}</span>
+      <span class="count">${p.count} photos</span>
+    </div>`).join("")}</div>`;
+  el.querySelectorAll(".place").forEach((item) => item.addEventListener("click", async () => {
+    state.view = "photos";
+    document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
+    document.querySelector('nav a[data-view="photos"]').classList.add("active");
+    state.q = "";
+    $("#q").value = "";
+    const rows = await api(`/api/photos?place=${encodeURIComponent(item.dataset.place)}&limit=500`);
+    renderPhotos(rows.photos);
+  }));
+}
+
 async function loadUnassigned() {
   const data = await api("/api/faces/unassigned?limit=500");
   const el = $("#view");
@@ -404,6 +437,7 @@ document.querySelectorAll("nav a").forEach((a) => {
     state.q = "";
     if (state.view === "people") loadPeople();
     else if (state.view === "unassigned") loadUnassigned();
+    else if (state.view === "places") loadPlaces();
     else loadPhotos();
   });
 });

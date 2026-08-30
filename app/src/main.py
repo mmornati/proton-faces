@@ -8,7 +8,7 @@ import uvicorn
 
 from api import app
 from config import settings
-from indexer import backfill_gps, start
+from indexer import backfill_gps, enrich_places, start
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -23,11 +23,18 @@ def main() -> None:
         action="store_true",
         help="One-shot: attach GPS/place data from the local Takeout export (PHOTOS_DIR), then exit.",
     )
+    parser.add_argument(
+        "--rebuild-cache",
+        action="store_true",
+        help="With --backfill-gps: ignore the sha1->GPS cache and rehash the local Takeout export.",
+    )
     args = parser.parse_args()
 
     if args.backfill_gps:
-        matched = backfill_gps()
+        matched = backfill_gps(rebuild_cache=args.rebuild_cache)
         logging.getLogger(__name__).info("GPS backfill done: %d photos matched", matched)
+        enriched = enrich_places()
+        logging.getLogger(__name__).info("GPS place enrichment done: %d photos", enriched)
         return
 
     start()

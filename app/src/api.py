@@ -28,6 +28,7 @@ from store import (
     get_photo,
     get_person,
     photos_for_person,
+    place_stats,
     rename_person,
     search_photos_by_place,
     set_person_cover_face,
@@ -90,6 +91,16 @@ def api_photos(limit: int = 200, offset: int = 0, place: str | None = None):
     else:
         rows = done_photos(limit=limit, offset=offset)
     return {"photos": [_row_to_dict(r) for r in rows]}
+
+
+@app.get("/api/places")
+def api_places(limit: int = 500):
+    rows = place_stats(limit=limit)
+    places = []
+    for r in rows:
+        city = r["place"].split(",")[0].strip()
+        places.append({"place": r["place"], "city": city, "count": r["photo_count"]})
+    return {"places": places}
 
 
 @app.get("/api/photos/{uid}")

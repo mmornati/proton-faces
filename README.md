@@ -159,18 +159,33 @@ Environment variables (see `.env.example`):
 | `WORKERS`               | `2`                     | Parallel recognition workers                 |
 | `BRIDGE_URL`            | `http://proton-bridge:8090` | Bridge container address                  |
 | `SYNC_LIMIT`            | `0`                     | Only index the newest N photos (0 = all) — handy for testing |
+| `GPS_INTERVAL`          | `21600`                 | Seconds between GPS/place enrichment runs (default 6 h)      |
 
 ### GPS / place enrichment
 
 Photos imported from a Google Takeout export keep their GPS metadata in local
 `*.supplemental-metadata.json` sidecars (Proton's API does not expose location).
-If you still have that export on disk, point `PHOTOS_DIR` at it and run the
-one-shot backfill inside the app container (matches by sha1 against the Proton
-timeline, so no full-res download is ever needed):
+If you still have that export on disk, point `PHOTOS_DIR` at it. The app then
+enriches GPS **automatically** in the background every `GPS_INTERVAL` seconds:
+
+- it sha1-hashes the local photo files (cache is kept in
+  `DATA_DIR/gps_sha1_cache.json` so later runs are cheap) and matches against
+  the Proton timeline by content hash, so **no full-res download is ever needed**;
+- then reverse-geocodes every photo that has GPS but no place name yet.
+
+You can also run it manually (e.g. right after a fresh import) inside the app
+container:
 
 ```bash
 docker compose exec app python main.py --backfill-gps
+# after a new Takeout export, force a rehash of the local files:
+docker compose exec app python main.py --backfill-gps --rebuild-cache
 ```
+
+The **Places** tab lists reverse-geocoded cities with photo counts; clicking one
+shows all photos taken there. New photos added directly to Proton (no Takeout
+export) have no sidecar and no API-exposed GPS, so they stay without a place
+label.
 
 ## Roadmap / ideas
 
