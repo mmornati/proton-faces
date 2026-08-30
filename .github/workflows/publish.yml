@@ -1,0 +1,67 @@
+name: publish
+
+# Builds the two container images and publishes them to GitHub Container
+# Registry (ghcr.io). Images are referenced by compose.yml, so the server can
+# deploy with a plain `docker compose pull && docker compose up -d` — no heavy
+# build on the server itself.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  # Change to your GitHub username/org.
+  IMAGE_PREFIX: ghcr.io/mmornati/proton-faces
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: bridge
+            context: ./bridge
+          - name: app
+            context: ./app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        shell: bash
+        run: |
+          IMAGE="${{ env.IMAGE_PREFIX }}-${{ matrix.image.name }}"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAGS="${IMAGE}:${GITHUB_REF_NAME},${IMAGE}:latest"
+          else
+            TAGS="${IMAGE}:latest,${IMAGE}:main"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.context }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

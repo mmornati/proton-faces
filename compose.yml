@@ -1,7 +1,8 @@
 name: proton-faces
 
 # proton-faces: self-hosted people/object/location search over Proton Photos.
-# Bring up with:  docker compose up -d --build
+# Bring up with:  docker compose up -d
+# (or  docker compose up -d --build  to build locally from source instead of pulling)
 # One-time setup:  scripts/export-session.sh  (places auth-session.json in ./credentials)
 #
 # The two services share the `data` volume:
@@ -18,11 +19,15 @@ name: proton-faces
 #   PHOTOS_MOUNT  optional read-only bind mount of a local Google Takeout export,
 #                 used to backfill GPS/place data (see README). Unset by default;
 #                 uncomment the volume line below when you have one.
+#
+# Images are published to GitHub Container Registry. By default `docker compose up`
+# pulls the prebuilt images; use `docker compose up --build` to build from source
+# instead (useful on low-power boxes to skip the pull, or to test local changes).
 
 services:
   proton-bridge:
     build: ./bridge
-    image: proton-faces/proton-bridge:0.1.0
+    image: ghcr.io/mmornati/proton-faces-bridge:latest
     restart: unless-stopped
     volumes:
       - ${DATA_MOUNT:-data}:/data
@@ -38,7 +43,7 @@ services:
 
   app:
     build: ./app
-    image: proton-faces/app:0.1.0
+    image: ghcr.io/mmornati/proton-faces-app:latest
     restart: unless-stopped
     depends_on:
       - proton-bridge

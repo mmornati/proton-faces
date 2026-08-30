@@ -91,10 +91,17 @@ cp .env.example .env
 ### 3. Start
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 Then open http://localhost:8080.
+
+Prebuilt images are published to GitHub Container Registry, so `docker compose up`
+pulls them — no building on the server. To build from source instead (e.g. to test
+local changes), use `docker compose up -d --build`. If you must build on a shared
+box and don't want the build to starve other services, see `scripts/build.sh` for
+how to cap BuildKit's CPU usage (or simply pull the prebuilt images, which avoids
+building entirely).
 
 The indexer starts immediately. The first run processes your whole library and takes
 some time (roughly 1–2 s per photo on a modern CPU — a 100k-photo library takes about a

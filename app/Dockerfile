@@ -8,20 +8,16 @@
 
 FROM python:3.11-slim
 
-# System deps: onnxruntime wheels need libgomp1; open_clip/torch bundles most.
-# build-essential is required to compile insightface's Cython extension.
+# System deps: onnxruntime wheels need libgomp1; build-essential is required to
+# compile insightface's Cython extension; curl downloads the baked CLIP models.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        libgomp1 libglib2.0-0 build-essential \
+        libgomp1 libglib2.0-0 build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
-# Install PyTorch CPU wheels first (default PyPI torch drags in ~2GB of CUDA).
-RUN pip install --no-cache-dir \
-        torch==2.4.1 torchvision==0.19.1 \
-        --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
 
 # --- bake in ML models ---
@@ -45,16 +41,32 @@ app.prepare(ctx_id=0, det_size=(640, 640))
 print("insightface model baked at", root)
 PY
 
-# OpenCLIP ViT-B-32 (openai) — force download + warm into /models/clip cache.
-RUN python - <<'PY'
-import open_clip, torch, PIL.Image
-model, _, transform = open_clip.create_model_and_transforms(
-    "ViT-B-32", pretrained="openai", cache_dir="/models/clip"
-)
-model.eval()
-with torch.no_grad():
-    _ = model.encode_image(transform(PIL.Image.new("RGB", (32, 32))).unsqueeze(0))
-print("openclip model baked")
+# CLIP ViT-B-32 (OpenAI weights) via ONNX — Xenova export of
+# openai/clip-vit-base-patch32. Same weights as the open_clip 'openai'
+# pretrained set, so existing CLIP embeddings stay in the same space.
+# Download once at build time; baked into /models/clip.
+RUN mkdir -p /models/clip \
+    && curl -fsSL -o /models/clip/vision_model.onnx \
+        https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model.onnx \
+    && curl -fsSL -o /models/clip/text_model.onnx \
+        https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/text_model.onnx \
+    && curl -fsSL -o /models/clip/tokenizer.json \
+        https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/tokenizer.json \
+    && python - <<'PY'
+import numpy as np
+import onnxruntime as ort
+from tokenizers import Tokenizer
+# warm up both sessions with a dummy input
+vis = ort.InferenceSession("/models/clip/vision_model.onnx", providers=["CPUExecutionProvider"])
+txt = ort.InferenceSession("/models/clip/text_model.onnx", providers=["CPUExecutionProvider"])
+tok = Tokenizer.from_file("/models/clip/tokenizer.json")
+tok.enable_truncation(max_length=77)
+tok.enable_padding(length=77, pad_id=49407, pad_token="<|endoftext|>")
+pix = np.zeros((1, 3, 224, 224), dtype=np.float32)
+_ = vis.run(None, {"pixel_values": pix})[0]
+ids = np.array([tok.encode("a beach").ids], dtype=np.int64)
+_ = txt.run(None, {"input_ids": ids})[0]
+print("clip onnx models baked")
 PY
 
 COPY src ./src

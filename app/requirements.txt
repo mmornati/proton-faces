@@ -9,6 +9,6 @@ numpy>=1.23,<1.24
 Pillow>=10.4,<12
 onnxruntime>=1.18,<1.20
 insightface==0.7.3
-open_clip_torch>=2.24,<2.31
+tokenizers>=0.19,<0.22
 scikit-learn>=1.4,<1.6
 reverse_geocoder==1.5.1
