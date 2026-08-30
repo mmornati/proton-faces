@@ -34,6 +34,8 @@ async function ensureLoggedIn(ctx: Awaited<ReturnType<typeof init>>): Promise<Re
     return Response.json({ ok: true, loggedIn });
 }
 
+const PHOTO_TAGS = ['Favorites', 'Screenshots', 'Videos', 'LivePhotos', 'MotionPhotos', 'Selfies', 'Portraits', 'Bursts', 'Panoramas', 'Raw'];
+
 function nodeToJson(node: PhotoNode): Record<string, unknown> {
     return {
         uid: node.uid,
@@ -42,6 +44,12 @@ function nodeToJson(node: PhotoNode): Record<string, unknown> {
         captureTime: node.photo?.captureTime ? node.photo.captureTime.toISOString() : null,
         albums: node.photo?.albums?.map((a) => a.nodeUid) ?? [],
         sha1: node.activeRevision?.claimedDigests?.sha1 ?? null,
+        size: node.activeRevision?.claimedSize ?? node.activeRevision?.storageSize ?? null,
+        creationTime: node.creationTime ? node.creationTime.toISOString() : null,
+        modificationTime: node.modificationTime ? node.modificationTime.toISOString() : null,
+        tags: node.photo?.tags?.map((t) => PHOTO_TAGS[t] ?? String(t)) ?? [],
+        mainPhotoNodeUid: node.photo?.mainPhotoNodeUid ?? null,
+        relatedPhotoNodeUids: node.photo?.relatedPhotoNodeUids ?? [],
     };
 }
 
@@ -129,6 +137,16 @@ async function fetchNodes(ctx: Awaited<ReturnType<typeof init>>, body: unknown):
     });
 
     return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson' } });
+}
+
+async function fetchAlbums(ctx: Awaited<ReturnType<typeof init>>): Promise<Response> {
+    const albums: { uid: string; name: string }[] = [];
+    for await (const node of ctx.photosSdk.iterateAlbums()) {
+        if ('missingUid' in node) continue;
+        const a = node as PhotoNode;
+        albums.push({ uid: a.uid, name: a.name.value ?? a.name.key });
+    }
+    return Response.json({ ok: true, albums });
 }
 
 async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, body: unknown): Promise<Response> {
@@ -251,6 +269,9 @@ async function main(): Promise<void> {
                 }
                 if (url.pathname === '/nodes' && request.method === 'POST') {
                     return await fetchNodes(ctx, await request.json());
+                }
+                if (url.pathname === '/albums') {
+                    return await fetchAlbums(ctx);
                 }
                 if (url.pathname === '/thumbnails' && request.method === 'POST') {
                     return await fetchThumbnails(ctx, await request.json());

@@ -82,6 +82,12 @@ class BridgeClient:
             r.raise_for_status()
             return self._ndjson_items(r)
 
+    def albums(self) -> dict:
+        """Return all albums as {uid, name} pairs (plain JSON)."""
+        r = self._client.get(f"{self.base_url}/albums", timeout=httpx.Timeout(300.0, connect=30.0))
+        r.raise_for_status()
+        return r.json()
+
     def thumbnails(self, uids: list[str]) -> dict:
         """Ask the bridge to download Type1 thumbnails into DATA_DIR/work/.
 

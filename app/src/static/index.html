@@ -120,6 +120,22 @@ main { padding: 18px; }
   border-radius: 8px; overflow: hidden; background: var(--panel);
 }
 #detailimgwrap img { display: block; max-width: 100%; max-height: 72vh; }
+#detailbody { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; }
+#metapanel {
+  flex: 1 1 260px; min-width: 260px; max-width: 420px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px 16px; font-size: 13px;
+}
+#metapanel h3 { margin: 0 0 10px; font-size: 14px; }
+#metapanel table { width: 100%; border-collapse: collapse; }
+#metapanel td { padding: 4px 6px; vertical-align: top; }
+#metapanel td.k { color: var(--muted); white-space: nowrap; width: 110px; }
+#metapanel td.v { color: var(--text); word-break: break-all; }
+#metapanel .tagpill {
+  display: inline-block; background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 1px 8px; margin: 1px 3px 1px 0; font-size: 11px;
+  color: var(--accent);
+}
 .facebox {
   position: absolute; border: 2px solid var(--accent); border-radius: 6px;
   cursor: pointer; background: rgba(77,163,255,.08);
@@ -206,7 +222,10 @@ main { padding: 18px; }
     <span class="name" id="dname"></span>
     <button id="dfull" class="secondary">View full resolution</button>
   </div>
-  <div id="detailimgwrap"><img id="dimg" alt=""></div>
+  <div id="detailbody">
+    <div id="detailimgwrap"><img id="dimg" alt=""></div>
+    <div id="metapanel"></div>
+  </div>
 </div>
 <div id="lightbox">
   <button id="lbclose">&times;</button>
@@ -306,6 +325,55 @@ async function openDetail(uid) {
   const wrap = $("#detailimgwrap");
   wrap.querySelectorAll(".facebox").forEach((b) => b.remove());
   img.onload = () => loadFaceBoxes(uid);
+  loadPhotoMeta(uid);
+}
+
+async function loadPhotoMeta(uid) {
+  const panel = $("#metapanel");
+  panel.innerHTML = '<h3>Metadata</h3><div class="empty" style="padding:8px 0">Loading…</div>';
+  let m;
+  try {
+    m = await api(`/api/photos/${uid}/meta`);
+  } catch (e) {
+    panel.innerHTML = '<h3>Metadata</h3><div class="empty" style="padding:8px 0">Unavailable</div>';
+    return;
+  }
+  const escv = (v) => esc(v ?? "—");
+  const tags = (m.tags || []).map((t) => `<span class="tagpill">${escv(t)}</span>`).join("") || "—";
+  const albums = (m.albums_detail || [])
+    .map((a) => `<span class="tagpill">${escv(a.name)}</span>`).join("") || "—";
+  const people = (m.people || [])
+    .map((p) => `<span class="tagpill">${escv(p.name || "person " + p.person_id)}</span>`).join("") || "—";
+  const size = m.size != null ? fmtBytes(m.size) : "—";
+  const rows = [
+    ["Name", m.name],
+    ["Type", m.media_type || m.mediaType],
+    ["Captured", m.capture_time ? fmtDateTime(m.capture_time) : "—"],
+    ["Size", size],
+    ["SHA-1", m.sha1],
+    ["Location", m.place || (m.gps_lat != null ? `${m.gps_lat.toFixed(4)}, ${m.gps_lng.toFixed(4)}` : "—")],
+    ["Albums", albums],
+    ["Tags", tags],
+    ["People", people],
+    ["Faces", m.face_count != null ? `${m.face_count}` : "—"],
+    ["UID", m.uid],
+  ];
+  panel.innerHTML = `<h3>Metadata</h3><table>${rows
+    .map(([k, v]) => `<tr><td class="k">${escv(k)}</td><td class="v">${v}</td></tr>`).join("")}</table>`;
+}
+
+function fmtBytes(n) {
+  if (n == null) return "—";
+  const u = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i === 0 ? 0 : 1)} ${u[i]}`;
+}
+
+function fmtDateTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return d.toLocaleString();
 }
 
 async function loadFaceBoxes(uid) {

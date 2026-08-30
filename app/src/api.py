@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import time
 from pathlib import Path
@@ -129,6 +130,64 @@ def api_photo(uid: str):
     if row is None:
         raise HTTPException(404, "photo not found")
     return _row_to_dict(row)
+
+
+@app.get("/api/photos/{uid}/meta")
+def api_photo_meta(uid: str):
+    """Full metadata for the photo detail view.
+
+    Merges the local index row (GPS, place, faces, people) with the live
+    metadata Proton exposes for the node (size, creation/modification times,
+    photo tags, live-photo relations, album names) fetched on demand from the
+    bridge.
+    """
+    row = get_photo(uid)
+    if row is None:
+        raise HTTPException(404, "photo not found")
+    meta = _row_to_dict(row)
+
+    # Faces + people in this photo (local index).
+    faces = faces_for_photo(uid)
+    people = {}
+    for f in faces:
+        pid = f["person_id"]
+        if pid is None:
+            continue
+        people.setdefault(pid, f["person_name"])
+    meta["face_count"] = len(faces)
+    meta["people"] = [{"person_id": k, "name": v} for k, v in people.items()]
+
+    # Live metadata from Proton (on demand; tolerate bridge failures).
+    try:
+        nodes = get_bridge().nodes([uid])
+        if nodes:
+            n = nodes[0]
+            for k in ("size", "creationTime", "modificationTime", "tags", "mainPhotoNodeUid", "relatedPhotoNodeUids", "mediaType"):
+                if n.get(k) is not None:
+                    meta[k] = n[k]
+    except Exception as exc:
+        log.warning("bridge node metadata failed for %s: %s", uid, exc)
+
+    # Album names.
+    try:
+        alb = get_bridge().albums()
+        name_by_uid = {a["uid"]: a["name"] for a in alb.get("albums", [])}
+        albums_raw = meta.get("albums")
+        if isinstance(albums_raw, str):
+            try:
+                album_uids = json.loads(albums_raw)
+            except Exception:
+                album_uids = []
+        else:
+            album_uids = albums_raw or []
+        meta["albums_detail"] = [
+            {"uid": u, "name": name_by_uid.get(u, u)} for u in album_uids
+        ]
+    except Exception as exc:
+        log.warning("bridge albums fetch failed: %s", exc)
+        meta["albums_detail"] = [{"uid": u, "name": u} for u in (meta.get("albums") or [])]
+
+    return meta
 
 
 @app.get("/api/photos/{uid}/thumb")
