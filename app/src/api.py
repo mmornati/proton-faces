@@ -135,6 +135,8 @@ def api_albums():
                 "uid": r["uid"],
                 "name": r["name"] or r["uid"],
                 "photo_count": r["photo_count"] or 0,
+                "start_ts": r["start_ts"],
+                "end_ts": r["end_ts"],
                 "cover_url": (
                     f"/api/photos/{r['cover_uid']}/thumb" if r["cover_uid"] else None
                 ),

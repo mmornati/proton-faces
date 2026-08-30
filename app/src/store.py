@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS albums (
     name         TEXT,
     cover_uid    TEXT,            -- representative (newest) photo uid
     photo_count  INTEGER,
+    start_ts     INTEGER,         -- earliest capture_time in the album (sort key)
+    end_ts       INTEGER,         -- latest capture_time in the album
     synced_at    INTEGER
 );
 """
@@ -97,6 +99,11 @@ def migrate(conn: sqlite3.Connection) -> None:
            WHERE cover_face_id IS NULL
              AND EXISTS (SELECT 1 FROM faces f WHERE f.person_id = people.id)"""
     )
+    acols = {r["name"] for r in conn.execute("PRAGMA table_info(albums)")}
+    if "start_ts" not in acols:
+        conn.execute("ALTER TABLE albums ADD COLUMN start_ts INTEGER")
+    if "end_ts" not in acols:
+        conn.execute("ALTER TABLE albums ADD COLUMN end_ts INTEGER")
 
 
 # --- photos ---------------------------------------------------------------
@@ -622,6 +629,7 @@ def sync_albums(albums: list[dict]) -> int:
         ).fetchall()
         counts: dict[str, int] = {}
         covers: dict[str, tuple[int, str]] = {}
+        spans: dict[str, tuple[int | None, int | None]] = {}
         for r in rows:
             try:
                 uids = json.loads(r["albums"])
@@ -629,25 +637,33 @@ def sync_albums(albums: list[dict]) -> int:
                 continue
             for u in uids:
                 counts[u] = counts.get(u, 0) + 1
-                # Track newest capture_time per album to pick the cover.
+                # Track newest capture_time per album to pick the cover, and
+                # the min/max span to order albums chronologically.
                 cur = covers.get(u)
                 ts = r["capture_time"] or 0
                 if cur is None or ts >= cur[0]:
                     covers[u] = (ts, r["uid"])
+                lo, hi = spans.get(u, (None, None))
+                if ts:
+                    spans[u] = (
+                        ts if lo is None or ts < lo else lo,
+                        ts if hi is None or ts > hi else hi,
+                    )
         for u, n in counts.items():
+            lo, hi = spans.get(u, (None, None))
             conn.execute(
-                "UPDATE albums SET photo_count=?, cover_uid=? WHERE uid=?",
-                (n, covers.get(u, (None, None))[1], u),
+                "UPDATE albums SET photo_count=?, cover_uid=?, start_ts=?, end_ts=? WHERE uid=?",
+                (n, covers.get(u, (None, None))[1], lo, hi, u),
             )
     return len(albums)
 
 
 def all_albums() -> list[sqlite3.Row]:
-    """Albums with photo counts, most populated first."""
+    """Albums ordered chronologically by their earliest photo, oldest first."""
     with get_conn() as conn:
         return conn.execute(
             "SELECT * FROM albums WHERE photo_count IS NOT NULL "
-            "ORDER BY photo_count DESC, name ASC"
+            "ORDER BY (start_ts IS NULL), start_ts ASC, name ASC"
         ).fetchall()
 
 
