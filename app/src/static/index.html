@@ -218,6 +218,14 @@ const $ = (s) => document.querySelector(s);
 let state = { view: "photos", q: "", photos: [], people: [] };
 let popoverFace = null;
 let map = null, markerGroup = null;
+// infinite scroll for the Photos view
+let photoOffset = 0;
+let photoLoading = false;
+let photoDone = false;
+const photoPage = 200;
+const sentinelObserver = new IntersectionObserver((entries) => {
+  if (entries[0].isIntersecting) loadMorePhotos();
+}, { rootMargin: "400px" });
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -243,22 +251,43 @@ function toast(msg) {
   setTimeout(() => t.remove(), 3500);
 }
 
-function renderPhotos(list) {
+function renderPhotos(list, append) {
   const el = $("#view");
-  if (!list.length) {
+  if (!list.length && !append) {
     el.innerHTML = '<div class="empty">No photos yet — the indexer is probably still downloading thumbnails.</div>';
     return;
   }
-  el.innerHTML = `<div class="grid">${list.map((p) => `
+  if (!append) {
+    el.innerHTML = `<div class="grid">${list.map(cardHtml).join("")}</div>`;
+  } else {
+    const grid = el.querySelector(".grid");
+    if (!grid) { el.innerHTML = `<div class="grid">${list.map(cardHtml).join("")}</div>`; }
+    else grid.insertAdjacentHTML("beforeend", list.map(cardHtml).join(""));
+  }
+  el.querySelectorAll(".card img").forEach((img) => img.addEventListener("click", () => openDetail(img.dataset.uid)));
+  el.querySelectorAll(".facebadge").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); openDetail(b.dataset.uid); }));
+  // sentinel for infinite scroll (Photos view only)
+  if (state.view === "photos" && !state.q && !photoDone) {
+    let sentinel = $("#sentinel");
+    if (!sentinel) {
+      sentinel = document.createElement("div");
+      sentinel.id = "sentinel";
+      sentinel.style.height = "1px";
+      el.appendChild(sentinel);
+    }
+    sentinelObserver.observe(sentinel);
+  }
+}
+
+function cardHtml(p) {
+  return `
     <div class="card">
       <img loading="lazy" src="${p.thumb_url}" data-uid="${esc(p.uid)}" alt="">
       <div class="date">${fmtDate(p.capture_time)}</div>
       <button class="facebadge" data-uid="${esc(p.uid)}">faces</button>
       ${p.score !== undefined ? `<div class="score">${(p.score * 100).toFixed(0)}%</div>` : ""}
       ${p.place ? `<div class="date" style="right:auto;left:6px;top:auto;bottom:6px">${esc(p.place)}</div>` : ""}
-    </div>`).join("")}</div>`;
-  el.querySelectorAll(".card img").forEach((img) => img.addEventListener("click", () => openDetail(img.dataset.uid)));
-  el.querySelectorAll(".facebadge").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); openDetail(b.dataset.uid); }));
+    </div>`;
 }
 
 function openLightbox(uid) {
@@ -362,11 +391,42 @@ function closePopover() {
   popoverFace = null;
 }
 
+function resetPhotoPaging() {
+  photoOffset = 0;
+  photoDone = false;
+  const s = $("#sentinel");
+  if (s) s.remove();
+}
+
 async function loadPhotos() {
-  const url = state.q ? `/api/search?q=${encodeURIComponent(state.q)}` : "/api/photos?limit=500";
+  resetPhotoPaging();
+  const url = state.q ? `/api/search?q=${encodeURIComponent(state.q)}` : `/api/photos?limit=${photoPage}&offset=0`;
   const data = await api(url);
-  renderPhotos(data.results || data.photos || []);
+  renderPhotos(data.results || data.photos || [], false);
   state.photos = data.results || data.photos || [];
+  if (!state.q) {
+    photoOffset = (data.photos || []).length;
+    if ((data.photos || []).length < photoPage) photoDone = true;
+  }
+}
+
+async function loadMorePhotos() {
+  if (state.q || photoLoading || photoDone) return;
+  photoLoading = true;
+  try {
+    const data = await api(`/api/photos?limit=${photoPage}&offset=${photoOffset}`);
+    const rows = data.photos || [];
+    if (rows.length) {
+      renderPhotos(rows, true);
+      state.photos = state.photos.concat(rows);
+      photoOffset += rows.length;
+    }
+    if (rows.length < photoPage) photoDone = true;
+  } catch (e) {
+    toast("Error loading more: " + e.message);
+  } finally {
+    photoLoading = false;
+  }
 }
 
 async function loadPeople() {
@@ -482,7 +542,9 @@ async function refresh() {
   try {
     const data = await api("/api/stats");
     const p = data.photos;
-    $("#counts").textContent = `${p.done}/${p.total} photos indexed · ${data.people} people · ${data.faces} faces`;
+    $("#counts").textContent =
+      `${p.done}/${p.total} photos indexed · ${p.done_with_thumb} displayable · ` +
+      `${p.done_without_thumb} without preview (videos) · ${data.people} people · ${data.faces} faces`;
     const b = await fetch("/api/health").then((r) => r.json());
     $("#status").textContent = b.bridge.loggedIn ? "connected" : "bridge: not logged in";
   } catch (e) {

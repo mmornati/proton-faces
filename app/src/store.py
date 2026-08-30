@@ -230,6 +230,10 @@ def stats() -> dict:
     with get_conn() as conn:
         total = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
         done = conn.execute("SELECT COUNT(*) FROM photos WHERE status='done'").fetchone()[0]
+        done_with_thumb = conn.execute(
+            "SELECT COUNT(*) FROM photos WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != ''"
+        ).fetchone()[0]
+        done_without_thumb = done - done_with_thumb
         pending = conn.execute("SELECT COUNT(*) FROM photos WHERE status IN ('new','downloading','processing')").fetchone()[0]
         faces = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
         clips = conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0]
@@ -239,7 +243,14 @@ def stats() -> dict:
             for r in conn.execute("SELECT status, COUNT(*) AS n FROM photos GROUP BY status")
         }
     return {
-        "photos": {"total": total, "done": done, "pending": pending, "by_status": by_status},
+        "photos": {
+            "total": total,
+            "done": done,
+            "done_with_thumb": done_with_thumb,
+            "done_without_thumb": done_without_thumb,
+            "pending": pending,
+            "by_status": by_status,
+        },
         "faces": faces,
         "clips": clips,
         "people": people,
