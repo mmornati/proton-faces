@@ -27,7 +27,7 @@ from clip import embed_pil
 from cluster import cluster_once
 from config import settings
 from faces import detect_faces
-from geocode import reverse_geocode, reverse_geocode_many
+from geocode import reverse_geocode_many
 from store import (
     backfill_fullres_images,
     claim_photo_for_download,
@@ -48,6 +48,33 @@ from store import (
 log = logging.getLogger("indexer")
 
 _pending: queue.Queue[str] = queue.Queue()  # uids whose thumbnail is ready
+
+
+def _rebuild_pending() -> None:
+    """Re-queue photos that were mid-pipeline when the process last stopped.
+
+    `_pending` is in-memory only, so after a restart every photo whose
+    thumbnail/work file was already generated but never processed is stuck in
+    'downloading' status. Workers only process one such leftover per 10s
+    timeout, which would take days for a large backlog. Re-queue any
+    'downloading' photo that already has its work file on disk so the workers
+    resume immediately.
+    """
+    reenqueued = 0
+    offset = 0
+    batch = 2000
+    while True:
+        rows = get_photos("downloading", limit=batch, offset=offset)
+        if not rows:
+            break
+        for row in rows:
+            uid = row["uid"]
+            if _work_path(uid).exists():
+                _pending.put(uid)
+                reenqueued += 1
+        offset += len(rows)
+    if reenqueued:
+        log.info("rebuild_pending: re-queued %d downloaded photos", reenqueued)
 
 
 def _thumb_path(uid: str) -> Path:
@@ -225,12 +252,16 @@ def _process_one(uid: str) -> None:
 
     clip_vec = embed_pil(rgb)
 
-    gps = None
-    place = None
+    # GPS/place is enriched by the gps loop (subprocess) — never geocode from
+    # a worker thread: reverse_geocoder forks a multiprocessing pool which
+    # deadlocks inside the app's threaded process.
     photo = _photo_row(uid)
-    if photo and photo["gps_lat"] is not None:
-        gps = (photo["gps_lat"], photo["gps_lng"])
-        place = reverse_geocode(gps[0], gps[1]) if gps[0] else None
+    gps = (
+        (photo["gps_lat"], photo["gps_lng"])
+        if photo and photo["gps_lat"] is not None
+        else None
+    )
+    place = photo["place"] if photo else None
 
     faces = detect_faces(bgr)
     face_count = len(faces)
@@ -352,12 +383,16 @@ def _cluster_loop() -> None:
 def start() -> list[threading.Thread]:
     """Start all background threads. Returns the started threads."""
     init_db()
+    # Recover photos stuck in 'processing' from a previous crash/hang.
+    with _db_conn() as conn:
+        conn.execute("UPDATE photos SET status='downloading' WHERE status='processing'")
     try:
         n = backfill_fullres_images()
         if n:
             log.info("backfilled %d image photos for local thumbnail generation", n)
     except Exception as exc:  # pragma: no cover
         log.warning("fullres backfill failed: %s", exc)
+    _rebuild_pending()
     threads = [
         threading.Thread(target=_sync_loop, name="sync", daemon=True),
         threading.Thread(target=_downloader_loop, name="downloader", daemon=True),
@@ -497,16 +532,44 @@ def enrich_places() -> int:
 
 
 def _gps_loop() -> None:
+    """Run GPS backfill + place enrichment in a *subprocess*.
+
+    reverse_geocoder forks a multiprocessing pool on first use, which
+    deadlocks when called from a thread inside the app process. Running the
+    same work as a child process (python main.py --backfill-gps) keeps the
+    fork in a single-threaded process, where it works reliably.
+    """
     while True:
         time.sleep(settings.gps_interval)
         try:
-            backfill_gps()
+            _run_gps_subprocess()
         except Exception as exc:  # pragma: no cover
-            log.exception("gps backfill loop error: %s", exc)
-        try:
-            enrich_places()
-        except Exception as exc:  # pragma: no cover
-            log.exception("gps place enrichment error: %s", exc)
+            log.exception("gps loop error: %s", exc)
+
+
+def _run_gps_subprocess() -> None:
+    import subprocess
+    import sys
+
+    if not settings.photos_dir:
+        return
+    log.info("gps loop: starting backfill+enrich subprocess")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "main", "--backfill-gps"],
+            cwd=str(Path(__file__).parent),
+            capture_output=True,
+            text=True,
+            timeout=60 * 60,
+        )
+        log.info(
+            "gps loop: subprocess exit=%d stdout=%s stderr=%s",
+            proc.returncode,
+            proc.stdout[-300:],
+            proc.stderr[-300:],
+        )
+    except subprocess.TimeoutExpired:  # pragma: no cover
+        log.warning("gps loop: subprocess timed out after 1h")
 
 
 def cleanup_deleted() -> None:

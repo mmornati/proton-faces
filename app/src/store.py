@@ -139,11 +139,11 @@ def mark_deleted(uids: list[str]) -> None:
         )
 
 
-def get_photos(status: str, limit: int = 500) -> list[sqlite3.Row]:
+def get_photos(status: str, limit: int = 500, offset: int = 0) -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
-            "SELECT * FROM photos WHERE status=? ORDER BY capture_time ASC LIMIT ?",
-            (status, limit),
+            "SELECT * FROM photos WHERE status=? ORDER BY capture_time ASC LIMIT ? OFFSET ?",
+            (status, limit, offset),
         ).fetchall()
 
 
