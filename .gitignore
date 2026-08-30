@@ -1,0 +1,28 @@
+# Dependencies / build artifacts
+node_modules/
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# Data (never commit)
+data/
+credentials/
+*.sqlite
+*.sqlite3
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Env
+.env
+.env.local
+
+# Build output
+dist/
+build/
+release/

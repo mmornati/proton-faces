@@ -1,0 +1,14 @@
+# proton-faces app
+# ML + indexing + search API. Talks to the proton-bridge container over HTTP.
+
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.30,<0.31
+httpx>=0.27,<0.28
+python-multipart>=0.0.9
+numpy>=1.23,<1.24
+Pillow>=10.4,<12
+onnxruntime>=1.18,<1.20
+insightface==0.7.3
+open_clip_torch>=2.24,<2.31
+scikit-learn>=1.4,<1.6
+reverse_geocoder==1.5.1

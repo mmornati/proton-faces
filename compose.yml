@@ -1,0 +1,61 @@
+name: proton-faces
+
+# proton-faces: self-hosted people/object/location search over Proton Photos.
+# Bring up with:  docker compose up -d --build
+# One-time setup:  scripts/export-session.sh  (places auth-session.json in ./credentials)
+#
+# The two services share a single Docker volume `data`:
+#   bridge writes thumbnails to data/work, the app consumes them, keeps a
+#   permanent cache in data/thumbs, and stores its SQLite index there too.
+#   The bridge's auth session lives at data/auth-session.json.
+
+services:
+  proton-bridge:
+    build: ./bridge
+    image: proton-faces/proton-bridge:0.1.0
+    restart: unless-stopped
+    volumes:
+      - data:/data
+    environment:
+      - PORT=8090
+      - DATA_DIR=/data
+      - PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file
+      - PROTON_DRIVE_CACHE_DIR=/data
+      # Optional: point at a custom Proton API environment.
+      # - PROTON_DRIVE_BASE_URL=drive-api.proton.me
+    networks:
+      - internal
+
+  app:
+    build: ./app
+    image: proton-faces/app:0.1.0
+    restart: unless-stopped
+    depends_on:
+      - proton-bridge
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - data:/data
+      # Optional: local Google Takeout export used to backfill GPS/place
+      # data (read-only). Left empty by default.
+      - "${PHOTOS_DIR:-/dev/null}:/takeout:ro"
+    environment:
+      - DATA_DIR=/data
+      - MODELS_DIR=/models
+      - PHOTOS_DIR=/takeout
+      - BRIDGE_URL=http://proton-bridge:8090
+      - PORT=8080
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-300}
+      - WORKERS=${WORKERS:-2}
+      - CLUSTER_INTERVAL=${CLUSTER_INTERVAL:-1800}
+      - FACE_SIM_THRESHOLD=${FACE_SIM_THRESHOLD:-0.45}
+      - MIN_CLUSTER_SIZE=${MIN_CLUSTER_SIZE:-2}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - internal
+
+volumes:
+  data:
+
+networks:
+  internal:
