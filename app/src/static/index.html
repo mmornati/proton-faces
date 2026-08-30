@@ -102,9 +102,33 @@ main { padding: 18px; }
 .dups h3 { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
 .dup { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; }
 .dup:hover { background: var(--panel2); }
+.dupthumb { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; background: var(--panel2); flex: none; }
+.dupthumb-empty { background: var(--panel2); }
 .dupnames { font-size: 14px; font-weight: 600; }
 .dup-arrow { color: var(--accent); margin: 0 4px; }
 .dupsim { color: var(--muted); font-size: 12px; margin-left: auto; }
+/* merge picker modal */
+#mergepick {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+  z-index: 150; align-items: flex-start; justify-content: center; padding: 60px 20px 20px;
+}
+#mergepick.open { display: flex; }
+#mergepickbox {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  max-width: 520px; width: 100%; max-height: 80vh; display: flex; flex-direction: column;
+  overflow: hidden;
+}
+#mergepickhead { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+#mergepickhead img { width: 44px; height: 44px; border-radius: 10px; object-fit: cover; background: var(--panel2); }
+#mergepickhead .srcname { font-size: 15px; font-weight: 600; }
+#mergepickhead .srchint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+#mergepickhead button { margin-left: auto; }
+#mergepicklist { overflow: auto; padding: 8px; }
+.mpitem { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 10px; cursor: pointer; width: 100%; border: 0; background: none; color: var(--text); text-align: left; }
+.mpitem:hover { background: var(--panel2); }
+.mpitem img { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; background: var(--panel2); flex: none; }
+.mpitem .mpname { font-size: 14px; font-weight: 600; }
+.mpitem .mpmeta { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .empty { color: var(--muted); padding: 40px; text-align: center; }
 #faceform { display: flex; gap: 8px; align-items: center; }
 #facefile { font-size: 13px; color: var(--muted); }
@@ -241,6 +265,19 @@ main { padding: 18px; }
   <img id="lbimg" alt="">
 </div>
 <div id="popover"></div>
+<div id="mergepick">
+  <div id="mergepickbox">
+    <div id="mergepickhead">
+      <img id="mpsrcimg" alt="">
+      <div>
+        <div class="srcname" id="mpsrcname"></div>
+        <div class="srchint">Merge this person into…</div>
+      </div>
+      <button id="mpclose" class="secondary small">Close</button>
+    </div>
+    <div id="mergepicklist"></div>
+  </div>
+</div>
 <script>
 const $ = (s) => document.querySelector(s);
 let state = { view: "photos", q: "", photos: [], people: [] };
@@ -537,12 +574,7 @@ async function loadPeople() {
     });
     card.querySelector(".merge-btn").addEventListener("click", (e) => {
       e.stopPropagation();
-      const src = card.dataset.id;
-      const target = window.prompt(`Merge person ${src} into which person id?`);
-      if (!target) return;
-      api(`/api/people/${src}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: +target }) })
-        .then((r) => { toast(`Merged. Auto-tagged ${r.assigned_similar || 0} faces.`); loadPeople(); })
-        .catch((err) => toast("Error: " + err.message));
+      openMergePicker(+card.dataset.id, data.people);
     });
     card.addEventListener("click", async () => {
       const data = await api(`/api/people/${card.dataset.id}/photos`);
@@ -550,6 +582,36 @@ async function loadPeople() {
       $("#counts").textContent = `${data.count} faces`;
     });
   });
+}
+
+function openMergePicker(srcId, people) {
+  const src = people.find((p) => p.id === srcId) || { id: srcId, name: null, cover_url: null };
+  $("#mpsrcimg").src = src.cover_url || "";
+  $("#mpsrcname").textContent = src.name || "Unknown person";
+  const others = people.filter((p) => p.id !== srcId);
+  const list = $("#mergepicklist");
+  list.innerHTML = others.length
+    ? others.map((p) => `
+      <button class="mpitem" data-tid="${p.id}">
+        ${p.cover_url ? `<img loading="lazy" src="${p.cover_url}" alt="">` : '<div style="width:42px;height:42px;border-radius:8px;background:var(--panel2);flex:none"></div>'}
+        <div>
+          <div class="mpname">${esc(p.name || "Unknown person")}</div>
+          <div class="mpmeta">${p.photo_count} photos · ${p.face_count} faces · #${p.id}</div>
+        </div>
+      </button>`).join("")
+    : '<div class="empty">No other people to merge into.</div>';
+  list.querySelectorAll(".mpitem").forEach((item) => item.addEventListener("click", async () => {
+    const target = +item.dataset.tid;
+    const r = await api(`/api/people/${srcId}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: target }) });
+    closeMergePicker();
+    toast(`Merged into ${people.find((p) => p.id === target)?.name || "person " + target}. Auto-tagged ${r.assigned_similar || 0} faces.`);
+    loadPeople();
+  }));
+  $("#mergepick").classList.add("open");
+}
+
+function closeMergePicker() {
+  $("#mergepick").classList.remove("open");
 }
 
 async function loadDuplicates() {
@@ -563,11 +625,15 @@ async function loadDuplicates() {
     }
     box.innerHTML = `<h3>Suggested merges</h3>${dd.duplicates.map((d) => `
       <div class="dup" data-a="${d.a.id}" data-b="${d.b.id}">
-        <span class="dupnames">${esc(d.a.name || "Person " + d.a.id)} <span class="dup-arrow">+</span> ${esc(d.b.name || "Person " + d.b.id)}</span>
+        ${d.a.cover_url ? `<img class="dupthumb" loading="lazy" src="${d.a.cover_url}" title="${esc(d.a.name || "Person " + d.a.id)} (${d.a.id})" alt="">` : '<div class="dupthumb dupthumb-empty"></div>'}
+        <span class="dupnames">${esc(d.a.name || "Person " + d.a.id)}</span>
+        <span class="dup-arrow">+</span>
+        ${d.b.cover_url ? `<img class="dupthumb" loading="lazy" src="${d.b.cover_url}" title="${esc(d.b.name || "Person " + d.b.id)} (${d.b.id})" alt="">` : '<div class="dupthumb dupthumb-empty"></div>'}
+        <span class="dupnames">${esc(d.b.name || "Person " + d.b.id)}</span>
         <span class="dupsim">${Math.round(d.similarity * 100)}% similar</span>
         <button class="small" data-merge="1">Merge</button>
       </div>`).join("")}`;
-    box.querySelectorAll(".dup[data-merge]").forEach((d) => {
+    box.querySelectorAll(".dup").forEach((d) => {
       d.querySelector("button[data-merge]").addEventListener("click", async () => {
         const a = +d.dataset.a, b = +d.dataset.b;
         const r = await api(`/api/people/${a}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: b }) });
@@ -715,6 +781,8 @@ $("#faceform").addEventListener("submit", async (e) => {
 $("#dclose").addEventListener("click", () => $("#detail").classList.remove("open"));
 $("#lbclose").addEventListener("click", () => $("#lightbox").classList.remove("open"));
 $("#lightbox").addEventListener("click", (e) => { if (e.target.id === "lightbox") $("#lightbox").classList.remove("open"); });
+$("#mpclose").addEventListener("click", closeMergePicker);
+$("#mergepick").addEventListener("click", (e) => { if (e.target.id === "mergepick") closeMergePicker(); });
 document.addEventListener("click", (e) => {
   if ($("#popover").classList.contains("open") && !$("#popover").contains(e.target)) closePopover();
 });

@@ -521,8 +521,24 @@ def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
         dups.append(
             {
                 "similarity": round(float(sims[mask][k]), 4),
-                "a": {"id": a["id"], "name": a["name"], "photo_count": a["photo_count"], "face_count": a["face_count"]},
-                "b": {"id": b["id"], "name": b["name"], "photo_count": b["photo_count"], "face_count": b["face_count"]},
+                "a": {
+                    "id": a["id"],
+                    "name": a["name"],
+                    "photo_count": a["photo_count"],
+                    "face_count": a["face_count"],
+                    "cover_url": (
+                        f"/api/people/{a['id']}/cover" if a["cover_face_id"] else None
+                    ),
+                },
+                "b": {
+                    "id": b["id"],
+                    "name": b["name"],
+                    "photo_count": b["photo_count"],
+                    "face_count": b["face_count"],
+                    "cover_url": (
+                        f"/api/people/{b['id']}/cover" if b["cover_face_id"] else None
+                    ),
+                },
             }
         )
     return {"duplicates": dups}
