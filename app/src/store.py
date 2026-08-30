@@ -659,11 +659,11 @@ def sync_albums(albums: list[dict]) -> int:
 
 
 def all_albums() -> list[sqlite3.Row]:
-    """Albums ordered chronologically by their earliest photo, oldest first."""
+    """Albums ordered chronologically by their earliest photo, newest first."""
     with get_conn() as conn:
         return conn.execute(
             "SELECT * FROM albums WHERE photo_count IS NOT NULL "
-            "ORDER BY (start_ts IS NULL), start_ts ASC, name ASC"
+            "ORDER BY (start_ts IS NULL), start_ts DESC, name ASC"
         ).fetchall()
 
 

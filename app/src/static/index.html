@@ -951,9 +951,9 @@ document.querySelectorAll("nav a").forEach((a) => {
     state.view = a.dataset.view;
     $("#q").value = "";
     state.q = "";
-    if (state.view === "people") loadPeople();
-    else if (state.view === "unassigned") loadUnassigned();
-    else if (state.view === "places") loadPlaces();
+    if (state.view === "people") { $("#daterailwrap").style.display = "none"; loadPeople(); }
+    else if (state.view === "unassigned") { $("#daterailwrap").style.display = "none"; loadUnassigned(); }
+    else if (state.view === "places") { $("#daterailwrap").style.display = "none"; loadPlaces(); }
     else if (state.view === "albums") { state.albumUid = null; state.beforeTs = null; $("#daterailwrap").style.display = "none"; loadAlbums(); }
     else { $("#mapwrap").style.display = "none"; state.albumUid = null; state.beforeTs = null; loadPhotos(); loadAnchors(); }
   });
