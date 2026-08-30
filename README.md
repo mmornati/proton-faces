@@ -15,19 +15,11 @@ nothing is ever written back to Proton Drive.
 
 <br>
 
-<iframe
-  src="https://player.cloudinary.com/embed/?cloud_name=blog-mornati-net&public_id=aqarlh1taqbygcsode6o"
-  width="640"
-  height="360"
-  style="height: auto; width: 100%; aspect-ratio: 640 / 360;"
-  allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-  allowfullscreen
-  frameborder="0"
-></iframe>
+[![Watch the demo — Proton Faces](https://res.cloudinary.com/blog-mornati-net/video/upload/so_3/v1788111273/aqarlh1taqbygcsode6o.jpg)](https://player.cloudinary.com/embed/?cloud_name=blog-mornati-net&public_id=aqarlh1taqbygcsode6o)
 
 <br>
 
-*Search your whole library like Google Photos — but 100% private and offline.*
+*Search your whole library like Google Photos — but 100% private and offline. Click the frame to play the demo.*
 
 </div>
 
@@ -55,13 +47,19 @@ photo library into a fully searchable archive, without ever uploading a single b
 ## 🎬 Demo
 
 The video above shows the app in action: people clustering, face tagging, text search,
-the places map and photo browsing. The demo clip is committed to the repo
-(`docs/demo.mp4`) and embedded with an HTML5 `<video>` tag (GitHub renders it natively).
+the places map and photo browsing. The poster frame is served by Cloudinary; clicking it
+opens the Cloudinary player (a direct MP4 is also committed at `docs/demo.mp4`).
+
+> **Why a clickable frame and not an inline `<video>`?** GitHub's README sanitizer strips
+> `<video>` and `<iframe>` tags that point to external hosts. The only way to embed a video
+> that *autoplays inline* on a GitHub README is to drag-and-drop the MP4 into the README
+> editor (GitHub then hosts it on `user-attachments`). Want that? Just open the README in
+> GitHub's web editor, drag `docs/demo.mp4` onto it, and replace this frame with the
+> generated `<video>` snippet. The repo copy is compressed to ~2 MB so it uploads fast.
 
 > **Why MP4 and not a GIF?** The original clip is ~35 MB as video; the repo copy is
 > compressed to ~2 MB. As a GIF it would balloon to *hundreds of megabytes* — and GitHub
 > refuses to render images over 25 MB. Video is smaller, sharper, and keeps its sound.
-> A static poster frame is used so the README still looks great before the video loads.
 
 ---
 
