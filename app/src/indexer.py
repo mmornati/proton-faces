@@ -29,7 +29,9 @@ from config import settings
 from faces import detect_faces
 from geocode import reverse_geocode, reverse_geocode_many
 from store import (
+    backfill_fullres_images,
     claim_photo_for_download,
+    claim_photo_for_full,
     claim_photo_for_processing,
     get_photos,
     init_db,
@@ -38,6 +40,7 @@ from store import (
     mark_deleted,
     set_photo_done,
     set_photo_error,
+    set_photo_full,
     set_photo_deleted,
     upsert_photos,
 )
@@ -170,8 +173,13 @@ def _downloader_loop() -> None:
                 else:
                     err = r.get("error", "thumbnail unavailable")
                     if "no image preview" in str(err).lower():
-                        # e.g. videos: nothing to index, but we did our best.
-                        set_photo_done(uid, "", None, None)
+                        # No server-side preview. Images (e.g. HEIC) get a
+                        # locally-generated thumbnail via the fullres loop;
+                        # videos just get marked done (nothing to index).
+                        if _is_image(uid):
+                            set_photo_full(uid)
+                        else:
+                            set_photo_done(uid, "", None, None)
                     else:
                         set_photo_error(uid, str(err)[:300])
         except Exception as exc:  # pragma: no cover
@@ -251,6 +259,83 @@ def _photo_row(uid: str):
         return conn.execute("SELECT * FROM photos WHERE uid=?", (uid,)).fetchone()
 
 
+def _is_image(uid: str) -> bool:
+    row = _photo_row(uid)
+    return bool(row and row["media_type"] and str(row["media_type"]).startswith("image/"))
+
+
+# --- fullres loop (local thumbnails for images without server preview) ----
+
+def _fullres_loop() -> None:
+    """Download full-res images without a server preview, decode locally, and
+    enqueue a generated thumbnail into the normal worker pipeline.
+
+    Uses the bridge's full-res downloader (read-only), decodes with
+    Pillow (pillow-heif handles HEIC/HEIF), downscales to 512px JPEG, and
+    writes it to work/<uid>.webp — the same file the workers expect. The
+    full-res bytes are deleted after processing; only the small thumbnail is
+    kept on disk.
+    """
+    while True:
+        try:
+            photos = get_photos("full", limit=1)
+            if not photos:
+                # Crash recovery: any photo stuck in 'fullres' gets retried.
+                stuck = get_photos("fullres", limit=1)
+                if not stuck:
+                    time.sleep(5)
+                    continue
+                photos = stuck
+            uid = photos[0]["uid"]
+            if not claim_photo_for_full(uid):
+                continue
+
+            photo = _photo_row(uid)
+            bridge = get_bridge()
+            tmp = settings.work_dir / f"{uid}.download"
+            try:
+                resp = bridge.full_photo(uid)
+                try:
+                    resp.raise_for_status()
+                    with open(tmp, "wb") as fh:
+                        for chunk in resp.iter_bytes(1 << 16):
+                            fh.write(chunk)
+                finally:
+                    resp.close()
+                _resize_to_thumb(tmp, _work_path(uid))
+                log.info("fullres: generated thumbnail for %s", uid)
+                tmp.unlink(missing_ok=True)
+                # Hand off to the normal worker pipeline.
+                with _db_conn() as conn:
+                    conn.execute(
+                        "UPDATE photos SET status='downloading' WHERE uid=?", (uid,)
+                    )
+                _pending.put(uid)
+            except Exception as exc:
+                log.warning("fullres failed for %s: %s", uid, exc)
+                tmp.unlink(missing_ok=True)
+                set_photo_error(uid, str(exc)[:300])
+        except Exception as exc:  # pragma: no cover
+            log.exception("fullres loop error: %s", exc)
+            time.sleep(10)
+
+
+def _resize_to_thumb(src: Path, dest: Path, max_side: int = 512) -> None:
+    """Decode src (any Pillow format incl. HEIC) and write a max-512px JPEG."""
+    from PIL import Image
+
+    try:
+        from pillow_heif import register_heif_opener
+
+        register_heif_opener()
+    except Exception:  # pragma: no cover
+        pass
+    with Image.open(src) as img:
+        img.thumbnail((max_side, max_side))
+        img = img.convert("RGB")
+        img.save(dest, format="JPEG", quality=82)
+
+
 # --- cluster loop ----------------------------------------------------------
 
 def _cluster_loop() -> None:
@@ -267,9 +352,16 @@ def _cluster_loop() -> None:
 def start() -> list[threading.Thread]:
     """Start all background threads. Returns the started threads."""
     init_db()
+    try:
+        n = backfill_fullres_images()
+        if n:
+            log.info("backfilled %d image photos for local thumbnail generation", n)
+    except Exception as exc:  # pragma: no cover
+        log.warning("fullres backfill failed: %s", exc)
     threads = [
         threading.Thread(target=_sync_loop, name="sync", daemon=True),
         threading.Thread(target=_downloader_loop, name="downloader", daemon=True),
+        threading.Thread(target=_fullres_loop, name="fullres", daemon=True),
         threading.Thread(target=_cluster_loop, name="cluster", daemon=True),
         threading.Thread(target=_gps_loop, name="gps", daemon=True),
     ]

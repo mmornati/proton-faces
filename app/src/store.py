@@ -181,6 +181,36 @@ def set_photo_done(uid: str, thumb_path: str, gps: tuple[float, float] | None, p
         )
 
 
+def set_photo_full(uid: str) -> None:
+    """Mark a photo as needing a locally-generated thumbnail (no server preview)."""
+    with get_conn() as conn:
+        conn.execute("UPDATE photos SET status='full', error=NULL WHERE uid=?", (uid,))
+
+
+def claim_photo_for_full(uid: str) -> bool:
+    """Atomically move a photo from 'full' to 'fullres' (full-res being downloaded)."""
+    with _lock, get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE photos SET status='fullres' WHERE uid=? AND status='full'", (uid,)
+        )
+        return cur.rowcount == 1
+
+
+def backfill_fullres_images() -> int:
+    """Requeue image photos that were 'done' without a thumbnail.
+
+    Used at startup to pick up images (e.g. HEIC) that finished before we
+    generated local thumbnails. Videos (video/*) are intentionally excluded.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE photos SET status='full', error=NULL "
+            "WHERE status='done' AND (thumb_path IS NULL OR thumb_path='') "
+            "AND media_type LIKE 'image/%'"
+        )
+        return cur.rowcount
+
+
 def set_photo_error(uid: str, error: str) -> None:
     with get_conn() as conn:
         conn.execute("UPDATE photos SET status='error', error=? WHERE uid=?", (error, uid))
