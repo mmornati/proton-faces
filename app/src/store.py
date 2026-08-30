@@ -390,12 +390,19 @@ def merge_person(source_id: int, target_id: int) -> None:
     with get_conn() as conn:
         # backfill cover fields on the target from the source when unset
         src = conn.execute(
-            "SELECT cover_uid, cover_face_id FROM people WHERE id=?", (source_id,)
+            "SELECT name, cover_uid, cover_face_id FROM people WHERE id=?", (source_id,)
         ).fetchone()
         tgt = conn.execute(
-            "SELECT cover_uid, cover_face_id FROM people WHERE id=?", (target_id,)
+            "SELECT name, cover_uid, cover_face_id FROM people WHERE id=?", (target_id,)
         ).fetchone()
         if src and tgt:
+            # Keep the target's name; only inherit the source's when the target
+            # has none (so merging a named person into an unknown one doesn't
+            # lose the name).
+            if not tgt["name"] and src["name"]:
+                conn.execute(
+                    "UPDATE people SET name=? WHERE id=?", (src["name"], target_id)
+                )
             if not tgt["cover_uid"] and src["cover_uid"]:
                 conn.execute(
                     "UPDATE people SET cover_uid=? WHERE id=?", (src["cover_uid"], target_id)
