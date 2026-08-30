@@ -26,9 +26,12 @@ from store import (
     done_photos,
     face_embedding,
     faces_for_photo,
+    find_person_by_name,
     get_photo,
     get_person,
     map_markers,
+    merge_person,
+    person_mean_embedding,
     photos_for_person,
     place_stats,
     rename_person,
@@ -383,14 +386,34 @@ def api_photo_faces(uid: str):
     return {"faces": faces}
 
 
+def _merge_propagate(person_id: int, threshold: float | None = None) -> int:
+    """Auto-tag unassigned faces similar to a person's mean embedding.
+
+    Returns how many faces were assigned. Used after merges / renames so a
+    merged person also pulls in unassigned look-alikes.
+    """
+    emb = person_mean_embedding(person_id)
+    if emb is None:
+        return 0
+    thr = threshold if threshold is not None else settings.face_sim_threshold
+    assigned = 0
+    for sim_row in similar_faces(emb.tobytes(), thr, limit=500):
+        if sim_row[2] is None:  # person_id
+            assign_face_person(sim_row[0], person_id)
+            assigned += 1
+    return assigned
+
+
 @app.post("/api/faces/{face_id}/person")
 def api_face_assign(face_id: int, body: dict):
     """Assign a face to an existing person (person_id) or create a new named person (name).
+    When creating by name, merge into an existing person with the same name.
     Propagates the assignment to similar unassigned faces."""
     person_id = body.get("person_id")
     name = (body.get("name") or "").strip()
     if person_id is None and not name:
         raise HTTPException(400, "provide person_id or name")
+    merged = False
     if person_id is not None:
         person = get_person(person_id)
         if person is None:
@@ -398,7 +421,13 @@ def api_face_assign(face_id: int, body: dict):
     else:
         row = _face_row(face_id)
         cover_uid = row["photo_uid"] if row else None
-        person_id = create_person(name=name, cover_uid=cover_uid, cover_face_id=face_id)
+        existing = find_person_by_name(name, exclude_id=None)
+        if existing is not None:
+            person_id = existing["id"]
+            merged = True
+            set_person_cover_face(person_id, face_id)
+        else:
+            person_id = create_person(name=name, cover_uid=cover_uid, cover_face_id=face_id)
 
     assign_face_person(face_id, person_id)
     set_person_cover_face(person_id, face_id)
@@ -411,7 +440,12 @@ def api_face_assign(face_id: int, body: dict):
             if sim_row[2] is None:  # person_id
                 assign_face_person(sim_row[0], person_id)
                 assigned += 1
-    return {"ok": True, "person_id": person_id, "assigned_similar": assigned}
+    return {
+        "ok": True,
+        "person_id": person_id,
+        "merged": merged,
+        "assigned_similar": assigned,
+    }
 
 
 @app.post("/api/faces/{face_id}/unassign")
@@ -422,11 +456,68 @@ def api_face_unassign(face_id: int):
 
 @app.post("/api/people/{person_id}/name")
 def api_people_rename(person_id: int, body: dict):
+    """Rename a person. If another person already has that name, merge instead."""
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "name required")
+    existing = find_person_by_name(name, exclude_id=person_id)
+    if existing is not None:
+        merge_person(person_id, existing["id"])
+        _merge_propagate(existing["id"])
+        return {"ok": True, "merged": True, "target_id": existing["id"]}
     rename_person(person_id, name)
-    return {"ok": True}
+    return {"ok": True, "merged": False}
+
+
+@app.post("/api/people/{source_id}/merge")
+def api_people_merge(source_id: int, body: dict):
+    """Explicitly merge source person into target (by id)."""
+    target_id = body.get("target_id")
+    if not isinstance(target_id, int):
+        raise HTTPException(400, "target_id required")
+    if source_id == target_id:
+        raise HTTPException(400, "cannot merge a person into itself")
+    target = get_person(target_id)
+    if target is None:
+        raise HTTPException(404, "target person not found")
+    merge_person(source_id, target_id)
+    assigned = _merge_propagate(target_id)
+    return {"ok": True, "target_id": target_id, "assigned_similar": assigned}
+
+
+@app.get("/api/people/duplicates")
+def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
+    """Find people whose mean face embeddings are highly similar (likely dupes)."""
+    people = all_people()
+    embs = []
+    for p in people:
+        emb = person_mean_embedding(p["id"])
+        if emb is None:
+            embs.append(None)
+        else:
+            embs.append(emb)
+    pairs = []
+    for i in range(len(people)):
+        if embs[i] is None:
+            continue
+        for j in range(i + 1, len(people)):
+            if embs[j] is None:
+                continue
+            sim = float(np.dot(embs[i], embs[j]))
+            if sim >= threshold:
+                pairs.append((sim, i, j))
+    pairs.sort(reverse=True, key=lambda t: t[0])
+    dups = []
+    for sim, i, j in pairs[:limit]:
+        a, b = people[i], people[j]
+        dups.append(
+            {
+                "similarity": round(sim, 4),
+                "a": {"id": a["id"], "name": a["name"], "photo_count": a["photo_count"], "face_count": a["face_count"]},
+                "b": {"id": b["id"], "name": b["name"], "photo_count": b["photo_count"], "face_count": b["face_count"]},
+            }
+        )
+    return {"duplicates": dups}
 
 
 @app.get("/api/people/{person_id}/photos")

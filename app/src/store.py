@@ -369,6 +369,65 @@ def rename_person(person_id: int, name: str) -> None:
         conn.execute("UPDATE people SET name=? WHERE id=?", (name, person_id))
 
 
+def find_person_by_name(name: str, exclude_id: int | None = None) -> sqlite3.Row | None:
+    """Return the first person with an exact (case-insensitive) name match."""
+    with get_conn() as conn:
+        if exclude_id is None:
+            return conn.execute(
+                "SELECT * FROM people WHERE LOWER(name)=LOWER(?) LIMIT 1", (name,)
+            ).fetchone()
+        return conn.execute(
+            "SELECT * FROM people WHERE LOWER(name)=LOWER(?) AND id<>? LIMIT 1",
+            (name, exclude_id),
+        ).fetchone()
+
+
+def merge_person(source_id: int, target_id: int) -> None:
+    """Merge source person into target: move all faces, keep target's cover if
+    unset, then delete the source row. The target must exist and differ."""
+    if source_id == target_id:
+        return
+    with get_conn() as conn:
+        # backfill cover fields on the target from the source when unset
+        src = conn.execute(
+            "SELECT cover_uid, cover_face_id FROM people WHERE id=?", (source_id,)
+        ).fetchone()
+        tgt = conn.execute(
+            "SELECT cover_uid, cover_face_id FROM people WHERE id=?", (target_id,)
+        ).fetchone()
+        if src and tgt:
+            if not tgt["cover_uid"] and src["cover_uid"]:
+                conn.execute(
+                    "UPDATE people SET cover_uid=? WHERE id=?", (src["cover_uid"], target_id)
+                )
+            if not tgt["cover_face_id"] and src["cover_face_id"]:
+                conn.execute(
+                    "UPDATE people SET cover_face_id=? WHERE id=?",
+                    (src["cover_face_id"], target_id),
+                )
+        conn.execute(
+            "UPDATE faces SET person_id=? WHERE person_id=?", (target_id, source_id)
+        )
+        conn.execute("DELETE FROM people WHERE id=?", (source_id,))
+
+
+def person_mean_embedding(person_id: int) -> np.ndarray | None:
+    """Mean of a person's face embeddings (L2-normalized), or None."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT embedding FROM faces WHERE person_id=? AND embedding IS NOT NULL",
+            (person_id,),
+        ).fetchall()
+    if not rows:
+        return None
+    mats = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
+    mean = mats.mean(axis=0)
+    norm = float(np.linalg.norm(mean))
+    if norm == 0:
+        return None
+    return (mean / norm).astype(np.float32)
+
+
 def all_people() -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
