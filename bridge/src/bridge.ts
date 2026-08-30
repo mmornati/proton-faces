@@ -45,24 +45,90 @@ function nodeToJson(node: PhotoNode): Record<string, unknown> {
     };
 }
 
-async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, url?: URL): Promise<Response> {
+async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, url?: URL, idsOnly = false): Promise<Response> {
     const limit = url ? Number(url.searchParams.get('limit') ?? 0) : 0;
-    const uids: string[] = [];
-    for await (const item of ctx.photosSdk.iterateTimeline()) {
-        if (limit > 0 && uids.length >= limit) {
-            break;
-        }
-        uids.push(item.nodeUid);
+
+    // A full library timeline can take many minutes to paginate AND to
+    // decrypt node keys. We must stream the result as newline-delimited JSON
+    // so bytes keep flowing on the connection the whole time — otherwise Bun's
+    // idleTimeout closes it mid-fetch (clients see 'Server disconnected').
+    //
+    // Lines starting with '#' are progress/keep-alive comments; the client
+    // skips them. Every node is one JSON line.
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+            const send = (line: string) => controller.enqueue(encoder.encode(`${line}\n`));
+            try {
+                const uids: string[] = [];
+                let lastPing = Date.now();
+                for await (const item of ctx.photosSdk.iterateTimeline()) {
+                    if (limit > 0 && uids.length >= limit) {
+                        break;
+                    }
+                    if (idsOnly) {
+                        send(JSON.stringify({ uid: item.nodeUid, captureTime: item.captureTime.toISOString() }));
+                    }
+                    uids.push(item.nodeUid);
+                    if (Date.now() - lastPing > 15000) {
+                        send(`# progress: collected ${uids.length} uids`);
+                        lastPing = Date.now();
+                    }
+                }
+
+                if (!idsOnly) {
+                    let count = 0;
+                    for await (const node of ctx.photosSdk.iterateNodes(uids)) {
+                        if ('missingUid' in node) {
+                            send(JSON.stringify({ uid: node.missingUid, missing: true }));
+                        } else {
+                            send(JSON.stringify(nodeToJson(node as PhotoNode)));
+                        }
+                        count++;
+                        if (Date.now() - lastPing > 15000) {
+                            send(`# progress: ${count}/${uids.length} nodes`);
+                            lastPing = Date.now();
+                        }
+                    }
+                }
+                controller.close();
+            } catch (error) {
+                controller.error(error);
+            }
+        },
+    });
+
+    return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson' } });
+}
+
+async function fetchNodes(ctx: Awaited<ReturnType<typeof init>>, body: unknown): Promise<Response> {
+    const { uids } = (body ?? {}) as { uids?: string[] };
+    if (!Array.isArray(uids) || uids.length === 0) {
+        return Response.json({ ok: false, error: 'Expected {"uids": [...]}' }, { status: 400 });
     }
-    const nodes: Record<string, unknown>[] = [];
-    for await (const node of ctx.photosSdk.iterateNodes(uids)) {
-        if ('missingUid' in node) {
-            nodes.push({ uid: node.missingUid, missing: true });
-            continue;
-        }
-        nodes.push(nodeToJson(node as PhotoNode));
-    }
-    return Response.json(nodes);
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+            const send = (line: string) => controller.enqueue(encoder.encode(`${line}\n`));
+            try {
+                let count = 0;
+                for await (const node of ctx.photosSdk.iterateNodes(uids)) {
+                    if ('missingUid' in node) {
+                        send(JSON.stringify({ uid: node.missingUid, missing: true }));
+                    } else {
+                        send(JSON.stringify(nodeToJson(node as PhotoNode)));
+                    }
+                    count++;
+                }
+                controller.close();
+            } catch (error) {
+                controller.error(error);
+            }
+        },
+    });
+
+    return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson' } });
 }
 
 async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, body: unknown): Promise<Response> {
@@ -178,7 +244,13 @@ async function main(): Promise<void> {
                     return await ensureLoggedIn(ctx);
                 }
                 if (url.pathname === '/timeline') {
-                    return await fetchTimeline(ctx, url);
+                    return await fetchTimeline(ctx, url, false);
+                }
+                if (url.pathname === '/timeline/ids') {
+                    return await fetchTimeline(ctx, url, true);
+                }
+                if (url.pathname === '/nodes' && request.method === 'POST') {
+                    return await fetchNodes(ctx, await request.json());
                 }
                 if (url.pathname === '/thumbnails' && request.method === 'POST') {
                     return await fetchThumbnails(ctx, await request.json());

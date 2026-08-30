@@ -64,7 +64,43 @@ def _norm_bbox(bbox: list, w: int, h: int) -> list:
 
 def _sync_once() -> None:
     bridge = get_bridge()
-    items = bridge.timeline(settings.sync_limit)
+
+    if settings.sync_limit:
+        # Limited sync (testing): fetch full metadata for the N most recent.
+        items = bridge.timeline(settings.sync_limit)
+        rows = _rows_from_items(items)
+        new = upsert_photos(rows)
+        # Skip 'gone' detection on a limited sync (would flag everything older
+        # as deleted).
+        log.info("sync: %d items, %d new (limited)", len(rows), new)
+        return
+
+    # Full sync: diff a cheap uid listing against the local index, then fetch
+    # full metadata only for photos we haven't seen before.
+    ids = bridge.timeline_ids()
+    remote = {i["uid"] for i in ids}
+    with _db_conn() as conn:
+        stored = {r["uid"] for r in conn.execute("SELECT uid FROM photos")}
+
+    new_uids = sorted(remote - stored)
+    gone = sorted(stored - remote)
+    if gone:
+        mark_deleted(gone)
+
+    if new_uids:
+        items = bridge.nodes(new_uids)
+        rows = _rows_from_items(items)
+        new = upsert_photos(rows)
+        log.info("sync: %d remote, %d new, %d gone", len(remote), new, len(gone))
+    else:
+        log.info("sync: %d remote, no new, %d gone", len(remote), len(gone))
+
+    # Retry photos that failed previously (e.g. transient network errors).
+    with _db_conn() as conn:
+        conn.execute("UPDATE photos SET status='new' WHERE status='error'")
+
+
+def _rows_from_items(items: list[dict]) -> list[dict]:
     rows = []
     for item in items:
         if item.get("missing"):
@@ -79,21 +115,7 @@ def _sync_once() -> None:
                 "albums": item.get("albums") or [],
             }
         )
-    new = upsert_photos(rows)
-    # "gone" detection only makes sense on a full timeline; a limited sync
-    # would otherwise flag every older photo as deleted.
-    gone = []
-    if not settings.sync_limit:
-        known = {r["uid"] for r in rows}
-        with _db_conn() as conn:
-            stored = {r["uid"] for r in conn.execute("SELECT uid FROM photos")}
-        gone = sorted(stored - known)
-        if gone:
-            mark_deleted(gone)
-    # Retry photos that failed previously (e.g. transient network errors).
-    with _db_conn() as conn:
-        conn.execute("UPDATE photos SET status='new' WHERE status='error'")
-    log.info("sync: %d items, %d new, %d gone", len(rows), new, len(gone))
+    return rows
 
 
 def _epoch(ts) -> int | None:
