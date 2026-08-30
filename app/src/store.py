@@ -395,6 +395,27 @@ def place_stats(limit: int = 500) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def map_markers(limit: int = 1000) -> list[sqlite3.Row]:
+    """Aggregate distinct places with photo counts and mean GPS coordinates.
+
+    Returns rows with (place, city, photo_count, lat, lng, cover_uid) where city is the
+    first segment of `place` (before the comma) and cover_uid is the uid of a
+    representative photo for that place.
+    """
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT place, COUNT(*) AS photo_count, AVG(gps_lat) AS lat, AVG(gps_lng) AS lng, "
+            "(SELECT uid FROM photos p2 WHERE p2.place = photos.place "
+            "  AND p2.status='done' AND p2.thumb_path IS NOT NULL AND p2.thumb_path != '' "
+            "  ORDER BY p2.capture_time DESC LIMIT 1) AS cover_uid "
+            "FROM photos "
+            "WHERE status='done' AND place IS NOT NULL AND gps_lat IS NOT NULL AND gps_lng IS NOT NULL "
+            "AND thumb_path IS NOT NULL AND thumb_path != '' "
+            "GROUP BY place ORDER BY photo_count DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+
 def done_photos(limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(

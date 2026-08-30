@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>proton-faces</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <style>
 :root {
   --bg: #121417;
@@ -150,6 +155,25 @@ main { padding: 18px; }
   padding: 10px 18px; border-radius: 10px; z-index: 300; font-size: 14px;
   box-shadow: 0 6px 24px rgba(0,0,0,.4);
 }
+/* places map */
+#mapwrap { margin-bottom: 16px; }
+#map { height: 45vh; border-radius: 12px; border: 1px solid var(--border); background: #14171a; z-index: 1; }
+.leaflet-container { background: #14171a; font-family: inherit; }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel); color: var(--text); }
+.leaflet-popup-content { margin: 10px 12px; }
+.leaflet-popup-content img { width: 120px; height: 120px; object-fit: cover; border-radius: 8px; display: block; margin-bottom: 6px; }
+.leaflet-popup-content .pcity { font-weight: 600; font-size: 14px; }
+.leaflet-popup-content .pcount { color: var(--muted); font-size: 12px; margin: 2px 0 8px; }
+.leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
+.marker-cluster-small, .marker-cluster-medium, .marker-cluster-large {
+  background-color: rgba(77,163,255,.25);
+}
+.marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
+  background-color: rgba(77,163,255,.7); color: #fff;
+}
+.leaflet-control-attribution { font-size: 9px; background: rgba(18,20,23,.8); color: var(--muted); }
+.leaflet-control-attribution a { color: var(--accent); }
+.leaflet-bar a, .leaflet-bar a:hover { background: var(--panel2); color: var(--text); border-color: var(--border); }
 </style>
 </head>
 <body>
@@ -173,6 +197,7 @@ main { padding: 18px; }
 </header>
 <main>
   <div id="counts"></div>
+  <div id="mapwrap" style="display:none"><div id="map"></div></div>
   <div id="view"></div>
 </main>
 <div id="detail">
@@ -192,6 +217,7 @@ main { padding: 18px; }
 const $ = (s) => document.querySelector(s);
 let state = { view: "photos", q: "", photos: [], people: [] };
 let popoverFace = null;
+let map = null, markerGroup = null;
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -374,27 +400,64 @@ async function loadPeople() {
   });
 }
 
+function showPlacePhotos(place) {
+  state.view = "photos";
+  document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
+  document.querySelector('nav a[data-view="photos"]').classList.add("active");
+  state.q = "";
+  $("#q").value = "";
+  $("#mapwrap").style.display = "none";
+  api(`/api/photos?place=${encodeURIComponent(place)}&limit=500`)
+    .then((rows) => renderPhotos(rows.photos))
+    .catch((e) => toast("Error: " + e.message));
+}
+
+function initMap() {
+  if (map) return;
+  map = L.map("map", { worldCopyJump: true }).setView([46.2, 2.2], 5);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map);
+  markerGroup = L.markerClusterGroup();
+  map.addLayer(markerGroup);
+}
+
 async function loadPlaces() {
   const data = await api("/api/places?limit=500");
   const el = $("#view");
   if (!data.places.length) {
+    $("#mapwrap").style.display = "none";
     el.innerHTML = '<div class="empty">No places yet — GPS enrichment is still running or no photos have GPS.</div>';
     return;
   }
   $("#counts").textContent = `${data.places.length} places`;
+  initMap();
+  $("#mapwrap").style.display = "";
+  setTimeout(() => map.invalidateSize(), 50);
+  markerGroup.clearLayers();
+  const mdata = await api("/api/map?limit=1000");
+  for (const m of mdata.markers) {
+    const img = m.thumb_url ? `<img loading="lazy" src="${m.thumb_url}" alt="">` : "";
+    const pop = L.popup().setContent(
+      `${img}<div class="pcity">${esc(m.city)}</div><div class="pcount">${m.count} photos</div>` +
+      `<button class="small" data-place="${esc(m.place)}">View photos</button>`
+    );
+    const marker = L.marker([m.lat, m.lng]).bindPopup(pop);
+    marker.on("popupopen", () => {
+      pop.getElement().querySelector("button[data-place]").addEventListener("click", () => {
+        showPlacePhotos(m.place);
+      });
+    });
+    markerGroup.addLayer(marker);
+  }
   el.innerHTML = `<div class="places-grid">${data.places.map((p) => `
     <div class="place" data-place="${esc(p.place)}">
       <span class="city">${esc(p.city)}</span>
       <span class="count">${p.count} photos</span>
     </div>`).join("")}</div>`;
   el.querySelectorAll(".place").forEach((item) => item.addEventListener("click", async () => {
-    state.view = "photos";
-    document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
-    document.querySelector('nav a[data-view="photos"]').classList.add("active");
-    state.q = "";
-    $("#q").value = "";
-    const rows = await api(`/api/photos?place=${encodeURIComponent(item.dataset.place)}&limit=500`);
-    renderPhotos(rows.photos);
+    showPlacePhotos(item.dataset.place);
   }));
 }
 
@@ -438,7 +501,7 @@ document.querySelectorAll("nav a").forEach((a) => {
     if (state.view === "people") loadPeople();
     else if (state.view === "unassigned") loadUnassigned();
     else if (state.view === "places") loadPlaces();
-    else loadPhotos();
+    else { $("#mapwrap").style.display = "none"; loadPhotos(); }
   });
 });
 
@@ -450,6 +513,7 @@ $("#btn-search").addEventListener("click", async () => {
     document.querySelector('nav a[data-view="photos"]').classList.add("active");
     state.view = "photos";
   }
+  $("#mapwrap").style.display = "none";
   loadPhotos();
 });
 $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#btn-search").click(); });

@@ -27,6 +27,7 @@ from store import (
     faces_for_photo,
     get_photo,
     get_person,
+    map_markers,
     photos_for_person,
     place_stats,
     rename_person,
@@ -101,6 +102,25 @@ def api_places(limit: int = 500):
         city = r["place"].split(",")[0].strip()
         places.append({"place": r["place"], "city": city, "count": r["photo_count"]})
     return {"places": places}
+
+
+@app.get("/api/map")
+def api_map(limit: int = 1000):
+    rows = map_markers(limit=limit)
+    markers = []
+    for r in rows:
+        city = r["place"].split(",")[0].strip()
+        markers.append(
+            {
+                "place": r["place"],
+                "city": city,
+                "count": r["photo_count"],
+                "lat": r["lat"],
+                "lng": r["lng"],
+                "thumb_url": f"/api/photos/{r['cover_uid']}/thumb" if r["cover_uid"] else None,
+            }
+        )
+    return {"markers": markers}
 
 
 @app.get("/api/photos/{uid}")
