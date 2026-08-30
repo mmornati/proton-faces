@@ -435,6 +435,33 @@ def person_mean_embedding(person_id: int) -> np.ndarray | None:
     return (mean / norm).astype(np.float32)
 
 
+def person_mean_embeddings() -> dict[int, np.ndarray]:
+    """Mean embedding per person, computed with a single query.
+
+    Returns {person_id: L2-normalized mean embedding} for every person that
+    has at least one face embedding.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT person_id, embedding FROM faces "
+            "WHERE person_id IS NOT NULL AND embedding IS NOT NULL"
+        ).fetchall()
+    if not rows:
+        return {}
+    by_person: dict[int, list[np.ndarray]] = {}
+    for r in rows:
+        by_person.setdefault(r["person_id"], []).append(
+            np.frombuffer(r["embedding"], dtype=np.float32)
+        )
+    out: dict[int, np.ndarray] = {}
+    for pid, mats in by_person.items():
+        mean = np.stack(mats).mean(axis=0)
+        norm = float(np.linalg.norm(mean))
+        if norm > 0:
+            out[pid] = (mean / norm).astype(np.float32)
+    return out
+
+
 def all_people() -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(

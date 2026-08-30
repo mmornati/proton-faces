@@ -551,43 +551,73 @@ async function loadMorePhotos() {
 
 async function loadPeople() {
   const data = await api("/api/people");
-  const el = $("#view");
-  if (!data.people.length) {
-    el.innerHTML = '<div class="empty">No people found yet.</div>';
-    return;
-  }
-  el.innerHTML = `<div class="dups" id="dups"><h3>Suggested merges</h3><div class="dup"><span class="dupsim">Checking…</span></div></div>
-    <div class="people-grid">${data.people.map((p) => `
+  renderPeopleGrid(data.people);
+}
+
+function personCardHtml(p) {
+  return `
     <div class="person" data-id="${p.id}">
       ${p.cover_url ? `<img src="${p.cover_url}" alt="">` : '<div style="width:84px;height:84px;border-radius:50%;background:var(--panel2);margin:0 auto 8px"></div>'}
       <div class="name">${esc(p.name || "Unknown person")}</div>
       <div class="meta">${p.photo_count} photos · ${p.face_count} faces</div>
       <input class="rename" placeholder="Name" value="${esc(p.name || "")}">
       <button class="small merge-btn" data-id="${p.id}">Merge into…</button>
-    </div>`).join("")}</div>`;
+    </div>`;
+}
+
+function renderPeopleGrid(people) {
+  const el = $("#view");
+  if (!people.length) {
+    el.innerHTML = '<div class="empty">No people found yet.</div>';
+    return;
+  }
+  el.innerHTML = `<div class="dups" id="dups"><h3>Suggested merges</h3><div class="dup"><span class="dupsim">Checking…</span></div></div>
+    <div class="people-grid">${people.map(personCardHtml).join("")}</div>`;
+  bindPersonCards(people);
   loadDuplicates();
+}
+
+function bindPersonCards(people) {
+  const el = $("#view");
   el.querySelectorAll(".person").forEach((card) => {
+    const pid = +card.dataset.id;
     card.querySelector(".rename").addEventListener("click", (e) => e.stopPropagation());
     card.querySelector(".rename").addEventListener("keydown", async (e) => {
       if (e.key === "Enter") {
         e.stopPropagation();
         const name = e.target.value.trim();
         if (!name) return;
-        const r = await api(`/api/people/${card.dataset.id}/name`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
-        if (r.merged) toast(`Merged into existing "…${name}" (auto-tagged ${r.assigned_similar || 0}).`);
-        loadPeople();
+        const r = await api(`/api/people/${pid}/name`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+        if (r.merged) {
+          toast(`Merged into existing "…${name}" (auto-tagged ${r.assigned_similar || 0}).`);
+          patchAfterMerge(pid, r.target_id, r);
+        } else {
+          toast("Renamed.");
+        }
       }
     });
     card.querySelector(".merge-btn").addEventListener("click", (e) => {
       e.stopPropagation();
-      openMergePicker(+card.dataset.id, data.people);
+      openMergePicker(pid, people);
     });
     card.addEventListener("click", async () => {
-      const data = await api(`/api/people/${card.dataset.id}/photos`);
+      const data = await api(`/api/people/${pid}/photos`);
       renderPhotos(data.photos);
       $("#counts").textContent = `${data.count} faces`;
     });
   });
+}
+
+function patchAfterMerge(srcId, targetId, r) {
+  const grid = document.querySelector(".people-grid");
+  if (!grid) { loadPeople(); return; }
+  const src = grid.querySelector(`.person[data-id="${srcId}"]`);
+  const tgt = grid.querySelector(`.person[data-id="${targetId}"]`);
+  if (src) src.remove();
+  if (tgt && r.photo_count != null) {
+    tgt.querySelector(".meta").textContent = `${r.photo_count} photos · ${r.face_count} faces`;
+  }
+  loadDuplicates();
 }
 
 let mpSrcId = null;
@@ -630,7 +660,7 @@ function renderMergePickerList() {
     const r = await api(`/api/people/${mpSrcId}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: target }) });
     closeMergePicker();
     toast(`Merged into ${mpPeople.find((p) => p.id === target)?.name || "person " + target}. Auto-tagged ${r.assigned_similar || 0} faces.`);
-    loadPeople();
+    patchAfterMerge(mpSrcId, target, r);
   }));
 }
 
@@ -664,7 +694,7 @@ async function loadDuplicates() {
         const a = +d.dataset.a, b = +d.dataset.b;
         const r = await api(`/api/people/${a}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: b }) });
         toast(`Merged. Auto-tagged ${r.assigned_similar || 0} faces.`);
-        loadPeople();
+        patchAfterMerge(a, b, r);
       });
     });
   } catch (e) {

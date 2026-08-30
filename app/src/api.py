@@ -32,6 +32,7 @@ from store import (
     map_markers,
     merge_person,
     person_mean_embedding,
+    person_mean_embeddings,
     photos_for_person,
     place_stats,
     rename_person,
@@ -49,6 +50,15 @@ log = logging.getLogger("api")
 app = FastAPI(title="proton-faces", version="0.1.0")
 
 _STATIC = Path(__file__).parent / "static"
+
+# TTL cache for the (expensive) duplicates computation.
+_DUP_CACHE_TTL = 30.0
+_dups_cache: tuple[float, dict] | None = None
+
+
+def _invalidate_dups_cache() -> None:
+    global _dups_cache
+    _dups_cache = None
 
 
 # --- helpers ---------------------------------------------------------------
@@ -440,6 +450,7 @@ def api_face_assign(face_id: int, body: dict):
             if sim_row[2] is None:  # person_id
                 assign_face_person(sim_row[0], person_id)
                 assigned += 1
+    _invalidate_dups_cache()
     return {
         "ok": True,
         "person_id": person_id,
@@ -464,8 +475,17 @@ def api_people_rename(person_id: int, body: dict):
     if existing is not None:
         merge_person(person_id, existing["id"])
         _merge_propagate(existing["id"])
-        return {"ok": True, "merged": True, "target_id": existing["id"]}
+        _invalidate_dups_cache()
+        tgt = get_person(existing["id"])
+        return {
+            "ok": True,
+            "merged": True,
+            "target_id": existing["id"],
+            "photo_count": tgt["photo_count"] if tgt else None,
+            "face_count": tgt["face_count"] if tgt else None,
+        }
     rename_person(person_id, name)
+    _invalidate_dups_cache()
     return {"ok": True, "merged": False}
 
 
@@ -482,24 +502,38 @@ def api_people_merge(source_id: int, body: dict):
         raise HTTPException(404, "target person not found")
     merge_person(source_id, target_id)
     assigned = _merge_propagate(target_id)
-    return {"ok": True, "target_id": target_id, "assigned_similar": assigned}
+    _invalidate_dups_cache()
+    tgt = get_person(target_id)
+    return {
+        "ok": True,
+        "target_id": target_id,
+        "assigned_similar": assigned,
+        "photo_count": tgt["photo_count"] if tgt else None,
+        "face_count": tgt["face_count"] if tgt else None,
+    }
 
 
 @app.get("/api/people/duplicates")
 def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
     """Find people whose mean face embeddings are highly similar (likely dupes).
 
-    Vectorized with a single (N x D) @ (D x N) matrix multiply so it stays
-    fast even with thousands of people.
+    Vectorized with a single (N x D) @ (D x N) matrix multiply and cached for
+    a few seconds so repeated reloads are cheap.
     """
+    global _dups_cache
+    now = time.time()
+    if _dups_cache is not None and now - _dups_cache[0] < _DUP_CACHE_TTL:
+        return _dups_cache[1]
+
     people = all_people()
     n = len(people)
     if n < 2:
         return {"duplicates": []}
+    means = person_mean_embeddings()  # single query, one entry per person w/ faces
+    idx = []
     mats = []
-    idx = []  # positions in `people` that have an embedding
     for i, p in enumerate(people):
-        emb = person_mean_embedding(p["id"])
+        emb = means.get(p["id"])
         if emb is not None:
             mats.append(emb)
             idx.append(i)
@@ -511,7 +545,9 @@ def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
     sims = S[iu]
     mask = sims >= threshold
     if not mask.any():
-        return {"duplicates": []}
+        resp = {"duplicates": []}
+        _dups_cache = (now, resp)
+        return resp
     hits = np.argsort(-sims[mask])[:limit]
     dups = []
     for k in hits:
@@ -541,7 +577,9 @@ def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
                 },
             }
         )
-    return {"duplicates": dups}
+    resp = {"duplicates": dups}
+    _dups_cache = (now, resp)
+    return resp
 
 
 @app.get("/api/people/{person_id}/photos")
