@@ -1,91 +1,136 @@
-# Proton Faces
+<div align="center">
 
-Private, self-hosted face / object / location search over your Proton Drive **Photos**
-library. Everything runs on your own hardware inside Docker — your photos never leave
-your machine, and nothing is ever written back to Proton Drive.
+# 📸 Proton Faces
 
-It works exactly like the search bar of a photo service (people, places, objects),
-but for your Proton Photos, fully offline:
+**Private, self-hosted face · object · location search for your Proton Drive Photos.**
 
-- **People** — automatic face detection + clustering into persons you can name, plus
-  "who is this?" search by example photo.
-- **Objects & scenes** — free-text search ("dog", "car", "beach", "Lille") using CLIP.
-- **Places** — reverse-geocoded location search for photos that carry GPS metadata.
-- **Zero download for browsing** — a tiny 512px thumbnail is cached locally for every
-  photo; browsing the results never touches Proton again. Full-resolution preview is
-  only fetched on demand when you click a photo.
+Everything runs on your own hardware inside Docker — your photos never leave your machine, and
+nothing is ever written back to Proton Drive.
 
-## How it works
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Made with FastAPI](https://img.shields.io/badge/made%20with-FastAPI-009688.svg)](https://fastapi.tiangolo.com)
+[![ML: ONNX Runtime](https://img.shields.io/badge/ML-ONNX%20Runtime-000000.svg)](https://onnxruntime.ai)
+[![Stack: Docker](https://img.shields.io/badge/stack-Docker-2496ED.svg)](https://www.docker.com)
+[![Privacy: no telemetry](https://img.shields.io/badge/privacy-no%20telemetry-brightgreen.svg)](#privacy)
+
+<br>
+
+<video
+  src="https://res.cloudinary.com/blog-mornati-net/video/upload/v1788111273/aqarlh1taqbygcsode6o.mp4"
+  poster="https://res.cloudinary.com/blog-mornati-net/video/upload/so_3/v1788111273/aqarlh1taqbygcsode6o.jpg"
+  autoplay
+  muted
+  loop
+  playsinline
+  controls
+  preload="metadata"
+  width="100%"></video>
+
+<br>
+
+*Search your whole library like Google Photos — but 100% private and offline.*
+
+</div>
+
+---
+
+## ✨ What it does
+
+Proton Photos are **end-to-end encrypted** — so nobody but you (and your own machine) can ever
+look at them. That also means *you* have to do the searching. Proton Faces turns your encrypted
+photo library into a fully searchable archive, without ever uploading a single byte back:
+
+| Capability | How it works | Status |
+|---|---|---|
+| 👥 **People** | RetinaFace + ArcFace detect and embed every face; HDBSCAN clusters them into persons you can name | ✅ |
+| 🔍 **"Who is this?"** | Drop a photo of a face → find every other photo of the same person | ✅ |
+| 🏷️ **Face tagging UX** | Face-crop covers, clickable face boxes on each photo, name one face and **all look-alikes are auto-tagged** | ✅ |
+| 📍 **Places** | GPS reverse-geocoding → **interactive world map** with clustered markers (Leaflet + OSM) | ✅ |
+| 📝 **Free-text search** | Zero-shot CLIP — type *"dog"*, *"car"*, *"beach"*, *"Lille"* | ✅ |
+| 📱 **iPhone (HEIC) photos** | Proton serves no preview → we decode the full-res file locally and generate our own thumbnail | ✅ |
+| 🗺️ **Unassigned queue** | Review faces that didn't cluster yet and name them in bulk | ✅ |
+| 🎥 **Videos** | Detected and indexed, hidden from photo grids (no preview available) | ✅ |
+
+---
+
+## 🎬 Demo
+
+The video above shows the app in action: people clustering, face tagging, text search,
+the places map and photo browsing. A direct MP4 is embedded in this README (GitHub renders
+HTML5 `<video>` natively).
+
+> **Why MP4 and not a GIF?** The clip is ~35 MB as video. As a GIF it would balloon to
+> *hundreds of megabytes* — and GitHub refuses to render images over 25 MB. Video is smaller,
+> sharper, and keeps its sound. A static poster frame is served by Cloudinary so the README
+> still looks great before the video loads.
+
+---
+
+## 🏗️ How it works
 
 ```
-                         ┌────────────────────────────────────────────┐
-                         │                 LOCAL SERVER                │
-                         │                                            │
-  Proton Photos  ───────▶│   proton-bridge (Bun + Proton Drive SDK)   │
-  (E2E encrypted)        │   • timeline diff                          │
-                         │   • 512px thumbnail fetch (Type1)          │
-                         │   • full-res download on demand            │
-                         │                    │                       │
-                         │                    ▼                       │
-                         │   proton-faces (Python + FastAPI)          │
-                         │   • InsightFace (RetinaFace + ArcFace)     │
-                         │   • OpenCLIP (ViT-B/32) for object search  │
-                         │   • SQLite + numpy vector store            │
-                         │   • HDBSCAN people clustering              │
-                         │   • vanilla-JS web UI on :8080             │
-                         └────────────────────────────────────────────┘
+                       ┌──────────────────────────────────────────────────┐
+                       │                    LOCAL SERVER                   │
+                       │                                                  │
+  Proton Photos ──────▶│  proton-bridge (Bun + Proton Drive SDK)          │
+  (E2E encrypted)      │  • timeline diff (incremental, NDJSON-streamed)  │
+                       │  • 512px thumbnail fetch (Type1)                 │
+                       │  • full-res download on demand                   │
+                       │                    │                             │
+                       │                    ▼                             │
+                       │  proton-faces (Python + FastAPI)                 │
+                       │  • InsightFace (RetinaFace + ArcFace)            │
+                       │  • CLIP ViT-B/32 (ONNX Runtime, no PyTorch)      │
+                       │  • SQLite + numpy vector store                   │
+                       │  • HDBSCAN people clustering                     │
+                       │  • reverse-geocoder for place names              │
+                       │  • pillow-heif for local HEIC thumbnails         │
+                       │  • vanilla-JS web UI on :8080                    │
+                       └──────────────────────────────────────────────────┘
 ```
 
-Proton Photos are end-to-end encrypted. The **bridge** uses the official
-[`@protontech/drive-sdk`](https://github.com/ProtonDriveApps/sdk) (via the Proton Drive
-CLI machinery) to authenticate with your existing session, download thumbnails, and
-decrypt them locally. Every photo is processed **once** (thumbnail downloaded →
-recognition run → thumbnail cached → original file never kept), and the pipeline is
-**fully read-only** against Proton — no uploads, no writes, no deletions.
+- The **bridge** authenticates with your existing Proton session and is the **only** component
+  that ever talks to Proton. It is **strictly read-only** — no uploads, no writes, no deletions.
+- Every photo is processed **once**: thumbnail downloaded (or decoded locally for HEIC) →
+  recognition run (faces + CLIP) → small 512px thumbnail cached → original bytes discarded.
+- The whole pipeline is **resumable** and runs in the background: add photos to Proton and the
+  index catches up automatically.
 
 ## Why two containers?
 
-| Container       | Base                        | Role                                                        |
-|-----------------|-----------------------------|-------------------------------------------------------------|
-| `proton-bridge` | `oven/bun` + Proton SDK repo| The only component that talks to Proton (auth, thumbnails)  |
-| `proton-faces`  | `python:3.12-slim`          | All machine learning, indexing, search API, web UI          |
+| Container       | Base                              | Role                                                        |
+|-----------------|-----------------------------------|-------------------------------------------------------------|
+| `proton-bridge` | `oven/bun` + Proton SDK monorepo  | The only component that talks to Proton (auth, thumbnails)  |
+| `proton-faces`  | `python:3.11-slim`                | All machine learning, indexing, search API, web UI          |
 
-The bridge wraps the Proton Drive SDK — the published npm `@protontech/drive-sdk` cannot
-run standalone because its authentication module is not published, so the bridge is
-built inside the Proton Drive SDK monorepo at image build time (pinned tag `cli/v0.8.0`).
-You never need to clone it yourself; it happens automatically in the Docker build.
+The published npm `@protontech/drive-sdk` cannot run standalone — its authentication module is
+not published — so the bridge is built inside the Proton Drive SDK monorepo at image build time
+(pinned tag `cli/v0.8.0`). You never need to clone it yourself; the Docker build does it
+automatically.
 
-## Requirements
+---
 
-- A Proton account with Photos enabled
-- An existing Proton Drive CLI session (or the ability to log in once)
-- A machine with Docker + Docker Compose
-  - 4+ CPU cores recommended for reasonable indexing speed (no GPU needed)
-  - Enough disk for the thumbnail cache (~30–60 KB × your photo count)
-
-## Quick start
+## 🚀 Quick start
 
 ### 1. Get a Proton session file
 
-`proton-faces` authenticates with a session file that the Proton Drive CLI normally keeps
-in your keyring / `pass` store. Export it to a file:
+`proton-faces` authenticates with the session file the Proton Drive CLI normally keeps in your
+keyring / `pass` store:
 
 ```bash
 # If you have the CLI session in `pass`:
 pass show ch.proton.drive/drive-sdk-cli/auth-session > credentials/auth-session.json
 ```
 
-> The file contains your account tokens. Keep it private — it is mounted read-only into
-> the bridge container and should never be committed to git (see `.gitignore`).
+> The file contains your account tokens. Keep it private — it is mounted read-only into the
+> bridge container and should never be committed to git (see `.gitignore`).
 
 ### 2. Configure
-
-Copy `.env.example` to `.env` and adjust:
 
 ```bash
 cp .env.example .env
 # DATA_DIR=/srv/proton-faces/data   # where thumbnails + indexes live
-# PHOTOS_DIR=                        # optional: local Takeout export for GPS enrichment
+# PHOTOS_DIR=                        # optional: local Google Takeout export for GPS enrichment
 ```
 
 ### 3. Start
@@ -94,87 +139,102 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Then open http://localhost:8080.
+Then open **http://localhost:8080**.
 
-Prebuilt images are published to GitHub Container Registry, so `docker compose up`
-pulls them — no building on the server. To build from source instead (e.g. to test
-local changes), use `docker compose up -d --build`. If you must build on a shared
-box and don't want the build to starve other services, see `scripts/build.sh` for
-how to cap BuildKit's CPU usage (or simply pull the prebuilt images, which avoids
-building entirely).
+Prebuilt images are published to the GitHub Container Registry, so `docker compose up` pulls
+them — no building on the server. To build from source instead, use
+`docker compose up -d --build`. On a shared box, `scripts/build.sh` shows how to cap BuildKit's
+CPU usage so a build never starves your other services.
 
-The indexer starts immediately. The first run processes your whole library and takes
-some time (roughly 1–2 s per photo on a modern CPU — a 100k-photo library takes about a
-day, fully resumable). The web UI becomes useful right away as results stream in.
+The indexer starts immediately and is fully resumable. The first run processes your whole
+library (roughly 1–2 s per photo on a modern CPU — a 100k-photo library takes about a day), and
+the web UI becomes useful right away as results stream in.
 
-## Usage / web UI
+---
 
-- **Search bar** — type free text ("dog", "car", "beach"). Results appear as they are
-  indexed.
-- **People** — detected faces are auto-clustered; click a person to see their photos,
-  click the name to rename them.
-- **Search by example** — drop a photo of a face to find every photo containing that
-  person.
-- Click any result to load the full-resolution photo from Proton on demand.
+## 🖥️ Usage / web UI
 
-## Search capabilities
+- **Search bar** — free text: *"dog"*, *"car"*, *"beach"*, *"Lille"*. Zero-shot CLIP.
+- **Photos** — infinite grid of cached thumbnails; click any photo for the full-resolution
+  download (fetched from Proton on demand, never stored).
+- **People** — auto-clustered persons with face-crop avatars. Click a person to see their
+  photos, click the name to rename.
+- **Face tagging** — every photo shows clickable boxes around detected faces. Name a face and
+  **every similar unassigned face is tagged automatically**; assign to an existing person, or
+  unassign.
+- **Unassigned** — a queue of every face that hasn't been clustered yet, so you can name the
+  stragglers.
+- **Places** — a **Leaflet world map** with clustered city markers, plus a city list. Click any
+  marker to filter the photo grid to that place.
+- **Search by example** — drop a photo of a face to find every photo containing that person.
 
-| What you type / do          | Backed by                          | Notes                                        |
-|-----------------------------|------------------------------------|----------------------------------------------|
-| "Lille", "Paris"            | GPS reverse-geocoding              | Only for photos with GPS metadata            |
-| "dog", "car", "beach"       | CLIP text–image similarity         | Zero-shot, no training needed                |
-| A face photo                | ArcFace face embeddings            | Returns photos of the same person            |
-| Person name (people tab)    | HDBSCAN clusters + your labels     | Cluster is built incrementally               |
+---
 
-## Project layout
+## 🔍 Search capabilities
+
+| What you type / do              | Backed by                          | Notes                                    |
+|---------------------------------|------------------------------------|------------------------------------------|
+| *"Lille"*, *"Paris"*            | GPS reverse-geocoding              | Photos with GPS metadata                 |
+| *"dog"*, *"car"*, *"beach"*     | CLIP text–image similarity         | Zero-shot, no training needed            |
+| A face photo                    | ArcFace face embeddings            | Returns photos of the same person        |
+| Person name (People tab)        | HDBSCAN clusters + your labels     | Cluster is built incrementally           |
+| Place marker on the map         | GPS aggregation by place           | Clustered markers, click to filter       |
+
+---
+
+## 📁 Project layout
 
 ```
 app/              Python indexer + search API + web UI
   src/
-    bridge.py     HTTP client for the bridge container
-    indexer.py    timeline diff / download / recognize / delete pipeline
+    indexer.py    timeline diff / download / recognize / fullres / delete pipeline
     faces.py      InsightFace face detection + embeddings
-    clip.py       OpenCLIP image + text embeddings
+    clip.py       CLIP ViT-B/32 embeddings (ONNX Runtime)
     cluster.py    HDBSCAN people clustering
+    geocode.py    offline reverse-geocoding
     store.py      SQLite schema + numpy vector store
     api.py        FastAPI application
-    static/       vanilla-JS frontend
+    static/       vanilla-JS frontend (incl. Leaflet map)
 bridge/           Bun service wrapping the Proton Drive SDK
-scripts/          helper scripts (session export, backup, one-off commands)
+scripts/          helper scripts (session export, backup, build)
 compose.yml       two-container deployment
+.github/workflows GHCR image publishing
 ```
 
-## Configuration
+---
+
+## ⚙️ Configuration
 
 Environment variables (see `.env.example`):
 
-| Variable                | Default                 | Description                                  |
-|-------------------------|-------------------------|----------------------------------------------|
-| `DATA_DIR`              | `./data`                | Persistent data (thumbnails, SQLite, vectors)|
-| `PHOTOS_DIR`            | *(empty)*               | Local Google Takeout export — used to enrich |
-|                         |                         | photos with GPS/EXIF data without any Proton |
-|                         |                         | full-res download                            |
-| `PORT`                  | `8080`                  | Web UI port                                  |
-| `SYNC_INTERVAL`         | `300`                   | Seconds between timeline diffs               |
-| `WORKERS`               | `2`                     | Parallel recognition workers                 |
-| `BRIDGE_URL`            | `http://proton-bridge:8090` | Bridge container address                  |
-| `SYNC_LIMIT`            | `0`                     | Only index the newest N photos (0 = all) — handy for testing |
-| `GPS_INTERVAL`          | `21600`                 | Seconds between GPS/place enrichment runs (default 6 h)      |
+| Variable              | Default                    | Description                                 |
+|-----------------------|----------------------------|---------------------------------------------|
+| `DATA_DIR`            | `./data`                   | Persistent data (thumbnails, SQLite, vectors) |
+| `PHOTOS_DIR`          | *(empty)*                  | Local Google Takeout export — used to enrich photos with GPS/EXIF without any Proton full-res download |
+| `PORT`                | `8080`                     | Web UI port                                 |
+| `SYNC_INTERVAL`       | `300`                      | Seconds between timeline diffs              |
+| `SYNC_LIMIT`          | `0`                        | Only index the newest N photos (0 = all) — handy for testing |
+| `WORKERS`             | `2`                        | Parallel recognition workers                |
+| `CLUSTER_INTERVAL`    | `1800`                     | Seconds between people-clustering runs      |
+| `GPS_INTERVAL`        | `21600`                    | Seconds between GPS/place enrichment runs   |
+| `FACE_SIM_THRESHOLD`  | `0.45`                     | Cosine similarity for auto-tagging faces    |
+| `MIN_CLUSTER_SIZE`    | `2`                        | Minimum faces to form a person cluster      |
+| `BRIDGE_URL`          | `http://proton-bridge:8090`| Bridge container address                    |
+| `MODELS_DIR`          | `DATA_DIR/models`          | Where ML models are stored                  |
+| `LOG_LEVEL`           | `INFO`                     | Logging verbosity                           |
 
 ### GPS / place enrichment
 
-Photos imported from a Google Takeout export keep their GPS metadata in local
-`*.supplemental-metadata.json` sidecars (Proton's API does not expose location).
-If you still have that export on disk, point `PHOTOS_DIR` at it. The app then
-enriches GPS **automatically** in the background every `GPS_INTERVAL` seconds:
+Proton's API does not expose photo location, but your Google Takeout export keeps GPS in local
+`*.supplemental-metadata.json` sidecars. Point `PHOTOS_DIR` at that export and the app will
+enrich GPS **automatically** in the background:
 
-- it sha1-hashes the local photo files (cache is kept in
-  `DATA_DIR/gps_sha1_cache.json` so later runs are cheap) and matches against
-  the Proton timeline by content hash, so **no full-res download is ever needed**;
+- it sha1-hashes the local photo files (cache in `DATA_DIR/gps_sha1_cache.json`, so later runs
+  are cheap) and matches against the Proton timeline by content hash — **no full-res download
+  ever needed**;
 - then reverse-geocodes every photo that has GPS but no place name yet.
 
-You can also run it manually (e.g. right after a fresh import) inside the app
-container:
+Run it manually (e.g. after a fresh import):
 
 ```bash
 docker compose exec app python main.py --backfill-gps
@@ -182,29 +242,39 @@ docker compose exec app python main.py --backfill-gps
 docker compose exec app python main.py --backfill-gps --rebuild-cache
 ```
 
-The **Places** tab lists reverse-geocoded cities with photo counts; clicking one
-shows all photos taken there. New photos added directly to Proton (no Takeout
-export) have no sidecar and no API-exposed GPS, so they stay without a place
-label.
+### iPhone (HEIC) photos
 
-## Roadmap / ideas
+Proton serves **no preview** for HEIC/HEIF files. Proton Faces handles them automatically:
+the full-resolution file is downloaded once (read-only), decoded locally with `pillow-heif`,
+downscaled to a 512px thumbnail, and then processed through the normal pipeline (faces + CLIP).
+The full-res bytes are discarded — only the small thumbnail is kept.
 
-- Face comparison confidence tuning per library
+---
+
+## 🧭 Roadmap / ideas
+
+- Merge / split people clusters
 - Album-aware browsing
-- Background full-res GPS enrichment (one full download per photo, then delete)
+- Video thumbnails via ffmpeg frame extraction
+- Deduplication by content hash
+- A "map of one person" view (every photo of a person plotted)
 
-## Privacy
+---
 
-- No telemetry, no cloud APIs. The only network calls go to Proton's servers.
-- The ML models run locally (ONNX + OpenCLIP on CPU).
-- The bridge is strictly read-only. The only files ever kept are the small thumbnails
-  and the index databases in `DATA_DIR`.
+## 🔒 Privacy
 
-## License
+- **No telemetry, no cloud APIs.** The only network calls go to Proton's servers.
+- All ML models run **locally** (ONNX Runtime + CLIP on CPU, no GPU required).
+- The bridge is strictly **read-only** against Proton.
+- The only files ever kept are the small thumbnails and the index databases in `DATA_DIR`.
+
+---
+
+## 📄 License
 
 [MIT](LICENSE)
 
-## Disclaimer
+## ⚠️ Disclaimer
 
-This project is not affiliated with Proton AG. "Proton", "Proton Drive" and "Proton Photos"
-are trademarks of their respective owners. Use at your own risk.
+This project is not affiliated with Proton AG. "Proton", "Proton Drive" and "Proton Photos" are
+trademarks of their respective owners. Use at your own risk.
