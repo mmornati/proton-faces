@@ -123,6 +123,11 @@ main { padding: 18px; }
 #mergepickhead .srcname { font-size: 15px; font-weight: 600; }
 #mergepickhead .srchint { color: var(--muted); font-size: 12px; margin-top: 2px; }
 #mergepickhead button { margin-left: auto; }
+#mpsearch {
+  margin: 10px 12px 0; padding: 9px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel2); color: var(--text); font-size: 14px;
+}
+#mpsearch:focus { outline: none; border-color: var(--accent); }
 #mergepicklist { overflow: auto; padding: 8px; }
 .mpitem { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 10px; cursor: pointer; width: 100%; border: 0; background: none; color: var(--text); text-align: left; }
 .mpitem:hover { background: var(--panel2); }
@@ -275,6 +280,7 @@ main { padding: 18px; }
       </div>
       <button id="mpclose" class="secondary small">Close</button>
     </div>
+    <input id="mpsearch" type="text" placeholder="Search name…" autocomplete="off">
     <div id="mergepicklist"></div>
   </div>
 </div>
@@ -584,14 +590,33 @@ async function loadPeople() {
   });
 }
 
+let mpSrcId = null;
+let mpPeople = [];
+
 function openMergePicker(srcId, people) {
   const src = people.find((p) => p.id === srcId) || { id: srcId, name: null, cover_url: null };
   $("#mpsrcimg").src = src.cover_url || "";
   $("#mpsrcname").textContent = src.name || "Unknown person";
-  const others = people.filter((p) => p.id !== srcId);
+  mpSrcId = srcId;
+  mpPeople = people;
+  $("#mpsearch").value = "";
+  renderMergePickerList();
+  $("#mergepick").classList.add("open");
+  $("#mpsearch").focus();
+}
+
+function renderMergePickerList() {
+  const q = $("#mpsearch").value.trim().toLowerCase();
   const list = $("#mergepicklist");
-  list.innerHTML = others.length
-    ? others.map((p) => `
+  const others = mpPeople.filter((p) => p.id !== mpSrcId);
+  const filtered = q
+    ? others.filter((p) =>
+        (p.name || "").toLowerCase().includes(q) ||
+        String(p.id).includes(q.replace(/^#/, ""))
+      )
+    : others;
+  list.innerHTML = filtered.length
+    ? filtered.map((p) => `
       <button class="mpitem" data-tid="${p.id}">
         ${p.cover_url ? `<img loading="lazy" src="${p.cover_url}" alt="">` : '<div style="width:42px;height:42px;border-radius:8px;background:var(--panel2);flex:none"></div>'}
         <div>
@@ -599,19 +624,20 @@ function openMergePicker(srcId, people) {
           <div class="mpmeta">${p.photo_count} photos · ${p.face_count} faces · #${p.id}</div>
         </div>
       </button>`).join("")
-    : '<div class="empty">No other people to merge into.</div>';
+    : '<div class="empty">' + (q ? "No matching people." : "No other people to merge into.") + '</div>';
   list.querySelectorAll(".mpitem").forEach((item) => item.addEventListener("click", async () => {
     const target = +item.dataset.tid;
-    const r = await api(`/api/people/${srcId}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: target }) });
+    const r = await api(`/api/people/${mpSrcId}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: target }) });
     closeMergePicker();
-    toast(`Merged into ${people.find((p) => p.id === target)?.name || "person " + target}. Auto-tagged ${r.assigned_similar || 0} faces.`);
+    toast(`Merged into ${mpPeople.find((p) => p.id === target)?.name || "person " + target}. Auto-tagged ${r.assigned_similar || 0} faces.`);
     loadPeople();
   }));
-  $("#mergepick").classList.add("open");
 }
 
 function closeMergePicker() {
   $("#mergepick").classList.remove("open");
+  mpSrcId = null;
+  mpPeople = [];
 }
 
 async function loadDuplicates() {
@@ -782,6 +808,7 @@ $("#dclose").addEventListener("click", () => $("#detail").classList.remove("open
 $("#lbclose").addEventListener("click", () => $("#lightbox").classList.remove("open"));
 $("#lightbox").addEventListener("click", (e) => { if (e.target.id === "lightbox") $("#lightbox").classList.remove("open"); });
 $("#mpclose").addEventListener("click", closeMergePicker);
+$("#mpsearch").addEventListener("input", renderMergePickerList);
 $("#mergepick").addEventListener("click", (e) => { if (e.target.id === "mergepick") closeMergePicker(); });
 document.addEventListener("click", (e) => {
   if ($("#popover").classList.contains("open") && !$("#popover").contains(e.target)) closePopover();
