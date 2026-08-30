@@ -42,6 +42,7 @@ from store import (
     set_photo_error,
     set_photo_full,
     set_photo_deleted,
+    sync_albums,
     upsert_photos,
 )
 
@@ -378,6 +379,32 @@ def _cluster_loop() -> None:
             log.exception("cluster loop error: %s", exc)
 
 
+# --- albums sync ----------------------------------------------------------
+
+def _albums_loop() -> None:
+    while True:
+        try:
+            _sync_albums_once()
+        except Exception as exc:  # pragma: no cover
+            log.exception("albums sync error: %s", exc)
+        time.sleep(settings.sync_interval)
+
+
+def _sync_albums_once() -> int:
+    """Fetch album names from the bridge and recompute local covers/counts."""
+    try:
+        data = get_bridge().albums()
+        albums = data.get("albums", []) if isinstance(data, dict) else data
+    except Exception as exc:
+        log.warning("albums fetch failed: %s", exc)
+        return 0
+    if not albums:
+        return 0
+    n = sync_albums(albums)
+    log.info("albums: synced %d albums", n)
+    return n
+
+
 # --- public entry point ----------------------------------------------------
 
 def start() -> list[threading.Thread]:
@@ -393,12 +420,17 @@ def start() -> list[threading.Thread]:
     except Exception as exc:  # pragma: no cover
         log.warning("fullres backfill failed: %s", exc)
     _rebuild_pending()
+    try:
+        _sync_albums_once()
+    except Exception as exc:  # pragma: no cover
+        log.warning("initial albums sync failed: %s", exc)
     threads = [
         threading.Thread(target=_sync_loop, name="sync", daemon=True),
         threading.Thread(target=_downloader_loop, name="downloader", daemon=True),
         threading.Thread(target=_fullres_loop, name="fullres", daemon=True),
         threading.Thread(target=_cluster_loop, name="cluster", daemon=True),
         threading.Thread(target=_gps_loop, name="gps", daemon=True),
+        threading.Thread(target=_albums_loop, name="albums", daemon=True),
     ]
     for i in range(settings.workers):
         threads.append(threading.Thread(target=_worker_loop, name=f"worker-{i}", daemon=True))

@@ -54,6 +54,14 @@ CREATE TABLE IF NOT EXISTS clips (
     photo_uid TEXT PRIMARY KEY REFERENCES photos(uid) ON DELETE CASCADE,
     embedding BLOB               -- raw float32 (512,) CLIP embedding
 );
+
+CREATE TABLE IF NOT EXISTS albums (
+    uid          TEXT PRIMARY KEY,
+    name         TEXT,
+    cover_uid    TEXT,            -- representative (newest) photo uid
+    photo_count  INTEGER,
+    synced_at    INTEGER
+);
 """
 
 _lock = threading.Lock()
@@ -550,9 +558,106 @@ def map_markers(limit: int = 1000) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def done_photos(limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
+def done_photos(limit: int = 200, offset: int = 0, before: int | None = None) -> list[sqlite3.Row]:
+    """Indexed photos with thumbnails, newest first.
+
+    `before` optionally restricts to photos captured at or before the given
+    epoch timestamp (used as a date-anchor jump).
+    """
+    sql = (
+        "SELECT * FROM photos "
+        "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != ''"
+    )
+    params: list = []
+    if before is not None:
+        sql += " AND capture_time <= ?"
+        params.append(before)
+    sql += " ORDER BY capture_time DESC LIMIT ? OFFSET ?"
+    params += [limit, offset]
+    with get_conn() as conn:
+        return conn.execute(sql, params).fetchall()
+
+
+def photo_anchors(limit: int = 500) -> list[sqlite3.Row]:
+    """Group done-with-thumb photos by year-month for the date rail.
+
+    Returns rows (ym, first_ts) where ym is 'YYYY-MM' and first_ts is the
+    largest capture_time in that month (the newest photo of the month).
+    """
     with get_conn() as conn:
         return conn.execute(
-            "SELECT * FROM photos WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' ORDER BY capture_time DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            "SELECT substr(date(capture_time, 'unixepoch'), 1, 7) AS ym, "
+            "       MAX(capture_time) AS first_ts "
+            "FROM photos "
+            "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
+            "  AND capture_time IS NOT NULL "
+            "GROUP BY ym ORDER BY ym DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+
+# --- albums ---------------------------------------------------------------
+
+def sync_albums(albums: list[dict]) -> int:
+    """Upsert album names from the bridge, then recompute local counts/covers.
+
+    `albums` is [{uid, name}]. Covers and photo counts are derived from the
+    local index (newest done-with-thumb photo per album), so no extra Proton
+    downloads are needed.
+    """
+    now = int(time.time())
+    with get_conn() as conn:
+        for a in albums:
+            conn.execute(
+                """INSERT INTO albums (uid, name, cover_uid, photo_count, synced_at)
+                   VALUES (?, ?, NULL, NULL, ?)
+                   ON CONFLICT(uid) DO UPDATE SET name=excluded.name, synced_at=excluded.synced_at""",
+                (a["uid"], a.get("name"), now),
+            )
+        # Recompute cover + count for every album from the local index.
+        rows = conn.execute(
+            """SELECT p.uid, p.capture_time, p.albums FROM photos p
+               WHERE p.status='done' AND p.thumb_path IS NOT NULL AND p.thumb_path != ''
+                 AND p.albums IS NOT NULL AND p.albums != ''"""
+        ).fetchall()
+        counts: dict[str, int] = {}
+        covers: dict[str, tuple[int, str]] = {}
+        for r in rows:
+            try:
+                uids = json.loads(r["albums"])
+            except Exception:
+                continue
+            for u in uids:
+                counts[u] = counts.get(u, 0) + 1
+                # Track newest capture_time per album to pick the cover.
+                cur = covers.get(u)
+                ts = r["capture_time"] or 0
+                if cur is None or ts >= cur[0]:
+                    covers[u] = (ts, r["uid"])
+        for u, n in counts.items():
+            conn.execute(
+                "UPDATE albums SET photo_count=?, cover_uid=? WHERE uid=?",
+                (n, covers.get(u, (None, None))[1], u),
+            )
+    return len(albums)
+
+
+def all_albums() -> list[sqlite3.Row]:
+    """Albums with photo counts, most populated first."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM albums WHERE photo_count IS NOT NULL "
+            "ORDER BY photo_count DESC, name ASC"
+        ).fetchall()
+
+
+def album_photos(album_uid: str, limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
+    """Done-with-thumb photos in an album, newest first."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM photos "
+            "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
+            "  AND albums LIKE ? "
+            "ORDER BY capture_time DESC LIMIT ? OFFSET ?",
+            (f'%"{album_uid}"%', limit, offset),
         ).fetchall()

@@ -237,6 +237,22 @@ main { padding: 18px; }
 .leaflet-control-attribution { font-size: 9px; background: rgba(18,20,23,.8); color: var(--muted); }
 .leaflet-control-attribution a { color: var(--accent); }
 .leaflet-bar a, .leaflet-bar a:hover { background: var(--panel2); color: var(--text); border-color: var(--border); }
+/* date rail */
+#daterailwrap { position: fixed; right: 0; top: 52px; bottom: 0; width: 58px; z-index: 5; overflow: hidden; }
+#daterail { position: absolute; right: 6px; top: 8px; bottom: 8px; width: 50px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding-right: 4px; }
+#daterail::-webkit-scrollbar { width: 4px; }
+#daterail .yr { color: var(--muted); font-size: 12px; font-weight: 600; padding: 3px 6px; border-radius: 6px; cursor: pointer; text-align: center; }
+#daterail .yr:hover, #daterail .yr.active { color: var(--text); background: var(--panel2); }
+#daterail .mo { color: var(--muted); font-size: 10px; padding: 1px 6px; border-radius: 6px; cursor: pointer; text-align: center; }
+#daterail .mo:hover, #daterail .mo.active { color: var(--accent); background: var(--panel2); }
+#daterail .yr.expanded { background: var(--panel2); }
+/* albums */
+.albums-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.album { position: relative; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; cursor: pointer; }
+.album:hover { border-color: var(--accent); }
+.album img { width: 100%; height: 150px; object-fit: cover; display: block; background: var(--panel2); }
+.album .aname { padding: 8px 10px; font-size: 14px; font-weight: 600; }
+.album .acount { padding: 0 10px 8px; color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
@@ -246,6 +262,7 @@ main { padding: 18px; }
     <a href="#" data-view="photos" class="active">Photos</a>
     <a href="#" data-view="people">People</a>
     <a href="#" data-view="places">Places</a>
+    <a href="#" data-view="albums">Albums</a>
     <a href="#" data-view="unassigned">Unassigned</a>
   </nav>
   <div id="searchbar">
@@ -261,6 +278,7 @@ main { padding: 18px; }
 <main>
   <div id="counts"></div>
   <div id="mapwrap" style="display:none"><div id="map"></div></div>
+  <div id="daterailwrap" style="display:none"><div id="daterail"></div></div>
   <div id="view"></div>
 </main>
 <div id="detail">
@@ -295,7 +313,7 @@ main { padding: 18px; }
 </div>
 <script>
 const $ = (s) => document.querySelector(s);
-let state = { view: "photos", q: "", photos: [], people: [] };
+let state = { view: "photos", q: "", photos: [], people: [], albumUid: null };
 let popoverFace = null;
 let map = null, markerGroup = null;
 // infinite scroll for the Photos view
@@ -346,8 +364,8 @@ function renderPhotos(list, append) {
   }
   el.querySelectorAll(".card img").forEach((img) => img.addEventListener("click", () => openDetail(img.dataset.uid)));
   el.querySelectorAll(".facebadge").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); openDetail(b.dataset.uid); }));
-  // sentinel for infinite scroll (Photos view only)
-  if (state.view === "photos" && !state.q && !photoDone) {
+  // sentinel for infinite scroll (Photos and Albums views)
+  if ((state.view === "photos" || state.view === "albums") && !state.q && !photoDone) {
     let sentinel = $("#sentinel");
     if (!sentinel) {
       sentinel = document.createElement("div");
@@ -529,7 +547,12 @@ function resetPhotoPaging() {
 
 async function loadPhotos() {
   resetPhotoPaging();
-  const url = state.q ? `/api/search?q=${encodeURIComponent(state.q)}` : `/api/photos?limit=${photoPage}&offset=0`;
+  const base = state.q
+    ? `/api/search?q=${encodeURIComponent(state.q)}`
+    : state.albumUid
+      ? `/api/albums/${encodeURIComponent(state.albumUid)}/photos`
+      : "/api/photos";
+  const url = `${base}?limit=${photoPage}&offset=0${state.beforeTs ? `&before=${state.beforeTs}` : ""}`;
   const data = await api(url);
   renderPhotos(data.results || data.photos || [], false);
   state.photos = data.results || data.photos || [];
@@ -543,7 +566,11 @@ async function loadMorePhotos() {
   if (state.q || photoLoading || photoDone) return;
   photoLoading = true;
   try {
-    const data = await api(`/api/photos?limit=${photoPage}&offset=${photoOffset}`);
+    const base = state.albumUid
+      ? `/api/albums/${encodeURIComponent(state.albumUid)}/photos`
+      : "/api/photos";
+    const url = `${base}?limit=${photoPage}&offset=${photoOffset}${state.beforeTs ? `&before=${state.beforeTs}` : ""}`;
+    const data = await api(url);
     const rows = data.photos || [];
     if (rows.length) {
       renderPhotos(rows, true);
@@ -556,6 +583,91 @@ async function loadMorePhotos() {
   } finally {
     photoLoading = false;
   }
+}
+
+async function loadAlbums() {
+  const data = await api("/api/albums");
+  const el = $("#view");
+  if (!data.albums.length) {
+    el.innerHTML = '<div class="empty">No albums yet.</div>';
+    return;
+  }
+  $("#counts").textContent = `${data.albums.length} albums`;
+  el.innerHTML = `<div class="albums-grid">${data.albums.map((a) => `
+    <div class="album" data-uid="${esc(a.uid)}">
+      ${a.cover_url ? `<img loading="lazy" src="${a.cover_url}" alt="">` : '<div style="width:100%;height:150px;background:var(--panel2)"></div>'}
+      <div class="aname">${esc(a.name || "Album")}</div>
+      <div class="acount">${a.photo_count} photos</div>
+    </div>`).join("")}</div>`;
+  el.querySelectorAll(".album").forEach((card) => card.addEventListener("click", async () => {
+    state.albumUid = card.dataset.uid;
+    state.beforeTs = null;
+    state.view = "albums";
+    document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
+    document.querySelector('nav a[data-view="albums"]').classList.add("active");
+    loadPhotos();
+  }));
+}
+
+function renderDateRail(anchors) {
+  const rail = $("#daterail");
+  if (!anchors.length) { $("#daterailwrap").style.display = "none"; return; }
+  $("#daterailwrap").style.display = "";
+  let years = [];
+  const byYear = {};
+  anchors.forEach((a) => {
+    const y = a.ym.slice(0, 4);
+    if (!byYear[y]) { byYear[y] = []; years.push(y); }
+    byYear[y].push(a);
+  });
+  years = years.sort().reverse();
+  rail.innerHTML = years.map((y) => `
+    <div class="yr" data-year="${y}">${y}</div>`).join("");
+  rail.querySelectorAll(".yr").forEach((yrEl) => {
+    yrEl.addEventListener("click", () => {
+      const y = yrEl.dataset.year;
+      const open = yrEl.classList.contains("expanded");
+      rail.querySelectorAll(".yr").forEach((e) => { e.classList.remove("expanded", "active"); });
+      rail.querySelectorAll(".mo").forEach((e) => e.remove());
+      if (open) return;
+      yrEl.classList.add("expanded");
+      const mos = byYear[y].slice().reverse();
+      mos.forEach((a) => {
+        const mo = document.createElement("div");
+        mo.className = "mo";
+        mo.textContent = a.label.split(" ")[0]; // e.g. "Aug"
+        mo.title = a.label;
+        mo.addEventListener("click", () => jumpToDate(a.ym, a.first_ts));
+        yrEl.after(mo);
+      });
+    });
+  });
+}
+
+async function loadAnchors() {
+  try {
+    const data = await api("/api/photos/anchors");
+    renderDateRail(data.anchors || []);
+  } catch (e) {
+    $("#daterailwrap").style.display = "none";
+  }
+}
+
+function jumpToDate(ym, firstTs) {
+  state.beforeTs = firstTs;
+  state.albumUid = null;
+  state.q = "";
+  $("#q").value = "";
+  resetPhotoPaging();
+  api(`/api/photos?before=${firstTs}&limit=${photoPage}&offset=0`)
+    .then((data) => {
+      renderPhotos(data.photos || [], false);
+      state.photos = data.photos || [];
+      photoOffset = (data.photos || []).length;
+      if ((data.photos || []).length < photoPage) photoDone = true;
+      toast(`Showing photos up to ${ym}`);
+    })
+    .catch((e) => toast("Error: " + e.message));
 }
 
 async function loadPeople() {
@@ -835,7 +947,8 @@ document.querySelectorAll("nav a").forEach((a) => {
     if (state.view === "people") loadPeople();
     else if (state.view === "unassigned") loadUnassigned();
     else if (state.view === "places") loadPlaces();
-    else { $("#mapwrap").style.display = "none"; loadPhotos(); }
+    else if (state.view === "albums") { state.albumUid = null; state.beforeTs = null; $("#daterailwrap").style.display = "none"; loadAlbums(); }
+    else { $("#mapwrap").style.display = "none"; state.albumUid = null; state.beforeTs = null; loadPhotos(); loadAnchors(); }
   });
 });
 
@@ -847,7 +960,9 @@ $("#btn-search").addEventListener("click", async () => {
     document.querySelector('nav a[data-view="photos"]').classList.add("active");
     state.view = "photos";
   }
+  state.albumUid = null;
   $("#mapwrap").style.display = "none";
+  $("#daterailwrap").style.display = "none";
   loadPhotos();
 });
 $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#btn-search").click(); });
@@ -877,6 +992,7 @@ document.addEventListener("click", (e) => {
 (async () => {
   await refresh();
   await loadPhotos();
+  loadAnchors();
   setInterval(refresh, 15000);
 })();
 </script>

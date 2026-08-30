@@ -17,6 +17,8 @@ from clip import embed_text
 from config import settings
 from faces import embed_query_face
 from store import (
+    all_albums,
+    album_photos,
     all_clips,
     all_face_rows,
     all_people,
@@ -33,6 +35,7 @@ from store import (
     merge_person,
     person_mean_embedding,
     person_mean_embeddings,
+    photo_anchors,
     photos_for_person,
     place_stats,
     rename_person,
@@ -100,11 +103,49 @@ def api_stats() -> dict:
 # --- photos ----------------------------------------------------------------
 
 @app.get("/api/photos")
-def api_photos(limit: int = 200, offset: int = 0, place: str | None = None):
+def api_photos(limit: int = 200, offset: int = 0, place: str | None = None, before: int | None = None):
     if place:
         rows = search_photos_by_place(place, limit=limit)
     else:
-        rows = done_photos(limit=limit, offset=offset)
+        rows = done_photos(limit=limit, offset=offset, before=before)
+    return {"photos": [_row_to_dict(r) for r in rows]}
+
+
+@app.get("/api/photos/anchors")
+def api_photo_anchors():
+    anchors = []
+    for r in photo_anchors():
+        ym = r["ym"]
+        try:
+            import datetime as _dt
+
+            label = _dt.datetime.strptime(ym, "%Y-%m").strftime("%b %Y")
+        except Exception:
+            label = ym
+        anchors.append({"ym": ym, "label": label, "first_ts": r["first_ts"]})
+    return {"anchors": anchors}
+
+
+@app.get("/api/albums")
+def api_albums():
+    albums = []
+    for r in all_albums():
+        albums.append(
+            {
+                "uid": r["uid"],
+                "name": r["name"] or r["uid"],
+                "photo_count": r["photo_count"] or 0,
+                "cover_url": (
+                    f"/api/photos/{r['cover_uid']}/thumb" if r["cover_uid"] else None
+                ),
+            }
+        )
+    return {"albums": albums}
+
+
+@app.get("/api/albums/{album_uid}/photos")
+def api_album_photos(album_uid: str, limit: int = 200, offset: int = 0):
+    rows = album_photos(album_uid, limit=limit, offset=offset)
     return {"photos": [_row_to_dict(r) for r in rows]}
 
 
