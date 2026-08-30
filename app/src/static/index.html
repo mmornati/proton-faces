@@ -12,6 +12,8 @@
   --text: #e6e8eb;
   --muted: #9aa0a6;
   --accent: #4da3ff;
+  --green: #34c97b;
+  --red: #ff5f57;
   --border: #2c3138;
 }
 * { box-sizing: border-box; }
@@ -44,6 +46,7 @@ button {
   border-radius: 8px; font-size: 14px; cursor: pointer;
 }
 button.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+button.small { padding: 4px 8px; font-size: 12px; border-radius: 6px; }
 #status { color: var(--muted); font-size: 13px; margin-left: auto; }
 main { padding: 18px; }
 #counts { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
@@ -61,6 +64,12 @@ main { padding: 18px; }
   position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,.6);
   color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 6px;
 }
+.card .facebadge {
+  position: absolute; bottom: 6px; left: 6px; background: rgba(0,0,0,.65);
+  color: var(--accent); font-size: 11px; padding: 2px 7px; border-radius: 6px;
+  cursor: pointer; border: 0;
+}
+.card .facebadge:hover { background: var(--accent); color: #fff; }
 .people-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .person {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
@@ -85,6 +94,54 @@ main { padding: 18px; }
 #lightbox.open { display: flex; }
 #lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
 #lbclose { position: absolute; top: 16px; right: 24px; font-size: 30px; color: #fff; cursor: pointer; background: none; border: 0; }
+/* photo detail with face overlays */
+#detail {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.92);
+  z-index: 100; padding: 28px; overflow: auto;
+}
+#detail.open { display: block; }
+#detailbar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+#detailbar .name { color: var(--muted); font-size: 14px; }
+#detailimgwrap {
+  position: relative; display: inline-block; max-width: 100%;
+  border-radius: 8px; overflow: hidden; background: var(--panel);
+}
+#detailimgwrap img { display: block; max-width: 100%; max-height: 72vh; }
+.facebox {
+  position: absolute; border: 2px solid var(--accent); border-radius: 6px;
+  cursor: pointer; background: rgba(77,163,255,.08);
+}
+.facebox:hover { background: rgba(77,163,255,.25); }
+.facebox .tag {
+  position: absolute; left: 0; top: -20px; background: var(--accent); color: #fff;
+  font-size: 11px; padding: 1px 6px; border-radius: 4px; white-space: nowrap;
+}
+.facebox.unassigned { border-color: var(--red); }
+.facebox.unassigned .tag { background: var(--red); }
+/* popover */
+#popover {
+  display: none; position: fixed; z-index: 200; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px; min-width: 230px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.5);
+}
+#popover.open { display: block; }
+#popover h3 { margin: 0 0 8px; font-size: 14px; }
+#popover .faces { display: flex; gap: 6px; flex-wrap: wrap; max-height: 160px; overflow: auto; }
+#popover .faces button { flex: 1 1 45%; }
+#popover input { width: 100%; padding: 7px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); margin: 8px 0; }
+#popover .row { display: flex; gap: 6px; margin-top: 4px; }
+#popover .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+/* unassigned queue */
+.facegrid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+.faceitem { position: relative; border-radius: 10px; overflow: hidden; background: var(--panel); cursor: pointer; }
+.faceitem img { width: 100%; height: 140px; object-fit: cover; display: block; }
+.faceitem:hover { outline: 2px solid var(--accent); }
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+  padding: 10px 18px; border-radius: 10px; z-index: 300; font-size: 14px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.4);
+}
 </style>
 </head>
 <body>
@@ -93,6 +150,7 @@ main { padding: 18px; }
   <nav>
     <a href="#" data-view="photos" class="active">Photos</a>
     <a href="#" data-view="people">People</a>
+    <a href="#" data-view="unassigned">Unassigned</a>
   </nav>
   <div id="searchbar">
     <input id="q" placeholder="Search: &quot;dog&quot;, &quot;car&quot;, &quot;Lille&quot;, &quot;beach&quot;...">
@@ -108,13 +166,23 @@ main { padding: 18px; }
   <div id="counts"></div>
   <div id="view"></div>
 </main>
+<div id="detail">
+  <div id="detailbar">
+    <button id="dclose" class="secondary">Close</button>
+    <span class="name" id="dname"></span>
+    <button id="dfull" class="secondary">View full resolution</button>
+  </div>
+  <div id="detailimgwrap"><img id="dimg" alt=""></div>
+</div>
 <div id="lightbox">
   <button id="lbclose">&times;</button>
   <img id="lbimg" alt="">
 </div>
+<div id="popover"></div>
 <script>
 const $ = (s) => document.querySelector(s);
 let state = { view: "photos", q: "", photos: [], people: [] };
+let popoverFace = null;
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -132,6 +200,14 @@ function fmtDate(ts) {
   return d.toLocaleDateString();
 }
 
+function toast(msg) {
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
 function renderPhotos(list) {
   const el = $("#view");
   if (!list.length) {
@@ -142,15 +218,113 @@ function renderPhotos(list) {
     <div class="card">
       <img loading="lazy" src="${p.thumb_url}" data-uid="${esc(p.uid)}" alt="">
       <div class="date">${fmtDate(p.capture_time)}</div>
+      <button class="facebadge" data-uid="${esc(p.uid)}">faces</button>
       ${p.score !== undefined ? `<div class="score">${(p.score * 100).toFixed(0)}%</div>` : ""}
       ${p.place ? `<div class="date" style="right:auto;left:6px;top:auto;bottom:6px">${esc(p.place)}</div>` : ""}
     </div>`).join("")}</div>`;
-  el.querySelectorAll(".card img").forEach((img) => img.addEventListener("click", () => openLightbox(img.dataset.uid)));
+  el.querySelectorAll(".card img").forEach((img) => img.addEventListener("click", () => openDetail(img.dataset.uid)));
+  el.querySelectorAll(".facebadge").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); openDetail(b.dataset.uid); }));
 }
 
 function openLightbox(uid) {
   $("#lightbox").classList.add("open");
   $("#lbimg").src = `/api/photos/${uid}/full`;
+}
+
+async function openDetail(uid) {
+  $("#detail").classList.add("open");
+  $("#dname").textContent = uid;
+  $("#dfull").onclick = () => openLightbox(uid);
+  const img = $("#dimg");
+  img.src = `/api/photos/${uid}/thumb`;
+  img.dataset.uid = uid;
+  // clear old boxes
+  const wrap = $("#detailimgwrap");
+  wrap.querySelectorAll(".facebox").forEach((b) => b.remove());
+  img.onload = () => loadFaceBoxes(uid);
+}
+
+async function loadFaceBoxes(uid) {
+  const wrap = $("#detailimgwrap");
+  wrap.querySelectorAll(".facebox").forEach((b) => b.remove());
+  let faces = [];
+  try {
+    const data = await api(`/api/photos/${uid}/faces`);
+    faces = data.faces || [];
+  } catch (e) { return; }
+  const img = $("#dimg");
+  const iw = img.naturalWidth, ih = img.naturalHeight;
+  if (!iw || !ih) return;
+  for (const f of faces) {
+    const [x, y, w, h] = f.bbox;
+    const box = document.createElement("div");
+    box.className = "facebox" + (f.person_id == null ? " unassigned" : "");
+    box.style.left = (x * 100) + "%";
+    box.style.top = (y * 100) + "%";
+    box.style.width = (w * 100) + "%";
+    box.style.height = (h * 100) + "%";
+    const tag = document.createElement("div");
+    tag.className = "tag";
+    tag.textContent = f.person_name || "?";
+    box.appendChild(tag);
+    box.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openFacePopover(f, e.clientX, e.clientY);
+    });
+    wrap.appendChild(box);
+  }
+}
+
+async function openFacePopover(face, x, y) {
+  popoverFace = face;
+  const pv = $("#popover");
+  let people = [];
+  try { people = (await api("/api/people")).people || []; } catch (e) {}
+  const nameHtml = face.person_name ? `<h3>${esc(face.person_name)} <span style="color:var(--muted);font-weight:400">(face #${face.id})</span></h3>` : `<h3>Unassigned face #${face.id}</h3>`;
+  pv.innerHTML = `${nameHtml}
+    <input id="popname" placeholder="Type a name and press Enter" value="${esc(face.person_name || "")}">
+    <div class="faces">${people.slice(0, 12).map((p) => `<button class="small" data-pid="${p.id}">${esc(p.name || "person " + p.id)}</button>`).join("") || '<span style="color:var(--muted);font-size:12px">No people yet</span>'}</div>
+    <div class="row">
+      <button class="secondary small" id="pop-unassign" style="margin-left:auto">Unassign</button>
+    </div>
+    <div class="hint">Naming a face auto-tags similar unassigned faces.</div>`;
+  pv.classList.add("open");
+  pv.style.left = Math.min(x, window.innerWidth - 260) + "px";
+  pv.style.top = Math.min(y, window.innerHeight - 300) + "px";
+  const name = $("#popname");
+  name.focus();
+  const commit = async (body) => {
+    try {
+      const r = await api(`/api/faces/${face.id}/person`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      closePopover();
+      toast(`Saved. ${r.assigned_similar || 0} similar face(s) auto-tagged.`);
+      if (state.view === "people") loadPeople();
+      else if ($("#detail").classList.contains("open")) loadFaceBoxes($("#dimg").dataset.uid);
+      else if (state.view === "unassigned") loadUnassigned();
+    } catch (e) { toast("Error: " + e.message); }
+  };
+  name.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter" && name.value.trim()) await commit({ name: name.value.trim() });
+  });
+  pv.querySelectorAll("button[data-pid]").forEach((b) => b.addEventListener("click", () => commit({ person_id: +b.dataset.pid })));
+  $("#pop-unassign").addEventListener("click", async () => {
+    try {
+      await api(`/api/faces/${face.id}/unassign`, { method: "POST" });
+      closePopover();
+      toast("Face unassigned.");
+      if (state.view === "people") loadPeople();
+      else if ($("#detail").classList.contains("open")) loadFaceBoxes($("#dimg").dataset.uid);
+      else if (state.view === "unassigned") loadUnassigned();
+    } catch (e) { toast("Error: " + e.message); }
+  });
+}
+
+function closePopover() {
+  $("#popover").classList.remove("open");
+  $("#popover").innerHTML = "";
+  popoverFace = null;
 }
 
 async function loadPhotos() {
@@ -191,6 +365,23 @@ async function loadPeople() {
   });
 }
 
+async function loadUnassigned() {
+  const data = await api("/api/faces/unassigned?limit=500");
+  const el = $("#view");
+  if (!data.faces.length) {
+    el.innerHTML = '<div class="empty">No unassigned faces — great job!</div>';
+    return;
+  }
+  $("#counts").textContent = `${data.faces.length} unassigned faces`;
+  el.innerHTML = `<div class="facegrid">${data.faces.map((f) => `
+    <div class="faceitem" data-id="${f.id}">
+      <img loading="lazy" src="${f.crop_url}" alt="">
+    </div>`).join("")}</div>`;
+  el.querySelectorAll(".faceitem").forEach((item) => item.addEventListener("click", () => {
+    openFacePopover({ id: +item.dataset.id, person_id: null, person_name: null }, event.clientX, event.clientY);
+  }));
+}
+
 async function refresh() {
   try {
     const data = await api("/api/stats");
@@ -212,6 +403,7 @@ document.querySelectorAll("nav a").forEach((a) => {
     $("#q").value = "";
     state.q = "";
     if (state.view === "people") loadPeople();
+    else if (state.view === "unassigned") loadUnassigned();
     else loadPhotos();
   });
 });
@@ -240,8 +432,12 @@ $("#faceform").addEventListener("submit", async (e) => {
   renderPhotos(data.results);
 });
 
+$("#dclose").addEventListener("click", () => $("#detail").classList.remove("open"));
 $("#lbclose").addEventListener("click", () => $("#lightbox").classList.remove("open"));
 $("#lightbox").addEventListener("click", (e) => { if (e.target.id === "lightbox") $("#lightbox").classList.remove("open"); });
+document.addEventListener("click", (e) => {
+  if ($("#popover").classList.contains("open") && !$("#popover").contains(e.target)) closePopover();
+});
 
 (async () => {
   await refresh();

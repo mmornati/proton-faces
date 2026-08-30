@@ -16,6 +16,7 @@ from store import (
     assign_face_person,
     create_person,
     faces_without_person,
+    set_person_cover_face,
     update_person_cover,
 )
 
@@ -47,8 +48,13 @@ def cluster_once(max_faces: int = 5000) -> int:
         if len(idxs) < settings.min_cluster_size:
             continue
         cover_row = rows[idxs[0]]
-        person_id = create_person(name=None, cover_uid=cover_row["photo_uid"])
+        person_id = create_person(
+            name=None,
+            cover_uid=cover_row["photo_uid"],
+            cover_face_id=cover_row["id"],
+        )
         update_person_cover(person_id, cover_row["photo_uid"])
+        set_person_cover_face(person_id, cover_row["id"])
         for i in idxs:
             assign_face_person(rows[i]["id"], person_id)
         n_created += 1

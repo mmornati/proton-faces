@@ -7,6 +7,8 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
+
 from config import settings
 
 _SCHEMA = """
@@ -30,10 +32,11 @@ CREATE INDEX IF NOT EXISTS idx_photos_place  ON photos(place);
 CREATE INDEX IF NOT EXISTS idx_photos_time   ON photos(capture_time);
 
 CREATE TABLE IF NOT EXISTS people (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    name      TEXT,
-    cover_uid TEXT,              -- representative photo uid
-    created   INTEGER
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT,
+    cover_uid     TEXT,          -- representative photo uid
+    cover_face_id INTEGER,       -- representative face id (for face-crop covers)
+    created       INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS faces (
@@ -67,6 +70,25 @@ def get_conn() -> sqlite3.Connection:
 def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(_SCHEMA)
+        migrate(conn)
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent column migrations for older databases."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(people)")}
+    if "cover_face_id" not in cols:
+        conn.execute("ALTER TABLE people ADD COLUMN cover_face_id INTEGER")
+    # Backfill a cover face for people clustered before cover_face_id existed.
+    conn.execute(
+        """UPDATE people
+           SET cover_face_id = (
+               SELECT f.id FROM faces f
+               WHERE f.person_id = people.id
+               ORDER BY f.id LIMIT 1
+           )
+           WHERE cover_face_id IS NULL
+             AND EXISTS (SELECT 1 FROM faces f WHERE f.person_id = people.id)"""
+    )
 
 
 # --- photos ---------------------------------------------------------------
@@ -207,7 +229,9 @@ def insert_face(photo_uid: str, person_id: int | None, confidence: float, bbox: 
 
 def all_face_rows() -> list[sqlite3.Row]:
     with get_conn() as conn:
-        return conn.execute("SELECT id, photo_uid, embedding FROM faces").fetchall()
+        return conn.execute(
+            "SELECT id, photo_uid, person_id, embedding FROM faces"
+        ).fetchall()
 
 
 def faces_without_person(limit: int = 5000) -> list[sqlite3.Row]:
@@ -222,11 +246,16 @@ def assign_face_person(face_id: int, person_id: int) -> None:
         conn.execute("UPDATE faces SET person_id=? WHERE id=?", (person_id, face_id))
 
 
-def create_person(name: str | None, cover_uid: str | None) -> int:
+def unassign_face(face_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute("UPDATE faces SET person_id=NULL WHERE id=?", (face_id,))
+
+
+def create_person(name: str | None, cover_uid: str | None, cover_face_id: int | None = None) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO people (name, cover_uid, created) VALUES (?,?,?)",
-            (name, cover_uid, int(time.time())),
+            "INSERT INTO people (name, cover_uid, cover_face_id, created) VALUES (?,?,?,?)",
+            (name, cover_uid, cover_face_id, int(time.time())),
         )
         return cur.lastrowid
 
@@ -239,6 +268,61 @@ def update_person_cover(person_id: int, cover_uid: str) -> None:
         )
 
 
+def set_person_cover_face(person_id: int, cover_face_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute("UPDATE people SET cover_face_id=? WHERE id=?", (cover_face_id, person_id))
+
+
+def get_person(person_id: int) -> sqlite3.Row | None:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT p.*, COUNT(f.id) AS face_count, COUNT(DISTINCT f.photo_uid) AS photo_count "
+            "FROM people p LEFT JOIN faces f ON f.person_id = p.id WHERE p.id=? GROUP BY p.id",
+            (person_id,),
+        ).fetchone()
+
+
+def face_embedding(face_id: int) -> bytes | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT embedding FROM faces WHERE id=?", (face_id,)).fetchone()
+        return row["embedding"] if row else None
+
+
+def faces_for_photo(photo_uid: str) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT f.id, f.person_id, f.confidence, f.bbox, p.name AS person_name
+               FROM faces f LEFT JOIN people p ON p.id = f.person_id
+               WHERE f.photo_uid=? ORDER BY f.id""",
+            (photo_uid,),
+        ).fetchall()
+
+
+def unassigned_faces(limit: int = 500) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT f.id, f.photo_uid, f.confidence, f.bbox, ph.thumb_path
+               FROM faces f JOIN photos ph ON ph.uid = f.photo_uid
+               WHERE f.person_id IS NULL AND ph.status='done'
+               ORDER BY f.id ASC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+
+def similar_faces(embedding: bytes, threshold: float, limit: int = 200) -> list[sqlite3.Row]:
+    """Faces (id, photo_uid, person_id, sim) whose cosine similarity to `embedding` is >= threshold."""
+    rows = all_face_rows()
+    emb = np.frombuffer(embedding, dtype=np.float32)
+    out = []
+    for r in rows:
+        fe = np.frombuffer(r["embedding"], dtype=np.float32)
+        s = float(fe @ emb)
+        if s >= threshold:
+            out.append((r["id"], r["photo_uid"], r["person_id"], s))
+    out.sort(key=lambda t: t[3], reverse=True)
+    return out[:limit]
+
+
 def rename_person(person_id: int, name: str) -> None:
     with get_conn() as conn:
         conn.execute("UPDATE people SET name=? WHERE id=?", (name, person_id))
@@ -247,7 +331,8 @@ def rename_person(person_id: int, name: str) -> None:
 def all_people() -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
-            """SELECT p.id, p.name, p.cover_uid, COUNT(f.id) AS face_count,
+            """SELECT p.id, p.name, p.cover_uid, p.cover_face_id,
+                      COUNT(f.id) AS face_count,
                       COUNT(DISTINCT f.photo_uid) AS photo_count
                FROM people p LEFT JOIN faces f ON f.person_id = p.id
                GROUP BY p.id ORDER BY photo_count DESC"""
