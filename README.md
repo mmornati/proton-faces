@@ -16,7 +16,7 @@ nothing is ever written back to Proton Drive.
 <br>
 
 <video
-  src="https://res.cloudinary.com/blog-mornati-net/video/upload/v1788111273/aqarlh1taqbygcsode6o.mp4"
+  src="https://github.com/mmornati/proton-faces/raw/main/docs/demo.mp4"
   poster="https://res.cloudinary.com/blog-mornati-net/video/upload/so_3/v1788111273/aqarlh1taqbygcsode6o.jpg"
   autoplay
   muted
@@ -56,13 +56,13 @@ photo library into a fully searchable archive, without ever uploading a single b
 ## 🎬 Demo
 
 The video above shows the app in action: people clustering, face tagging, text search,
-the places map and photo browsing. A direct MP4 is embedded in this README (GitHub renders
-HTML5 `<video>` natively).
+the places map and photo browsing. The demo clip is committed to the repo
+(`docs/demo.mp4`) and embedded with an HTML5 `<video>` tag (GitHub renders it natively).
 
-> **Why MP4 and not a GIF?** The clip is ~35 MB as video. As a GIF it would balloon to
-> *hundreds of megabytes* — and GitHub refuses to render images over 25 MB. Video is smaller,
-> sharper, and keeps its sound. A static poster frame is served by Cloudinary so the README
-> still looks great before the video loads.
+> **Why MP4 and not a GIF?** The original clip is ~35 MB as video; the repo copy is
+> compressed to ~2 MB. As a GIF it would balloon to *hundreds of megabytes* — and GitHub
+> refuses to render images over 25 MB. Video is smaller, sharper, and keeps its sound.
+> A static poster frame is used so the README still looks great before the video loads.
 
 ---
 
