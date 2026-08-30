@@ -15,16 +15,15 @@ nothing is ever written back to Proton Drive.
 
 <br>
 
-<video
-  src="https://github.com/mmornati/proton-faces/raw/main/docs/demo.mp4"
-  poster="https://res.cloudinary.com/blog-mornati-net/video/upload/so_3/v1788111273/aqarlh1taqbygcsode6o.jpg"
-  autoplay
-  muted
-  loop
-  playsinline
-  controls
-  preload="metadata"
-  width="100%"></video>
+<iframe
+  src="https://player.cloudinary.com/embed/?cloud_name=blog-mornati-net&public_id=aqarlh1taqbygcsode6o"
+  width="640"
+  height="360"
+  style="height: auto; width: 100%; aspect-ratio: 640 / 360;"
+  allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+  allowfullscreen
+  frameborder="0"
+></iframe>
 
 <br>
 
