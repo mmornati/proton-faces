@@ -4,10 +4,20 @@ name: proton-faces
 # Bring up with:  docker compose up -d --build
 # One-time setup:  scripts/export-session.sh  (places auth-session.json in ./credentials)
 #
-# The two services share a single Docker volume `data`:
+# The two services share the `data` volume:
 #   bridge writes thumbnails to data/work, the app consumes them, keeps a
 #   permanent cache in data/thumbs, and stores its SQLite index there too.
 #   The bridge's auth session lives at data/auth-session.json.
+#
+# Configurable via environment (.env):
+#   PORT          host port for the web UI (default 8080)
+#   DATA_MOUNT    bind-mount target for the data volume. Defaults to the
+#                 named volume `data`; set e.g. DATA_MOUNT=/media/12tb/photos-index
+#                 to persist data on a big disk. The directory must be writable
+#                 by UID 1000 (the user both containers run as).
+#   PHOTOS_MOUNT  optional read-only bind mount of a local Google Takeout export,
+#                 used to backfill GPS/place data (see README). Unset by default;
+#                 uncomment the volume line below when you have one.
 
 services:
   proton-bridge:
@@ -15,7 +25,7 @@ services:
     image: proton-faces/proton-bridge:0.1.0
     restart: unless-stopped
     volumes:
-      - data:/data
+      - ${DATA_MOUNT:-data}:/data
     environment:
       - PORT=8090
       - DATA_DIR=/data
@@ -35,10 +45,9 @@ services:
     ports:
       - "${PORT:-8080}:8080"
     volumes:
-      - data:/data
-      # Optional: local Google Takeout export used to backfill GPS/place
-      # data (read-only). Left empty by default.
-      - "${PHOTOS_DIR:-/dev/null}:/takeout:ro"
+      - ${DATA_MOUNT:-data}:/data
+      # Optional Google Takeout export for GPS backfill (read-only).
+      # - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
     environment:
       - DATA_DIR=/data
       - MODELS_DIR=/models
@@ -46,6 +55,7 @@ services:
       - BRIDGE_URL=http://proton-bridge:8090
       - PORT=8080
       - SYNC_INTERVAL=${SYNC_INTERVAL:-300}
+      - SYNC_LIMIT=${SYNC_LIMIT:-0}
       - WORKERS=${WORKERS:-2}
       - CLUSTER_INTERVAL=${CLUSTER_INTERVAL:-1800}
       - FACE_SIM_THRESHOLD=${FACE_SIM_THRESHOLD:-0.45}

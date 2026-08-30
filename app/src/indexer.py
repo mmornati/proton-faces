@@ -280,7 +280,12 @@ def _sync_loop() -> None:
 
 
 def backfill_gps() -> int:
-    """One-shot: attach GPS from a local Takeout export by sha1 match."""
+    """One-shot: attach GPS from a local Takeout export by sha1 match.
+
+    Google Takeout stores one `<photo>.<ext>.supplemental-metadata.json` sidecar
+    next to each photo. We sha1 the local photo file (which equals Proton's
+    contentHash) and join it against the indexed timeline.
+    """
     if not settings.photos_dir:
         return 0
     root = Path(settings.photos_dir)
@@ -296,17 +301,25 @@ def backfill_gps() -> int:
                 h.update(chunk)
         return h.hexdigest()
 
-    sidecars = {}
-    for p in root.rglob("*.supplemental-metadata.json"):
-        try:
-            import json as _json
+    # Map local file sha1 -> (lat, lng) by deriving the photo path from each sidecar.
+    import json as _json
 
-            data = _json.loads(p.read_text())
+    sha1_to_gps: dict[str, tuple[float, float]] = {}
+    for sidecar in root.rglob("*.supplemental-metadata.json"):
+        try:
+            data = _json.loads(sidecar.read_text())
         except Exception:
             continue
         geo = data.get("geoData") or {}
-        if geo.get("latitude") and geo.get("longitude"):
-            sidecars[p.parent.name] = (geo["latitude"], geo["longitude"])
+        lat, lng = geo.get("latitude"), geo.get("longitude")
+        if not (lat and lng):
+            continue
+        # sidecar name is "<photo>.<ext>.supplemental-metadata.json"
+        photo_path = sidecar.parent / sidecar.name.removesuffix(".supplemental-metadata.json")
+        if not photo_path.exists():
+            continue
+        sha1_to_gps[_sha1(photo_path)] = (lat, lng)
+    log.info("gps backfill: %d local photos with GPS", len(sha1_to_gps))
 
     matched = 0
     with _db_conn() as conn:
@@ -314,16 +327,13 @@ def backfill_gps() -> int:
             "SELECT uid, sha1 FROM photos WHERE sha1 IS NOT NULL"
         ).fetchall()
         for row in photos:
-            key = row["sha1"][: len(row["sha1"])]
-            # sha1 lookup by filename prefix heuristic — see README.
-            for folder, (lat, lng) in sidecars.items():
-                if folder in key:
-                    conn.execute(
-                        "UPDATE photos SET gps_lat=?, gps_lng=? WHERE uid=?",
-                        (lat, lng, row["uid"]),
-                    )
-                    matched += 1
-                    break
+            gps = sha1_to_gps.get(row["sha1"])
+            if gps:
+                conn.execute(
+                    "UPDATE photos SET gps_lat=?, gps_lng=? WHERE uid=?",
+                    (gps[0], gps[1], row["uid"]),
+                )
+                matched += 1
     log.info("gps backfill matched %d photos", matched)
     return matched
 

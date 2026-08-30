@@ -151,6 +151,19 @@ Environment variables (see `.env.example`):
 | `SYNC_INTERVAL`         | `300`                   | Seconds between timeline diffs               |
 | `WORKERS`               | `2`                     | Parallel recognition workers                 |
 | `BRIDGE_URL`            | `http://proton-bridge:8090` | Bridge container address                  |
+| `SYNC_LIMIT`            | `0`                     | Only index the newest N photos (0 = all) — handy for testing |
+
+### GPS / place enrichment
+
+Photos imported from a Google Takeout export keep their GPS metadata in local
+`*.supplemental-metadata.json` sidecars (Proton's API does not expose location).
+If you still have that export on disk, point `PHOTOS_DIR` at it and run the
+one-shot backfill inside the app container (matches by sha1 against the Proton
+timeline, so no full-res download is ever needed):
+
+```bash
+docker compose exec app python main.py --backfill-gps
+```
 
 ## Roadmap / ideas
 
