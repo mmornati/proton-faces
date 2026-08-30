@@ -375,7 +375,7 @@ def all_clips() -> list[sqlite3.Row]:
 def search_photos_by_place(query: str, limit: int = 200) -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
-            "SELECT * FROM photos WHERE status='done' AND place IS NOT NULL AND place LIKE ? ORDER BY capture_time DESC LIMIT ?",
+            "SELECT * FROM photos WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' AND place IS NOT NULL AND place LIKE ? ORDER BY capture_time DESC LIMIT ?",
             (f"%{query}%", limit),
         ).fetchall()
 
@@ -398,6 +398,6 @@ def place_stats(limit: int = 500) -> list[sqlite3.Row]:
 def done_photos(limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
-            "SELECT * FROM photos WHERE status='done' ORDER BY capture_time DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM photos WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' ORDER BY capture_time DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
