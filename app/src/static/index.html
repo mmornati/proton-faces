@@ -513,19 +513,8 @@ async function loadPeople() {
     el.innerHTML = '<div class="empty">No people found yet.</div>';
     return;
   }
-  let dupsHtml = "";
-  try {
-    const dd = await api("/api/people/duplicates?limit=50");
-    if (dd.duplicates && dd.duplicates.length) {
-      dupsHtml = `<div class="dups"><h3>Suggested merges</h3>${dd.duplicates.map((d) => `
-        <div class="dup" data-a="${d.a.id}" data-b="${d.b.id}">
-          <span class="dupnames">${esc(d.a.name || "Person " + d.a.id)} <span class="dup-arrow">+</span> ${esc(d.b.name || "Person " + d.b.id)}</span>
-          <span class="dupsim">${Math.round(d.similarity * 100)}% similar</span>
-          <button class="small" data-merge="1">Merge</button>
-        </div>`).join("")}</div>`;
-    }
-  } catch (e) {}
-  el.innerHTML = dupsHtml + `<div class="people-grid">${data.people.map((p) => `
+  el.innerHTML = `<div class="dups" id="dups"><h3>Suggested merges</h3><div class="dup"><span class="dupsim">Checking…</span></div></div>
+    <div class="people-grid">${data.people.map((p) => `
     <div class="person" data-id="${p.id}">
       ${p.cover_url ? `<img src="${p.cover_url}" alt="">` : '<div style="width:84px;height:84px;border-radius:50%;background:var(--panel2);margin:0 auto 8px"></div>'}
       <div class="name">${esc(p.name || "Unknown person")}</div>
@@ -533,6 +522,7 @@ async function loadPeople() {
       <input class="rename" placeholder="Name" value="${esc(p.name || "")}">
       <button class="small merge-btn" data-id="${p.id}">Merge into…</button>
     </div>`).join("")}</div>`;
+  loadDuplicates();
   el.querySelectorAll(".person").forEach((card) => {
     card.querySelector(".rename").addEventListener("click", (e) => e.stopPropagation());
     card.querySelector(".rename").addEventListener("keydown", async (e) => {
@@ -560,14 +550,34 @@ async function loadPeople() {
       $("#counts").textContent = `${data.count} faces`;
     });
   });
-  el.querySelectorAll(".dup[data-merge]").forEach((d) => {
-    d.querySelector("button[data-merge]").addEventListener("click", async () => {
-      const a = +d.dataset.a, b = +d.dataset.b;
-      const r = await api(`/api/people/${a}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: b }) });
-      toast(`Merged. Auto-tagged ${r.assigned_similar || 0} faces.`);
-      loadPeople();
+}
+
+async function loadDuplicates() {
+  const box = $("#dups");
+  if (!box) return;
+  try {
+    const dd = await api("/api/people/duplicates?limit=50");
+    if (!dd.duplicates || !dd.duplicates.length) {
+      box.innerHTML = '<h3>Suggested merges</h3><div class="dup"><span class="dupsim">No suggested merges.</span></div>';
+      return;
+    }
+    box.innerHTML = `<h3>Suggested merges</h3>${dd.duplicates.map((d) => `
+      <div class="dup" data-a="${d.a.id}" data-b="${d.b.id}">
+        <span class="dupnames">${esc(d.a.name || "Person " + d.a.id)} <span class="dup-arrow">+</span> ${esc(d.b.name || "Person " + d.b.id)}</span>
+        <span class="dupsim">${Math.round(d.similarity * 100)}% similar</span>
+        <button class="small" data-merge="1">Merge</button>
+      </div>`).join("")}`;
+    box.querySelectorAll(".dup[data-merge]").forEach((d) => {
+      d.querySelector("button[data-merge]").addEventListener("click", async () => {
+        const a = +d.dataset.a, b = +d.dataset.b;
+        const r = await api(`/api/people/${a}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: b }) });
+        toast(`Merged. Auto-tagged ${r.assigned_similar || 0} faces.`);
+        loadPeople();
+      });
     });
-  });
+  } catch (e) {
+    box.innerHTML = '<h3>Suggested merges</h3><div class="dup"><span class="dupsim">Unavailable.</span></div>';
+  }
 }
 
 function showPlacePhotos(place) {

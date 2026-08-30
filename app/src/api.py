@@ -487,32 +487,40 @@ def api_people_merge(source_id: int, body: dict):
 
 @app.get("/api/people/duplicates")
 def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
-    """Find people whose mean face embeddings are highly similar (likely dupes)."""
+    """Find people whose mean face embeddings are highly similar (likely dupes).
+
+    Vectorized with a single (N x D) @ (D x N) matrix multiply so it stays
+    fast even with thousands of people.
+    """
     people = all_people()
-    embs = []
-    for p in people:
+    n = len(people)
+    if n < 2:
+        return {"duplicates": []}
+    mats = []
+    idx = []  # positions in `people` that have an embedding
+    for i, p in enumerate(people):
         emb = person_mean_embedding(p["id"])
-        if emb is None:
-            embs.append(None)
-        else:
-            embs.append(emb)
-    pairs = []
-    for i in range(len(people)):
-        if embs[i] is None:
-            continue
-        for j in range(i + 1, len(people)):
-            if embs[j] is None:
-                continue
-            sim = float(np.dot(embs[i], embs[j]))
-            if sim >= threshold:
-                pairs.append((sim, i, j))
-    pairs.sort(reverse=True, key=lambda t: t[0])
+        if emb is not None:
+            mats.append(emb)
+            idx.append(i)
+    if len(mats) < 2:
+        return {"duplicates": []}
+    X = np.stack(mats).astype(np.float32)          # (M, 512)
+    S = (X @ X.T).astype(np.float32)               # (M, M) cosine sims
+    iu = np.triu_indices(S.shape[0], k=1)
+    sims = S[iu]
+    mask = sims >= threshold
+    if not mask.any():
+        return {"duplicates": []}
+    hits = np.argsort(-sims[mask])[:limit]
     dups = []
-    for sim, i, j in pairs[:limit]:
+    for k in hits:
+        i = idx[iu[0][mask][k]]
+        j = idx[iu[1][mask][k]]
         a, b = people[i], people[j]
         dups.append(
             {
-                "similarity": round(sim, 4),
+                "similarity": round(float(sims[mask][k]), 4),
                 "a": {"id": a["id"], "name": a["name"], "photo_count": a["photo_count"], "face_count": a["face_count"]},
                 "b": {"id": b["id"], "name": b["name"], "photo_count": b["photo_count"], "face_count": b["face_count"]},
             }
