@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS faces (
 );
 CREATE INDEX IF NOT EXISTS idx_faces_person ON faces(person_id);
 CREATE INDEX IF NOT EXISTS idx_faces_photo  ON faces(photo_uid);
+CREATE INDEX IF NOT EXISTS idx_faces_person_photo ON faces(person_id, photo_uid);
 
 CREATE TABLE IF NOT EXISTS clips (
     photo_uid TEXT PRIMARY KEY REFERENCES photos(uid) ON DELETE CASCADE,
@@ -491,10 +492,13 @@ def all_people() -> list[sqlite3.Row]:
 def photos_for_person(person_id: int, limit: int = 1000) -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
-            """SELECT DISTINCT ph.* FROM faces f
-               JOIN photos ph ON ph.uid = f.photo_uid
-               WHERE f.person_id=? AND ph.status='done'
-               ORDER BY ph.capture_time ASC LIMIT ?""",
+            """SELECT ph.* FROM photos ph
+               WHERE ph.uid IN (
+                   SELECT DISTINCT f.photo_uid FROM faces f
+                   WHERE f.person_id=? AND f.photo_uid IS NOT NULL
+               )
+               AND ph.status='done'
+               ORDER BY ph.capture_time DESC LIMIT ?""",
             (person_id, limit),
         ).fetchall()
 

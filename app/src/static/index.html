@@ -218,6 +218,19 @@ main { padding: 18px; }
   padding: 10px 18px; border-radius: 10px; z-index: 300; font-size: 14px;
   box-shadow: 0 6px 24px rgba(0,0,0,.4);
 }
+/* loading overlay */
+#loader {
+  display: none; position: fixed; inset: 0; z-index: 400;
+  background: rgba(18,20,23,.55); align-items: center; justify-content: center; flex-direction: column; gap: 12px;
+}
+#loader.open { display: flex; }
+.spinner {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 3px solid var(--panel2); border-top-color: var(--accent);
+  animation: pfspin .8s linear infinite;
+}
+@keyframes pfspin { to { transform: rotate(360deg); } }
+#loader .lmsg { color: var(--muted); font-size: 13px; }
 /* places map */
 #mapwrap { margin-bottom: 16px; }
 #map { height: 45vh; border-radius: 12px; border: 1px solid var(--border); background: #14171a; z-index: 1; }
@@ -297,6 +310,7 @@ main { padding: 18px; }
   <img id="lbimg" alt="">
 </div>
 <div id="popover"></div>
+<div id="loader"><div class="spinner"></div><div class="lmsg" id="lmsg"></div></div>
 <div id="mergepick">
   <div id="mergepickbox">
     <div id="mergepickhead">
@@ -354,6 +368,14 @@ function toast(msg) {
   t.textContent = msg;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 3500);
+}
+
+function showLoader(msg) {
+  $("#lmsg").textContent = msg || "";
+  $("#loader").classList.add("open");
+}
+function hideLoader() {
+  $("#loader").classList.remove("open");
 }
 
 function renderPhotos(list, append) {
@@ -560,12 +582,17 @@ async function loadPhotos() {
       ? `/api/albums/${encodeURIComponent(state.albumUid)}/photos`
       : "/api/photos";
   const url = `${base}?limit=${photoPage}&offset=0${state.beforeTs ? `&before=${state.beforeTs}` : ""}`;
-  const data = await api(url);
-  renderPhotos(data.results || data.photos || [], false);
-  state.photos = data.results || data.photos || [];
-  if (!state.q) {
-    photoOffset = (data.photos || []).length;
-    if ((data.photos || []).length < photoPage) photoDone = true;
+  if (state.albumUid) showLoader("Loading album…");
+  try {
+    const data = await api(url);
+    renderPhotos(data.results || data.photos || [], false);
+    state.photos = data.results || data.photos || [];
+    if (!state.q) {
+      photoOffset = (data.photos || []).length;
+      if ((data.photos || []).length < photoPage) photoDone = true;
+    }
+  } finally {
+    if (state.albumUid) hideLoader();
   }
 }
 
@@ -740,9 +767,16 @@ function bindPersonCards(people) {
       openMergePicker(pid, people);
     });
     card.addEventListener("click", async () => {
-      const data = await api(`/api/people/${pid}/photos`);
-      renderPhotos(data.photos);
-      $("#counts").textContent = `${data.count} faces`;
+      showLoader("Loading photos…");
+      try {
+        const data = await api(`/api/people/${pid}/photos`);
+        renderPhotos(data.photos);
+        $("#counts").textContent = `${data.count} faces`;
+      } catch (e) {
+        toast("Error: " + e.message);
+      } finally {
+        hideLoader();
+      }
     });
   });
 }
