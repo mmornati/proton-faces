@@ -105,14 +105,10 @@ _AUTH_FREE_BINARY_SUFFIXES = frozenset({
 def _is_auth_free(path: str) -> bool:
     if path in _AUTH_FREE_PATHS:
         return True
-    for suffix in _AUTH_FREE_BINARY_SUFFIXES:
-        if (
-            len(path) > len(suffix)
-            and path.endswith(suffix)
-            and path[-len(suffix) - 1] == "/"
-        ):
-            return True
-    return False
+    # All routes that return binary bytes live at `.../<thumb|full|cover|crop>`;
+    # no shared parent has a sibling segment with those names, so a plain
+    # suffix check is sufficient and unambiguous.
+    return any(path.endswith(s) for s in _AUTH_FREE_BINARY_SUFFIXES)
 
 
 def require_user(request: Request) -> CurrentUser | None:
