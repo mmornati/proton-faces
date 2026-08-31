@@ -411,9 +411,64 @@ body { padding-bottom: 34px; }
 }
 #statusmodalbody .pill.ok { color: var(--green); border-color: rgba(52,201,123,.5); }
 #statusmodalbody .pill.bad { color: var(--red); border-color: rgba(255,95,87,.5); }
+
+/* --- login modal --- */
+#loginmodal {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 100;
+  display: none; align-items: center; justify-content: center;
+}
+#loginmodal.open { display: flex; }
+#loginmodalbox {
+  width: min(420px, 92vw);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  padding: 22px; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+#loginmodalhead { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; }
+#loginmodalhead .title { font-size: 18px; font-weight: 600; }
+#loginmodalhead .hint { color: var(--muted); font-size: 12px; }
+#loginform { display: flex; flex-direction: column; gap: 12px; }
+#loginform label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
+#loginform input {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 10px 12px; border-radius: 8px; font-size: 14px;
+}
+#loginform input:focus { outline: none; border-color: var(--accent); }
+#loginform button[type=submit] { margin-top: 4px; padding: 11px 14px; font-size: 14px; }
+.login-error { color: var(--red); font-size: 13px; min-height: 18px; }
+#login-footer {
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: var(--muted);
+}
+#login-user-chip b { color: var(--text); }
 </style>
 </head>
 <body>
+<div id="loginmodal" role="dialog" aria-labelledby="loginmodaltitle">
+  <div id="loginmodalbox">
+    <div id="loginmodalhead">
+      <div class="title" id="loginmodaltitle">Sign in to proton-faces</div>
+      <div class="hint" id="login-bridge-hint">checking bridge…</div>
+    </div>
+    <form id="loginform" autocomplete="on">
+      <label>
+        <span>Username</span>
+        <input id="login-username" name="username" type="text" autocomplete="username" required minlength="2">
+      </label>
+      <label>
+        <span>Password</span>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required minlength="8">
+      </label>
+      <button id="login-submit" type="submit">Sign in</button>
+      <div id="login-error" class="login-error"></div>
+    </form>
+    <div id="login-footer">
+      <span id="login-user-chip" style="display:none">Signed in as <b id="login-user-name"></b></span>
+      <button id="login-signout" class="secondary small" type="button" style="display:none">Sign out</button>
+    </div>
+  </div>
+</div>
+<div id="approot">
 <header>
   <h1>proton<span>-faces</span></h1>
   <nav>
@@ -549,9 +604,183 @@ let peopleGridCache = null; // { q, total, ids: number[] }
 let peopleSearchTimer = null;
 
 async function api(path, opts) {
-  const r = await fetch(path, opts);
-  if (!r.ok) throw new Error(await r.text());
+  return authFetch(path, opts);
+}
+
+// auth.js — bearer-token wrapper + login screen glue.
+// Stores access + refresh tokens in localStorage; transparently refreshes
+// the access token on 401 and shows the login screen if the refresh fails.
+// Public endpoints (login/refresh/health/status/limits) skip auth entirely.
+const AUTH_STORAGE = "pf.auth";
+let _me = null;
+let _refreshInflight = null;
+
+function _loadAuth() {
+  try { return JSON.parse(localStorage.getItem(AUTH_STORAGE) || "null"); }
+  catch { return null; }
+}
+function _saveAuth(a) {
+  if (!a) localStorage.removeItem(AUTH_STORAGE);
+  else localStorage.setItem(AUTH_STORAGE, JSON.stringify(a));
+}
+function _isAuthFreePath(path) {
+  return path === "/api/auth/login"
+      || path === "/api/auth/refresh"
+      || path === "/api/auth/limits"
+      || path === "/api/health"
+      || path === "/api/status";
+}
+
+async function authFetch(path, opts = {}) {
+  opts.headers = { ...(opts.headers || {}) };
+  const a = _loadAuth();
+  if (a && a.access_token && !_isAuthFreePath(path)) {
+    opts.headers["Authorization"] = `Bearer ${a.access_token}`;
+  }
+  let r = await fetch(path, opts);
+  if (r.status !== 401 || _isAuthFreePath(path)) {
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(t || `${r.status} ${r.statusText}`);
+    }
+    // 204 No Content has no body
+    if (r.status === 204) return null;
+    return r.json();
+  }
+  // 401: try refreshing once.
+  if (a && a.refresh_token) {
+    try {
+      const refreshed = await _refreshAccess(a.refresh_token);
+      _saveAuth({ ...a, access_token: refreshed.access_token });
+      opts.headers["Authorization"] = `Bearer ${refreshed.access_token}`;
+      r = await fetch(path, opts);
+    } catch (e) {
+      _signOutLocal();
+      showLogin();
+      throw new Error("session expired");
+    }
+  } else {
+    _signOutLocal();
+    showLogin();
+    throw new Error("authentication required");
+  }
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || `${r.status} ${r.statusText}`);
+  }
+  if (r.status === 204) return null;
   return r.json();
+}
+
+async function _refreshAccess(refreshToken) {
+  if (!_refreshInflight) {
+    _refreshInflight = fetch("/api/auth/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    }).finally(() => { _refreshInflight = null; });
+  }
+  const r = await _refreshInflight;
+  if (!r.ok) throw new Error("refresh failed");
+  return r.json();
+}
+
+async function login(username, password) {
+  const r = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || "login failed");
+  }
+  const data = await r.json();
+  _saveAuth({
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    user: data.user,
+  });
+  _me = data.user;
+  return data.user;
+}
+
+async function logout() {
+  try {
+    const a = _loadAuth();
+    if (a && a.access_token) {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${a.access_token}` },
+      });
+    }
+  } catch (e) { /* ignore */ }
+  _signOutLocal();
+}
+
+function _signOutLocal() {
+  localStorage.removeItem(AUTH_STORAGE);
+  _me = null;
+}
+
+async function fetchMe() {
+  const a = _loadAuth();
+  if (!a || !a.access_token) return null;
+  try {
+    const r = await fetch("/api/auth/me", {
+      headers: { Authorization: `Bearer ${a.access_token}` },
+    });
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
+}
+
+// --- login screen ----------------------------------------------------------
+
+function showLogin() {
+  const lm = $("#loginmodal");
+  if (lm) lm.classList.add("open");
+  const root = $("#approot");
+  if (root) root.style.display = "none";
+  // Focus the username field on first show.
+  setTimeout(() => { const u = $("#login-username"); if (u) u.focus(); }, 0);
+}
+
+function hideLogin() {
+  const lm = $("#loginmodal");
+  if (lm) lm.classList.remove("open");
+  const root = $("#approot");
+  if (root) root.style.display = "";
+}
+
+async function bootAuth() {
+  const a = _loadAuth();
+  if (!a || !a.access_token) { showLogin(); return false; }
+  _me = await fetchMe();
+  if (!_me) { _signOutLocal(); showLogin(); return false; }
+  hideLogin();
+  return true;
+}
+
+async function doLoginSubmit(ev) {
+  ev.preventDefault();
+  const errEl = $("#login-error");
+  errEl.textContent = "";
+  const username = $("#login-username").value.trim();
+  const password = $("#login-password").value;
+  const btn = $("#login-submit");
+  btn.disabled = true;
+  btn.textContent = "Signing in…";
+  try {
+    await login(username, password);
+    hideLogin();
+    $("#login-password").value = "";
+    location.reload();   // cleanest way to drop stale cached payloads from a previous account
+  } catch (e) {
+    errEl.textContent = "Login failed — check your username and password";
+    btn.disabled = false;
+    btn.textContent = "Sign in";
+  }
 }
 
 function esc(s) {
@@ -608,12 +837,12 @@ function renderPhotos(list, append) {
     const newVal = !b.classList.contains("on");
     try {
       const updated = await api(`/api/photos/${uid}`, { method: "PATCH", headers: {"content-type": "application/json"}, body: JSON.stringify({ favorited: newVal }) });
-      b.classList.toggle("on", updated.favorited);
-      b.textContent = updated.favorited ? "★" : "☆";
-      b.closest(".card").classList.toggle("favorited", updated.favorited);
+      b.classList.toggle("on", updated.favorited_by_me);
+      b.textContent = updated.favorited_by_me ? "★" : "☆";
+      b.closest(".card").classList.toggle("favorited", updated.favorited_by_me);
       // Patch the in-memory row so re-renders don't lose the state.
       const row = state.photos.find((x) => x.uid === uid);
-      if (row) row.favorited = updated.favorited;
+      if (row) row.favorited_by_me = updated.favorited_by_me;
     } catch (err) { toast("Favorite failed: " + err.message); }
   }));
   // sentinel for infinite scroll (Photos and Albums views)
@@ -633,10 +862,10 @@ function cardHtml(p) {
   const isVideo = p.kind === "video";
   const dur = isVideo && p.duration_sec ? fmtDuration(p.duration_sec) : "";
   return `
-    <div class="card${isVideo ? " video" : ""}${p.favorited ? " favorited" : ""}${p.archived ? " archived" : ""}">
+    <div class="card${isVideo ? " video" : ""}${p.favorited_by_me ? " favorited" : ""}${p.archived ? " archived" : ""}">
       <img loading="lazy" src="${p.thumb_url}" data-uid="${esc(p.uid)}" alt="">
       ${isVideo ? `<div class="playbadge" aria-label="Video">▶</div>${dur ? `<div class="duration">${esc(dur)}</div>` : ""}` : ""}
-      <button class="starbtn${p.favorited ? " on" : ""}" data-uid="${esc(p.uid)}" title="Toggle favorite">${p.favorited ? "★" : "☆"}</button>
+      <button class="starbtn${p.favorited_by_me ? " on" : ""}" data-uid="${esc(p.uid)}" title="Toggle favorite">${p.favorited_by_me ? "★" : "☆"}</button>
       <div class="date">${fmtDate(p.capture_time)}</div>
       <button class="facebadge" data-uid="${esc(p.uid)}">faces</button>
       ${p.score !== undefined ? `<div class="score">${(p.score * 100).toFixed(0)}%</div>` : ""}
@@ -683,12 +912,12 @@ async function openDetail(uid) {
   try {
     meta = await api(`/api/photos/${uid}/meta`);
   } catch (e) { meta = null; }
-  $("#dfav").textContent = meta?.favorited ? "★" : "☆";
+  $("#dfav").textContent = meta?.favorited_by_me ? "★" : "☆";
   $("#dfav").onclick = async () => {
     try {
-      const u = await api(`/api/photos/${uid}`, { method: "PATCH", headers: {"content-type": "application/json"}, body: JSON.stringify({ favorited: !meta.favorited }) });
-      meta.favorited = u.favorited;
-      $("#dfav").textContent = u.favorited ? "★" : "☆";
+      const u = await api(`/api/photos/${uid}`, { method: "PATCH", headers: {"content-type": "application/json"}, body: JSON.stringify({ favorited: !meta.favorited_by_me }) });
+      meta.favorited_by_me = u.favorited_by_me;
+      $("#dfav").textContent = u.favorited_by_me ? "★" : "☆";
     } catch (err) { toast("Favorite failed: " + err.message); }
   };
   $("#darch").textContent = meta?.archived ? "✓ archived" : "▦ archive";
@@ -919,8 +1148,8 @@ async function loadMemories() {
       const newVal = !b.classList.contains("on");
       try {
         const updated = await api(`/api/photos/${uid}`, { method: "PATCH", headers: {"content-type": "application/json"}, body: JSON.stringify({ favorited: newVal }) });
-        b.classList.toggle("on", updated.favorited);
-        b.textContent = updated.favorited ? "★" : "☆";
+        b.classList.toggle("on", updated.favorited_by_me);
+        b.textContent = updated.favorited_by_me ? "★" : "☆";
       } catch (err) { toast("Favorite failed: " + err.message); }
     }));
   } catch (e) {
@@ -1884,11 +2113,19 @@ document.addEventListener("click", (e) => {
 });
 
 (async () => {
+  if (!await bootAuth()) return;
   await refresh();
   await loadPhotos();
   loadAnchors();
   setInterval(refresh, 30000);
 })();
+
+document.getElementById("loginform").addEventListener("submit", doLoginSubmit);
+document.getElementById("login-signout").addEventListener("click", async () => {
+  await logout();
+  location.reload();
+});
 </script>
+</div><!-- /#approot -->
 </body>
 </html>

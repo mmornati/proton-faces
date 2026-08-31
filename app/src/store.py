@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS photos (
     albums       TEXT,           -- JSON array of album node uids
     size_bytes   INTEGER,        -- Proton claimedSize (UI display, video poster gate)
     duration_sec REAL,           -- video duration (ffprobe); NULL for images
-    favorited    INTEGER NOT NULL DEFAULT 0,    -- local star
+    favorited    INTEGER NOT NULL DEFAULT 0,    -- legacy: starred by anyone (kept for backward compat / migration)
     archived     INTEGER NOT NULL DEFAULT 0,    -- hidden from default grids
     hidden       INTEGER NOT NULL DEFAULT 0,    -- user hid it (e.g. resolved duplicate)
     tags         TEXT,           -- JSON array of freeform user tags
@@ -82,6 +82,45 @@ CREATE TABLE IF NOT EXISTS albums (
     end_ts       INTEGER,         -- latest capture_time in the album
     synced_at    INTEGER
 );
+
+-- --- multi-user auth + per-user favorites ----------------------------------
+-- Added in PR-9: local family accounts (no public Proton OAuth exists).
+-- Each user has a bcrypt password hash and a role. Active bearer tokens are
+-- tracked here too so the FastAPI app can validate them without consulting
+-- the bridge. ON DELETE CASCADE drops tokens + favorites when a user is
+-- removed so a family member leaving the household leaves no trace.
+
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name  TEXT,
+    password_hash TEXT NOT NULL,                   -- bcrypt cost 12, never plaintext
+    role          TEXT NOT NULL DEFAULT 'read'
+                  CHECK (role IN ('read','write','admin')),
+    created_at    INTEGER NOT NULL,
+    last_login_at INTEGER,
+    disabled      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    token       TEXT PRIMARY KEY,                  -- 32 random bytes, hex
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL CHECK (kind IN ('access','refresh')),
+    expires_at  INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL,
+    user_agent  TEXT,
+    ip          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_exp  ON auth_tokens(expires_at);
+
+CREATE TABLE IF NOT EXISTS user_favorites (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    photo_uid  TEXT    NOT NULL REFERENCES photos(uid) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, photo_uid)
+);
+CREATE INDEX IF NOT EXISTS idx_user_favorites_photo ON user_favorites(photo_uid);
 """
 
 _lock = threading.Lock()
@@ -104,7 +143,16 @@ def init_db() -> None:
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    """Idempotent column migrations for older databases."""
+    """Idempotent column migrations for older databases.
+
+    Safe to run before `_SCHEMA` is applied (init_db does both): if the
+    `photos` table doesn't exist yet, there's nothing to migrate.
+    """
+    tables = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    )}
+    if "photos" not in tables:
+        return
     pcols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
     if "size_bytes" not in pcols:
         conn.execute("ALTER TABLE photos ADD COLUMN size_bytes INTEGER")
@@ -738,15 +786,16 @@ def map_markers(limit: int = 1000) -> list[sqlite3.Row]:
 
 
 def done_photos(limit: int = 200, offset: int = 0, before: int | None = None,
-                only_favorites: bool = False, include_archived: bool = True) -> list[sqlite3.Row]:
+                only_favorites: bool = False, include_archived: bool = True,
+                user_id: int | None = None) -> list[sqlite3.Row]:
     """Indexed photos with thumbnails, newest first.
 
     `before` optionally restricts to photos captured at or before the given
     epoch timestamp (used as a date-anchor jump).
 
-    `only_favorites=True` returns only favorited photos (used by the Favorites
-    view). `include_archived=False` hides archived photos from the default
-    grid — they remain accessible from the Archive view.
+    `only_favorites=True` returns only photos the given user has favorited
+    (used by the Favorites view). `include_archived=False` hides archived
+    photos from the default grid — they remain accessible from the Archive view.
     """
     sql = (
         "SELECT * FROM photos "
@@ -755,7 +804,10 @@ def done_photos(limit: int = 200, offset: int = 0, before: int | None = None,
     )
     params: list = []
     if only_favorites:
-        sql += " AND favorited = 1"
+        if user_id is None:
+            return []
+        sql += " AND uid IN (SELECT photo_uid FROM user_favorites WHERE user_id=?)"
+        params.append(user_id)
     if not include_archived:
         sql += " AND archived = 0"
     if before is not None:
@@ -1022,3 +1074,200 @@ def album_photos(album_uid: str, limit: int = 200, offset: int = 0) -> list[sqli
             "ORDER BY capture_time DESC LIMIT ? OFFSET ?",
             (f'%"{album_uid}"%', limit, offset),
         ).fetchall()
+
+
+# --- users & auth tokens ---------------------------------------------------
+
+def create_user(username: str, password_hash: str, role: str = "read",
+                display_name: str | None = None) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO users (username, display_name, password_hash, role, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (username, display_name or username, password_hash, role, int(time.time())),
+        )
+        return cur.lastrowid
+
+
+def get_user_by_id(user_id: int) -> sqlite3.Row | None:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT id, username, display_name, role, created_at, last_login_at, disabled "
+            "FROM users WHERE id=?",
+            (user_id,),
+        ).fetchone()
+
+
+def get_user_by_username(username: str) -> sqlite3.Row | None:
+    """Returns the full user row including password_hash (server-side only)."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM users WHERE username=? COLLATE NOCASE", (username,)
+        ).fetchone()
+
+
+def list_users() -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT id, username, display_name, role, created_at, last_login_at, disabled "
+            "FROM users ORDER BY username COLLATE NOCASE"
+        ).fetchall()
+
+
+def update_user(user_id: int, *, display_name: str | None = None,
+                role: str | None = None, disabled: bool | None = None,
+                password_hash: str | None = None) -> bool:
+    """Patch one or more user fields. Returns True if a row was updated."""
+    sets: list[str] = []
+    params: list = []
+    if display_name is not None:
+        sets.append("display_name=?")
+        params.append(display_name)
+    if role is not None:
+        if role not in ("read", "write", "admin"):
+            raise ValueError(f"invalid role: {role}")
+        sets.append("role=?")
+        params.append(role)
+    if disabled is not None:
+        sets.append("disabled=?")
+        params.append(1 if disabled else 0)
+    if password_hash is not None:
+        sets.append("password_hash=?")
+        params.append(password_hash)
+    if not sets:
+        return False
+    params.append(user_id)
+    with get_conn() as conn:
+        cur = conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", params)
+        return cur.rowcount > 0
+
+
+def delete_user(user_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+        return cur.rowcount > 0
+
+
+def touch_last_login(user_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute("UPDATE users SET last_login_at=? WHERE id=?",
+                     (int(time.time()), user_id))
+
+
+def issue_token(user_id: int, kind: str, expires_in: int, *,
+                user_agent: str | None = None, ip: str | None = None) -> str:
+    """Mint a new opaque bearer token (32 random bytes hex-encoded)."""
+    import secrets
+    token = secrets.token_hex(32)
+    now = int(time.time())
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO auth_tokens (token, user_id, kind, expires_at, created_at, user_agent, ip) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (token, user_id, kind, now + expires_in, now, user_agent, ip),
+        )
+    return token
+
+
+def lookup_token(token: str) -> sqlite3.Row | None:
+    """Return the (token, user_id, kind, expires_at) row if active, else None.
+
+    Joined with users so the caller can see role/disabled without a second query.
+    """
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT t.token, t.user_id, t.kind, t.expires_at,
+                      u.username, u.display_name, u.role, u.disabled
+               FROM auth_tokens t JOIN users u ON u.id = t.user_id
+               WHERE t.token = ?""",
+            (token,),
+        ).fetchone()
+
+
+def revoke_token(token: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM auth_tokens WHERE token=?", (token,))
+        return cur.rowcount > 0
+
+
+def revoke_all_tokens(user_id: int) -> int:
+    """Sign the user out of every device. Returns number of tokens deleted."""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM auth_tokens WHERE user_id=?", (user_id,))
+        return cur.rowcount
+
+
+def purge_expired_tokens() -> int:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM auth_tokens WHERE expires_at < ?", (int(time.time()),))
+        return cur.rowcount
+
+
+def backfill_legacy_favorites(admin_user_id: int) -> int:
+    """One-time: copy photos.favorited=1 rows into user_favorites for the admin.
+
+    Called when the first admin is created, only if photos.favorited=1 rows
+    exist. After the copy, photos.favorited is cleared (kept as the historical
+    "anyone starred this" flag; the per-user view is authoritative). Idempotent
+    on the user_favorites side (INSERT OR IGNORE).
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM photos WHERE favorited=1"
+        ).fetchone()[0]
+        if cur == 0:
+            return 0
+        conn.execute(
+            """INSERT OR IGNORE INTO user_favorites (user_id, photo_uid, created_at)
+               SELECT ?, uid, COALESCE(processed_at, ?) FROM photos WHERE favorited=1""",
+            (admin_user_id, int(time.time())),
+        )
+        conn.execute("UPDATE photos SET favorited=0")
+        return cur
+
+
+# --- per-user favorites ----------------------------------------------------
+
+def favorite_photo(user_id: int, photo_uid: str) -> bool:
+    """Add to favorites. Returns True if it was already favorited."""
+    with get_conn() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO user_favorites (user_id, photo_uid, created_at) VALUES (?, ?, ?)",
+                (user_id, photo_uid, int(time.time())),
+            )
+            return False
+        except sqlite3.IntegrityError:
+            return True
+
+
+def unfavorite_photo(user_id: int, photo_uid: str) -> bool:
+    """Remove from favorites. Returns True if a row was deleted."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM user_favorites WHERE user_id=? AND photo_uid=?",
+            (user_id, photo_uid),
+        )
+        return cur.rowcount > 0
+
+
+def is_favorite(user_id: int, photo_uid: str) -> bool:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT 1 FROM user_favorites WHERE user_id=? AND photo_uid=?",
+            (user_id, photo_uid),
+        ).fetchone() is not None
+
+
+def favorite_uids(user_id: int, uids: list[str]) -> set[str]:
+    """Return the subset of `uids` that the user has favorited (batch query)."""
+    if not uids:
+        return set()
+    placeholders = ",".join("?" * len(uids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT photo_uid FROM user_favorites "
+            f"WHERE user_id=? AND photo_uid IN ({placeholders})",
+            [user_id, *uids],
+        ).fetchall()
+    return {r["photo_uid"] for r in rows}

@@ -10,11 +10,21 @@ import time
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi import Body
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from auth import (
+    CurrentUser,
+    hash_password,
+    login,
+    refresh as refresh_tokens,
+    require_role,
+    require_user,
+    ROLE_RANK,
+)
+from auth import access_ttl as auth_access_ttl
 from bridge_client import get_bridge
 from clip import embed_text
 from config import settings
@@ -33,13 +43,21 @@ from store import (
     count_faces_for_person,
     count_people,
     create_person,
+    create_user,
+    delete_user,
     done_photos,
     face_embedding,
     faces_for_photo,
+    favorite_photo,
+    favorite_uids,
     find_person_by_name,
     get_photo,
     get_person,
     get_tags,
+    get_user_by_id,
+    get_user_by_username,
+    is_favorite,
+    list_users,
     map_markers,
     merge_person,
     person_mean_embedding,
@@ -52,9 +70,10 @@ from store import (
     photos_for_person,
     place_stats,
     rename_person,
+    revoke_all_tokens,
+    revoke_token,
     search_photos_by_place,
     set_archived,
-    set_favorited,
     set_hidden,
     set_person_cover_face,
     set_tags,
@@ -62,12 +81,15 @@ from store import (
     stats,
     unassign_face,
     unassigned_faces,
+    unfavorite_photo,
+    update_user,
 )
 import indexer
 
 log = logging.getLogger("api")
 
-app = FastAPI(title="proton-faces", version="0.1.0")
+app = FastAPI(title="proton-faces", version="0.1.0",
+              dependencies=[Depends(require_user)])
 
 _STATIC = Path(__file__).parent / "static"
 
@@ -172,7 +194,11 @@ def _row_to_dict(row) -> dict:
     else:
         d["kind"] = "other"
     # Surface local-only metadata flags + tags as plain JSON-friendly values.
+    # `favorited` is the legacy "anyone starred this" boolean (always 0 after
+    # PR-9, but kept for backward-compat). `favorited_by_me` is added per-list
+    # in `_user_photos()` so list endpoints don't issue N per-row queries.
     d["favorited"] = bool(d.get("favorited"))
+    d["favorited_by_me"] = False
     d["archived"] = bool(d.get("archived"))
     d["hidden"] = bool(d.get("hidden"))
     raw_tags = d.get("tags")
@@ -186,9 +212,107 @@ def _row_to_dict(row) -> dict:
     return d
 
 
-# --- status ----------------------------------------------------------------
+def _user_photos(user_id: int, rows) -> list[dict]:
+    """Serialize a list of photo rows for `user_id`, marking favorited_by_me.
 
-@app.get("/api/health")
+    Issues a single batched query against user_favorites for the page of uids
+    so list endpoints stay O(1) round-trips.
+    """
+    uids = [r["uid"] for r in rows]
+    fav_set = favorite_uids(user_id, uids) if uids else set()
+    out = []
+    for r in rows:
+        d = _row_to_dict(r)
+        d["favorited_by_me"] = r["uid"] in fav_set
+        out.append(d)
+    return out
+
+
+def _single_user_photo(user_id: int, row) -> dict:
+    d = _row_to_dict(row)
+    d["favorited_by_me"] = is_favorite(user_id, row["uid"])
+    return d
+
+
+# --- public auth endpoints -------------------------------------------------
+# Declared first so they don't accidentally inherit the global require_user
+# dep. Each route sets dependencies=[] explicitly so it stays public even if
+# route ordering changes.
+
+@app.post("/api/auth/login", dependencies=[])
+def api_login(request: Request, body: dict = Body(...)):
+    """Exchange username+password for an access+refresh token pair."""
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    if not username or not password:
+        raise HTTPException(400, "username and password required")
+    ua = request.headers.get("user-agent")
+    ip = request.client.host if request.client else None
+    access, refresh, user = login(username, password, user_agent=ua, ip=ip)
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "Bearer",
+        "expires_in": auth_access_ttl(),
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "display_name": user.display_name,
+            "role": user.role,
+        },
+    }
+
+
+@app.post("/api/auth/refresh", dependencies=[])
+def api_refresh(request: Request, body: dict = Body(...)):
+    rt = (body.get("refresh_token") or "").strip()
+    if not rt:
+        raise HTTPException(400, "refresh_token required")
+    ua = request.headers.get("user-agent")
+    ip = request.client.host if request.client else None
+    access, user = refresh_tokens(rt, user_agent=ua, ip=ip)
+    return {
+        "access_token": access,
+        "token_type": "Bearer",
+        "expires_in": auth_access_ttl(),
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "display_name": user.display_name,
+            "role": user.role,
+        },
+    }
+
+
+@app.post("/api/auth/logout")
+def api_logout(request: Request, user: CurrentUser = Depends(require_user)):
+    """Invalidate the bearer token used for this request."""
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.split(None, 1)[1].strip() if auth_header.lower().startswith("bearer ") else None
+    if token:
+        revoke_token(token)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def api_me(user: CurrentUser = Depends(require_user)):
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": user.display_name,
+        "role": user.role,
+    }
+
+
+@app.get("/api/auth/limits", dependencies=[])
+def api_limits():
+    """Public — UI uses this to render the login screen with the right labels."""
+    return {"min_username": 2, "min_password": 8}
+
+
+# --- public status (so the login screen can show "bridge online" before auth) ---
+
+@app.get("/api/health", dependencies=[])
 def health() -> dict:
     try:
         b = get_bridge().health()
@@ -254,7 +378,7 @@ def _cached_stats() -> dict:
     return payload
 
 
-@app.get("/api/status")
+@app.get("/api/status", dependencies=[])
 def api_status() -> dict:
     """Aggregated status snapshot for the bottom status bar / details overlay.
 
@@ -300,24 +424,29 @@ def api_status() -> dict:
 @app.get("/api/photos")
 def api_photos(limit: int = 200, offset: int = 0, place: str | None = None,
                before: int | None = None, only_favorites: bool = False,
-               include_archived: bool = True, tag: str | None = None):
+               include_archived: bool = True, tag: str | None = None,
+               user: CurrentUser = Depends(require_user)):
     if tag:
         rows = photos_by_tag(tag, limit=limit, offset=offset)
     elif place:
         rows = search_photos_by_place(place, limit=limit, offset=offset)
     else:
         rows = done_photos(limit=limit, offset=offset, before=before,
-                            only_favorites=only_favorites, include_archived=include_archived)
-    return {"photos": [_row_to_dict(r) for r in rows]}
+                            only_favorites=only_favorites,
+                            include_archived=include_archived,
+                            user_id=user.id)
+    return {"photos": _user_photos(user.id, rows)}
 
 
 @app.get("/api/photos/archived")
-def api_archived_photos(limit: int = 200, offset: int = 0):
-    return {"photos": [_row_to_dict(r) for r in archived_photos(limit=limit, offset=offset)]}
+def api_archived_photos(limit: int = 200, offset: int = 0,
+                         user: CurrentUser = Depends(require_user)):
+    return {"photos": _user_photos(user.id, archived_photos(limit=limit, offset=offset))}
 
 
 @app.get("/api/memories")
-def api_memories(month: int | None = None, day: int | None = None, limit: int = 60):
+def api_memories(month: int | None = None, day: int | None = None, limit: int = 60,
+                  user: CurrentUser = Depends(require_user)):
     """Photos captured on (month, day) in previous years — "on this day".
 
     Defaults to today's calendar date in UTC so the UI can just call the
@@ -329,18 +458,16 @@ def api_memories(month: int | None = None, day: int | None = None, limit: int = 
     m = month if month is not None else now.month
     d = day if day is not None else now.day
     rows = memories_for_today(m, d, limit=limit)
-    out = []
-    for r in rows:
-        photo = _row_to_dict(r)
+    photos = _user_photos(user.id, rows)
+    for photo, r in zip(photos, rows):
         age_days = int(r["age_days"]) if r["age_days"] is not None else None
         photo["age_days"] = age_days
         photo["age_years"] = int(age_days // 365) if age_days is not None else None
-        out.append(photo)
-    return {"month": m, "day": d, "photos": out}
+    return {"month": m, "day": d, "photos": photos}
 
 
 @app.get("/api/duplicates")
-def api_duplicates(limit: int = 200):
+def api_duplicates(limit: int = 200, user: CurrentUser = Depends(require_user)):
     """Groups of photos that share a Proton content-hash (sha1).
 
     Each group is rendered side-by-side in the Duplicates tab; users can
@@ -352,7 +479,7 @@ def api_duplicates(limit: int = 200):
         out.append({
             "sha1": members[0]["sha1"],
             "count": len(members),
-            "photos": [_row_to_dict(r) for r in members],
+            "photos": _user_photos(user.id, members),
         })
     return {"groups": out}
 
@@ -363,26 +490,34 @@ def api_tags():
 
 
 @app.patch("/api/photos/{uid}")
-def api_patch_photo(uid: str, body: dict = Body(...)):
+def api_patch_photo(uid: str, body: dict = Body(...),
+                     user: CurrentUser = Depends(require_role("write"))):
     """Set local-only metadata flags on a photo: favorited, archived, hidden.
 
     Body keys are all optional; only the provided ones are updated. Returns
     the updated photo row.
+
+    `favorited` is per-user (stored in user_favorites); `archived` and `hidden`
+    remain shared so the family can keep a single archive view.
     """
     if get_photo(uid) is None:
         raise HTTPException(404, "photo not found")
     if "favorited" in body:
-        set_favorited(uid, bool(body["favorited"]))
+        if bool(body["favorited"]):
+            favorite_photo(user.id, uid)
+        else:
+            unfavorite_photo(user.id, uid)
     if "archived" in body:
         set_archived(uid, bool(body["archived"]))
     if "hidden" in body:
         set_hidden(uid, bool(body["hidden"]))
     row = get_photo(uid)
-    return _row_to_dict(row)
+    return _single_user_photo(user.id, row)
 
 
 @app.put("/api/photos/{uid}/tags")
-def api_set_tags(uid: str, body: dict = Body(...)):
+def api_set_tags(uid: str, body: dict = Body(...),
+                  user: CurrentUser = Depends(require_role("write"))):
     """Replace the freeform tag set for a photo. ``tags`` is a list of strings."""
     if get_photo(uid) is None:
         raise HTTPException(404, "photo not found")
@@ -443,9 +578,10 @@ def api_albums():
 
 
 @app.get("/api/albums/{album_uid}/photos")
-def api_album_photos(album_uid: str, limit: int = 200, offset: int = 0):
+def api_album_photos(album_uid: str, limit: int = 200, offset: int = 0,
+                      user: CurrentUser = Depends(require_user)):
     rows = album_photos(album_uid, limit=limit, offset=offset)
-    return {"photos": [_row_to_dict(r) for r in rows]}
+    return {"photos": _user_photos(user.id, rows)}
 
 
 @app.get("/api/places")
@@ -478,15 +614,15 @@ def api_map(limit: int = 1000):
 
 
 @app.get("/api/photos/{uid}")
-def api_photo(uid: str):
+def api_photo(uid: str, user: CurrentUser = Depends(require_user)):
     row = get_photo(uid)
     if row is None:
         raise HTTPException(404, "photo not found")
-    return _row_to_dict(row)
+    return _single_user_photo(user.id, row)
 
 
 @app.get("/api/photos/{uid}/meta")
-def api_photo_meta(uid: str):
+def api_photo_meta(uid: str, user: CurrentUser = Depends(require_user)):
     """Full metadata for the photo detail view.
 
     Merges the local index row (GPS, place, faces, people) with the live
@@ -497,7 +633,7 @@ def api_photo_meta(uid: str):
     row = get_photo(uid)
     if row is None:
         raise HTTPException(404, "photo not found")
-    meta = _row_to_dict(row)
+    meta = _single_user_photo(user.id, row)
 
     # Faces + people in this photo (local index).
     faces = faces_for_photo(uid)
@@ -801,7 +937,8 @@ def _merge_propagate(person_id: int, threshold: float | None = None) -> int:
 
 
 @app.post("/api/faces/{face_id}/person")
-def api_face_assign(face_id: int, body: dict):
+def api_face_assign(face_id: int, body: dict,
+                     user: CurrentUser = Depends(require_role("write"))):
     """Assign a face to an existing person (person_id) or create a new named person (name).
     When creating by name, merge into an existing person with the same name.
     Propagates the assignment to similar unassigned faces."""
@@ -848,7 +985,8 @@ def api_face_assign(face_id: int, body: dict):
 
 
 @app.post("/api/faces/{face_id}/unassign")
-def api_face_unassign(face_id: int):
+def api_face_unassign(face_id: int,
+                       user: CurrentUser = Depends(require_role("write"))):
     unassign_face(face_id)
     _drop_crop_cache(face_id)
     _invalidate_people_cache()
@@ -857,7 +995,8 @@ def api_face_unassign(face_id: int):
 
 
 @app.post("/api/people/{person_id}/name")
-def api_people_rename(person_id: int, body: dict):
+def api_people_rename(person_id: int, body: dict,
+                       user: CurrentUser = Depends(require_role("write"))):
     """Rename a person. If another person already has that name, merge instead."""
     name = (body.get("name") or "").strip()
     if not name:
@@ -884,7 +1023,8 @@ def api_people_rename(person_id: int, body: dict):
 
 
 @app.post("/api/people/{source_id}/merge")
-def api_people_merge(source_id: int, body: dict):
+def api_people_merge(source_id: int, body: dict,
+                      user: CurrentUser = Depends(require_role("write"))):
     """Explicitly merge source person into target (by id)."""
     target_id = body.get("target_id")
     if not isinstance(target_id, int):
@@ -979,9 +1119,10 @@ def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
 
 
 @app.get("/api/people/{person_id}/photos")
-def api_person_photos(person_id: int, limit: int = 200, offset: int = 0):
+def api_person_photos(person_id: int, limit: int = 200, offset: int = 0,
+                       user: CurrentUser = Depends(require_user)):
     rows = photos_for_person(person_id, limit=limit, offset=offset)
-    return {"photos": [_row_to_dict(r) for r in rows], "count": count_faces_for_person(person_id)}
+    return {"photos": _user_photos(user.id, rows), "count": count_faces_for_person(person_id)}
 
 
 @app.get("/api/people/{person_id}/map")
@@ -1009,7 +1150,7 @@ def api_person_map(person_id: int, limit: int = 500):
 # --- search ----------------------------------------------------------------
 
 @app.get("/api/search")
-def api_search(q: str, limit: int = 100):
+def api_search(q: str, limit: int = 100, user: CurrentUser = Depends(require_user)):
     """Free-text semantic search via CLIP (objects, scenes, etc.)."""
     q = q.strip()
     if not q:
@@ -1019,11 +1160,12 @@ def api_search(q: str, limit: int = 100):
     except Exception as exc:
         log.warning("clip text embed failed: %s", exc)
         raise HTTPException(503, "CLIP model unavailable")
-    return _semantic_search(vec, limit)
+    return _semantic_search(vec, limit, user.id)
 
 
 @app.post("/api/search/face")
-async def api_face_search(file: UploadFile = File(...), limit: int = 50):
+async def api_face_search(file: UploadFile = File(...), limit: int = 50,
+                           user: CurrentUser = Depends(require_user)):
     """Upload a face photo, find matching people/photos."""
     data = await file.read()
     try:
@@ -1037,7 +1179,7 @@ async def api_face_search(file: UploadFile = File(...), limit: int = 50):
     emb = embed_query_face(bgr)
     if emb is None:
         raise HTTPException(404, "no face found in image")
-    return _face_similarity(emb, limit)
+    return _face_similarity(emb, limit, user.id)
 
 
 def _get_clip_matrix() -> tuple[list[str], np.ndarray]:
@@ -1059,24 +1201,27 @@ def _get_clip_matrix() -> tuple[list[str], np.ndarray]:
     return uids, X
 
 
-def _semantic_search(vec: np.ndarray, limit: int) -> dict:
+def _semantic_search(vec: np.ndarray, limit: int, user_id: int) -> dict:
     uids, X = _get_clip_matrix()
     if X.size == 0:
         return {"results": [], "total": 0}
     sims = X @ vec  # all embeddings are L2-normalized
     idx = np.argsort(-sims)[:limit]
     results = []
+    photo_uids = [uids[i] for i in idx]
+    fav_set = favorite_uids(user_id, photo_uids)
     for i in idx:
         photo = get_photo(uids[i])
         if photo is None:
             continue
         d = _row_to_dict(photo)
+        d["favorited_by_me"] = uids[i] in fav_set
         d["score"] = float(sims[i])
         results.append(d)
     return {"results": results, "total": len(results)}
 
 
-def _face_similarity(emb: np.ndarray, limit: int) -> dict:
+def _face_similarity(emb: np.ndarray, limit: int, user_id: int) -> dict:
     rows = all_face_rows()
     if not rows:
         return {"results": [], "total": 0}
@@ -1090,15 +1235,105 @@ def _face_similarity(emb: np.ndarray, limit: int) -> dict:
             sim_to_photo[uid] = s
             photo_to_best[uid] = s
     ranked = sorted(sim_to_photo.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    uids = [uid for uid, _ in ranked]
+    fav_set = favorite_uids(user_id, uids)
     results = []
     for uid, score in ranked:
         photo = get_photo(uid)
         if photo is None:
             continue
         d = _row_to_dict(photo)
+        d["favorited_by_me"] = uid in fav_set
         d["score"] = score
         results.append(d)
     return {"results": results, "total": len(results)}
+
+
+# --- admin: user management (future admin menu hooks here) -----------------
+
+def _user_row_public(row) -> dict:
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "role": row["role"],
+        "created_at": row["created_at"],
+        "last_login_at": row["last_login_at"],
+        "disabled": bool(row["disabled"]),
+    }
+
+
+@app.get("/api/admin/users")
+def api_admin_list_users(_: CurrentUser = Depends(require_role("admin"))):
+    return {"users": [_user_row_public(r) for r in list_users()]}
+
+
+@app.post("/api/admin/users")
+def api_admin_create_user(body: dict,
+                           _: CurrentUser = Depends(require_role("admin"))):
+    username = (body.get("username") or "").strip()
+    display_name = (body.get("display_name") or username).strip() or username
+    password = body.get("password") or ""
+    role = (body.get("role") or "read").strip().lower()
+    if len(username) < 2:
+        raise HTTPException(400, "username must be at least 2 characters")
+    if len(password) < 8:
+        raise HTTPException(400, "password must be at least 8 characters")
+    if role not in ROLE_RANK:
+        raise HTTPException(400, f"role must be one of {sorted(ROLE_RANK)}")
+    if get_user_by_username(username) is not None:
+        raise HTTPException(409, "username already exists")
+    user_id = create_user(username=username, password_hash=hash_password(password),
+                           role=role, display_name=display_name)
+    row = get_user_by_id(user_id)
+    return {"user": _user_row_public(row)}
+
+
+@app.patch("/api/admin/users/{user_id}")
+def api_admin_update_user(user_id: int, body: dict,
+                           _: CurrentUser = Depends(require_role("admin"))):
+    if get_user_by_id(user_id) is None:
+        raise HTTPException(404, "user not found")
+    display_name = body.get("display_name")
+    role = body.get("role")
+    disabled = body.get("disabled")
+    password = body.get("password")
+    password_hash = hash_password(password) if password else None
+    if role is not None and role not in ROLE_RANK:
+        raise HTTPException(400, f"role must be one of {sorted(ROLE_RANK)}")
+    if password is not None and len(password) < 8:
+        raise HTTPException(400, "password must be at least 8 characters")
+    try:
+        update_user(user_id, display_name=display_name, role=role,
+                    disabled=disabled, password_hash=password_hash)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    row = get_user_by_id(user_id)
+    return {"user": _user_row_public(row)}
+
+
+@app.delete("/api/admin/users/{user_id}")
+def api_admin_delete_user(user_id: int, body: dict,
+                           actor: CurrentUser = Depends(require_role("admin"))):
+    """Remove a user. The last remaining admin cannot delete themselves."""
+    row = get_user_by_id(user_id)
+    if row is None:
+        raise HTTPException(404, "user not found")
+    if row["id"] == actor.id:
+        # Refuse if this is the last admin (would lock everyone out).
+        admins = [u for u in list_users() if u["role"] == "admin" and not u["disabled"] and u["id"] != actor.id]
+        if not admins:
+            raise HTTPException(400, "cannot delete the last admin")
+    delete_user(user_id)  # ON DELETE CASCADE drops their tokens + favorites
+    return {"ok": True}
+
+
+@app.post("/api/admin/users/{user_id}/logout")
+def api_admin_revoke_user_tokens(user_id: int,
+                                   _: CurrentUser = Depends(require_role("admin"))):
+    """Sign a user out of every device."""
+    n = revoke_all_tokens(user_id)
+    return {"ok": True, "revoked": n}
 
 
 # --- static UI -------------------------------------------------------------

@@ -5,6 +5,7 @@ fastapi>=0.115,<0.116
 uvicorn[standard]>=0.30,<0.31
 httpx>=0.27,<0.28
 python-multipart>=0.0.9
+bcrypt>=4.1,<5            # local multi-user auth (family accounts + bearer tokens)
 numpy>=1.23,<1.24
 Pillow>=10.4,<12
 pillow-heif>=1.0,<1.6
