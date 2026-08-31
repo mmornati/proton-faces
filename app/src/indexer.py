@@ -77,7 +77,7 @@ def get_indexer_state() -> dict:
         pending = _pending.qsize()
     except Exception:  # pragma: no cover
         pending = 0
-    threads = {n: bool(t.is_alive()) for n, t in threading._enumerate()}
+    threads = {t.name: bool(t.is_alive()) for t in threading.enumerate()}
     # Prefer the authoritative set recorded at start(); fall back to whatever
     # happens to be alive now if start() hasn't recorded anything yet.
     recorded = _runtime.get("threads") or {}

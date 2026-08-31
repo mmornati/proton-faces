@@ -76,7 +76,7 @@ _DUP_CACHE_TTL = 30.0
 _dups_cache: tuple[float, dict] | None = None
 
 # TTL caches (cheap, frequently re-requested on navigation).
-_ANCHORS_CACHE_TTL = 30.0
+_ANCHORS_CACHE_TTL = 60.0
 _anchors_cache: tuple[float, dict] | None = None
 
 _PEOPLE_CACHE_TTL = 5.0
@@ -86,6 +86,13 @@ _people_cache: tuple[float, dict] | None = None  # keyed by (q, limit, offset)
 # every text-search request. Rebuilds only when the clip row count changes
 # or after TTL.
 _CLIP_CACHE_TTL = 60.0
+
+# Cache for stats() and disk-size walks so the periodic /api/status poll
+# doesn't re-pay for 4× COUNT(*) + GROUP BY + a 44 k stat() walk every 15 s.
+_STATS_CACHE_TTL = 5.0
+_stats_cache: tuple[float, dict] | None = None
+_DIRSIZE_CACHE_TTL = 30.0
+_dirsize_cache: dict[str, tuple[float, int]] = {}
 _clip_cache: tuple[float, int, list[str], np.ndarray] | None = None
 
 # Disk + lock for face crops (computed lazily, then served as plain files).
@@ -221,6 +228,32 @@ def _dir_size_bytes(path: Path) -> int:
     return total
 
 
+def _cached_dir_size(path: Path) -> int:
+    """Disk-walk with a 30 s TTL — the thumb dir has tens of thousands of
+    files and a full `stat()` walk is expensive when polled every 15 s."""
+    key = str(path)
+    now = time.time()
+    hit = _dirsize_cache.get(key)
+    if hit is not None and now - hit[0] < _DIRSIZE_CACHE_TTL:
+        return hit[1]
+    n = _dir_size_bytes(path)
+    _dirsize_cache[key] = (now, n)
+    return n
+
+
+def _cached_stats() -> dict:
+    """Cached `stats()` so the periodic `/api/status` poll doesn't pay for
+    4 COUNT(*) + 1 GROUP BY on every request. 5 s TTL is well under the
+    user-perceived staleness of the bottom status bar."""
+    global _stats_cache
+    now = time.time()
+    if _stats_cache is not None and now - _stats_cache[0] < _STATS_CACHE_TTL:
+        return _stats_cache[1]
+    payload = stats()
+    _stats_cache = (now, payload)
+    return payload
+
+
 @app.get("/api/status")
 def api_status() -> dict:
     """Aggregated status snapshot for the bottom status bar / details overlay.
@@ -237,9 +270,9 @@ def api_status() -> dict:
         bridge_ok = False
         bridge_logged_in = False
         log.warning("bridge health failed: %s", exc)
-    s = stats()
+    s = _cached_stats()
     rt = get_indexer_state()
-    thumbs_bytes = _dir_size_bytes(settings.thumb_dir)
+    thumbs_bytes = _cached_dir_size(settings.thumb_dir)
     db_bytes = settings.db_path.stat().st_size if settings.db_path.exists() else 0
     return {
         "now": time.time(),

@@ -1525,7 +1525,7 @@ async function loadPlaces() {
 }
 
 async function loadUnassigned() {
-  const data = await api("/api/faces/unassigned?limit=500");
+  const data = await api("/api/faces/unassigned?limit=200");
   const el = $("#view");
   if (!data.faces.length) {
     el.innerHTML = '<div class="empty">No unassigned faces — great job!</div>';
@@ -1885,7 +1885,7 @@ document.addEventListener("click", (e) => {
   await refresh();
   await loadPhotos();
   loadAnchors();
-  setInterval(refresh, 15000);
+  setInterval(refresh, 30000);
 })();
 </script>
 </body>
