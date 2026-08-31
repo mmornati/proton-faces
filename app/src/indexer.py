@@ -51,6 +51,48 @@ log = logging.getLogger("indexer")
 
 _pending: queue.Queue[str] = queue.Queue()  # uids whose thumbnail is ready
 
+# Lightweight runtime state surfaced via the `/api/status` endpoint.
+# Plain int/float writes are GIL-atomic, so we don't need a lock.
+_runtime: dict = {
+    "started_at": None,        # float epoch seconds, set in start()
+    "last_sync": None,         # float epoch seconds, set in _sync_once()
+    "last_sync_error": None,   # str or None
+    "last_cluster": None,      # float epoch seconds, set after cluster_once()
+    "last_gps": None,          # float epoch seconds, set after gps run
+    "threads": {},             # name -> bool alive
+    "pending_in_queue": 0,     # _pending.qsize() snapshot
+}
+
+
+def _record_threads(threads: list[threading.Thread]) -> None:
+    _runtime["threads"] = {t.name: True for t in threads}
+
+
+def get_indexer_state() -> dict:
+    """Snapshot of the indexer's runtime state for `/api/status`.
+
+    Cheap: no DB queries, no I/O. Safe to call frequently.
+    """
+    try:
+        pending = _pending.qsize()
+    except Exception:  # pragma: no cover
+        pending = 0
+    threads = {n: bool(t.is_alive()) for n, t in threading._enumerate()}
+    # Prefer the authoritative set recorded at start(); fall back to whatever
+    # happens to be alive now if start() hasn't recorded anything yet.
+    recorded = _runtime.get("threads") or {}
+    live = {n: threads.get(n, False) for n in recorded}
+    _runtime["pending_in_queue"] = pending
+    return {
+        "started_at": _runtime.get("started_at"),
+        "last_sync": _runtime.get("last_sync"),
+        "last_sync_error": _runtime.get("last_sync_error"),
+        "last_cluster": _runtime.get("last_cluster"),
+        "last_gps": _runtime.get("last_gps"),
+        "pending_in_queue": pending,
+        "threads": live,
+    }
+
 
 def _rebuild_pending() -> None:
     """Re-queue photos that were mid-pipeline when the process last stopped.
@@ -95,6 +137,8 @@ def _norm_bbox(bbox: list, w: int, h: int) -> list:
 # --- sync loop -------------------------------------------------------------
 
 def _sync_once() -> None:
+    _runtime["last_sync"] = time.time()
+    _runtime["last_sync_error"] = None
     bridge = get_bridge()
 
     if settings.sync_limit:
@@ -461,6 +505,7 @@ def _cluster_loop() -> None:
         time.sleep(settings.cluster_interval)
         try:
             cluster_once()
+            _runtime["last_cluster"] = time.time()
         except Exception as exc:  # pragma: no cover
             log.exception("cluster loop error: %s", exc)
 
@@ -496,6 +541,7 @@ def _sync_albums_once() -> int:
 def start() -> list[threading.Thread]:
     """Start all background threads. Returns the started threads."""
     init_db()
+    _runtime["started_at"] = time.time()
     # Recover photos stuck in 'processing' from a previous crash/hang.
     with _db_conn() as conn:
         conn.execute("UPDATE photos SET status='downloading' WHERE status='processing'")
@@ -522,6 +568,7 @@ def start() -> list[threading.Thread]:
         threads.append(threading.Thread(target=_worker_loop, name=f"worker-{i}", daemon=True))
     for t in threads:
         t.start()
+    _record_threads(threads)
     log.info("indexer started with %d workers", settings.workers)
     return threads
 
@@ -536,6 +583,7 @@ def _sync_loop() -> None:
                 log.warning("cleanup_deleted failed: %s", exc)
         except Exception as exc:  # pragma: no cover
             log.exception("sync loop error: %s", exc)
+            _runtime["last_sync_error"] = f"{type(exc).__name__}: {exc}"
         time.sleep(settings.sync_interval)
 
 
@@ -665,6 +713,7 @@ def _gps_loop() -> None:
         time.sleep(settings.gps_interval)
         try:
             _run_gps_subprocess()
+            _runtime["last_gps"] = time.time()
         except Exception as exc:  # pragma: no cover
             log.exception("gps loop error: %s", exc)
 

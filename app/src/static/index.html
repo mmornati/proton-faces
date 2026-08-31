@@ -52,7 +52,6 @@ button {
 }
 button.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
 button.small { padding: 4px 8px; font-size: 12px; border-radius: 6px; }
-#status { color: var(--muted); font-size: 13px; margin-left: auto; }
 main { padding: 18px; }
 #counts { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
 .grid {
@@ -167,8 +166,6 @@ main { padding: 18px; }
 .mpitem .mpname { font-size: 14px; font-weight: 600; }
 .mpitem .mpmeta { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .empty { color: var(--muted); padding: 40px; text-align: center; }
-#faceform { display: flex; gap: 8px; align-items: center; }
-#facefile { font-size: 13px; color: var(--muted); }
 /* lightbox */
 #lightbox {
   display: none; position: fixed; inset: 0; background: rgba(0,0,0,.9);
@@ -321,6 +318,99 @@ main { padding: 18px; }
 .album img { width: 100%; height: 150px; object-fit: cover; display: block; background: var(--panel2); }
 .album .aname { padding: 8px 10px; font-size: 14px; font-weight: 600; }
 .album .acount { padding: 0 10px 8px; color: var(--muted); font-size: 12px; }
+/* search-by-example (face) modal */
+#facemodal {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+  z-index: 140; align-items: flex-start; justify-content: center; padding: 60px 20px 20px;
+}
+#facemodal.open { display: flex; }
+#facemodalbox {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  max-width: 520px; width: 100%; display: flex; flex-direction: column;
+  overflow: hidden;
+}
+#facemodalhead { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+#facemodalhead .title { font-size: 15px; font-weight: 600; }
+#facemodalhead button { margin-left: auto; }
+#facemodalhint { padding: 10px 16px; color: var(--muted); font-size: 13px; line-height: 1.4; }
+#facedropzone {
+  margin: 0 16px 14px; padding: 22px; border: 2px dashed var(--border);
+  border-radius: 12px; text-align: center; cursor: pointer;
+  color: var(--muted); font-size: 14px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  transition: border-color .15s, color .15s, background .15s;
+}
+#facedropzone:hover, #facedropzone.dragover {
+  border-color: var(--accent); color: var(--text); background: rgba(77,163,255,.06);
+}
+#facedropzone.has-file { padding: 14px; }
+#facedropzone .fzpick { color: var(--accent); font-weight: 600; }
+#facedropzone img {
+  max-width: 100%; max-height: 200px; object-fit: contain; border-radius: 8px;
+  background: var(--panel2);
+}
+#facedropzone .fzclear {
+  background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+  font-size: 12px; padding: 4px 10px;
+}
+#faceactions { display: flex; gap: 8px; padding: 0 16px 16px; justify-content: flex-end; }
+/* bottom status bar */
+body { padding-bottom: 34px; }
+#statusbar {
+  position: fixed; left: 0; right: 0; bottom: 0; height: 30px; z-index: 50;
+  background: var(--panel); border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 14px; padding: 0 14px;
+  font-size: 12px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+#statusbar .sbseg { display: inline-flex; align-items: center; gap: 6px; }
+#statusbar .dot {
+  width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+  background: var(--muted);
+}
+#statusbar .dot.ok { background: var(--green); box-shadow: 0 0 6px rgba(52,201,123,.5); }
+#statusbar .dot.bad { background: var(--red); }
+#statusbar .sbsep { width: 1px; height: 14px; background: var(--border); }
+#statusbar .sbhint {
+  margin-left: auto; color: var(--muted);
+}
+#statusbar .sbhint kbd {
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 5px; font-size: 11px; font-family: inherit;
+}
+#statusbar .sbseg.clickable { cursor: pointer; }
+#statusbar .sbseg.clickable:hover { color: var(--text); }
+/* status details modal */
+#statusmodal {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+  z-index: 160; align-items: flex-start; justify-content: center; padding: 60px 20px 20px;
+}
+#statusmodal.open { display: flex; }
+#statusmodalbox {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  max-width: 560px; width: 100%; max-height: 80vh; display: flex; flex-direction: column;
+  overflow: hidden;
+}
+#statusmodalhead { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+#statusmodalhead .title { font-size: 15px; font-weight: 600; }
+#statusmodalhead .hint { color: var(--muted); font-size: 12px; }
+#statusmodalhead button { margin-left: auto; }
+#statusmodalbody { overflow: auto; padding: 14px 16px; font-size: 13px; }
+#statusmodalbody h4 {
+  margin: 14px 0 6px; font-size: 13px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+#statusmodalbody h4:first-child { margin-top: 0; }
+#statusmodalbody table { width: 100%; border-collapse: collapse; }
+#statusmodalbody td { padding: 4px 6px; vertical-align: top; }
+#statusmodalbody td.k { color: var(--muted); white-space: nowrap; width: 170px; }
+#statusmodalbody td.v { color: var(--text); word-break: break-all; font-variant-numeric: tabular-nums; }
+#statusmodalbody .pill {
+  display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px;
+  background: var(--panel2); border: 1px solid var(--border);
+}
+#statusmodalbody .pill.ok { color: var(--green); border-color: rgba(52,201,123,.5); }
+#statusmodalbody .pill.bad { color: var(--red); border-color: rgba(255,95,87,.5); }
 </style>
 </head>
 <body>
@@ -340,12 +430,8 @@ main { padding: 18px; }
   <div id="searchbar">
     <input id="q" placeholder="Search: &quot;dog&quot;, &quot;car&quot;, &quot;Lille&quot;, &quot;beach&quot;...">
     <button id="btn-search">Search</button>
-    <form id="faceform">
-      <input type="file" id="facefile" accept="image/*">
-      <button type="submit" class="secondary">Find face</button>
-    </form>
+    <button id="btn-face" class="secondary" title="Find photos of a person from a photo on your computer">Search by example</button>
   </div>
-  <div id="status"></div>
 </header>
 <main>
   <div id="counts"></div>
@@ -387,6 +473,45 @@ main { padding: 18px; }
     <input id="mpsearch" type="text" placeholder="Search name…" autocomplete="off">
     <div id="mergepicklist"></div>
   </div>
+</div>
+<div id="facemodal" role="dialog" aria-labelledby="facemodaltitle">
+  <div id="facemodalbox">
+    <div id="facemodalhead">
+      <div class="title" id="facemodaltitle">Search by example</div>
+      <button id="faceclose" class="secondary small">Close</button>
+    </div>
+    <div id="facemodalhint">
+      Pick a photo of a face and we'll find every photo of that person in your library.
+      The photo you choose is used only for matching — it is <strong>never stored or uploaded to Proton</strong>.
+    </div>
+    <div id="facedropzone" tabindex="0" role="button" aria-label="Choose a photo">
+      <div class="fzpick">Click to choose a photo</div>
+      <div class="fzhint">or drop an image here</div>
+    </div>
+    <div id="faceactions">
+      <button id="facesubmit" disabled>Find matching photos</button>
+    </div>
+  </div>
+</div>
+<div id="statusmodal" role="dialog" aria-labelledby="statusmodaltitle">
+  <div id="statusmodalbox">
+    <div id="statusmodalhead">
+      <div class="title" id="statusmodaltitle">Status & diagnostics</div>
+      <div class="hint">Press <kbd>?</kbd> to toggle, <kbd>Esc</kbd> to close</div>
+      <button id="statusclose" class="secondary small">Close</button>
+    </div>
+    <div id="statusmodalbody"><div class="empty">Loading…</div></div>
+  </div>
+</div>
+<div id="statusbar" aria-label="Status bar">
+  <span class="sbseg clickable" id="sb-bridge"><span class="dot" id="sb-dot"></span><span id="sb-bridge-text">bridge: …</span></span>
+  <span class="sbsep"></span>
+  <span class="sbseg clickable" id="sb-progress"><span id="sb-progress-text">… photos</span></span>
+  <span class="sbsep"></span>
+  <span class="sbseg clickable" id="sb-counts"><span id="sb-counts-text">… faces · … people</span></span>
+  <span class="sbsep"></span>
+  <span class="sbseg" id="sb-sync">sync: …</span>
+  <span class="sbhint clickable" id="sb-hint">Press <kbd>?</kbd> for details</span>
 </div>
 <script>
 const $ = (s) => document.querySelector(s);
@@ -1416,20 +1541,6 @@ async function loadUnassigned() {
   }));
 }
 
-async function refresh() {
-  try {
-    const data = await api("/api/stats");
-    const p = data.photos;
-    $("#counts").textContent =
-      `${p.done}/${p.total} photos indexed · ${p.done_with_thumb} displayable · ` +
-      `${p.done_without_thumb} without preview (videos) · ${data.people} people · ${data.faces} faces`;
-    const b = await fetch("/api/health").then((r) => r.json());
-    $("#status").textContent = b.bridge.loggedIn ? "connected" : "bridge: not logged in";
-  } catch (e) {
-    $("#status").textContent = "bridge unreachable";
-  }
-}
-
 document.querySelectorAll("nav a").forEach((a) => {
   a.addEventListener("click", async (e) => {
     e.preventDefault();
@@ -1502,17 +1613,260 @@ $("#q").addEventListener("input", () => {
   searchDebounce = setTimeout(runSearch, 250);
 });
 
-$("#faceform").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const f = $("#facefile").files[0];
-  if (!f) return;
-  const fd = new FormData();
-  fd.append("file", f);
-  const r = await fetch("/api/search/face", { method: "POST", body: fd });
-  if (!r.ok) { alert("No face found in that image"); return; }
-  const data = await r.json();
-  renderPhotos(data.results);
+// --- search by example (face) modal ----------------------------------------
+
+let faceFile = null;
+let facePreviewUrl = null;
+
+function openFaceModal() {
+  faceFile = null;
+  $("#facemodal").classList.add("open");
+  resetFaceDropzone();
+}
+function closeFaceModal() {
+  $("#facemodal").classList.remove("open");
+  if (facePreviewUrl) { URL.revokeObjectURL(facePreviewUrl); facePreviewUrl = null; }
+  faceFile = null;
+}
+function resetFaceDropzone() {
+  const dz = $("#facedropzone");
+  dz.classList.remove("has-file");
+  dz.innerHTML = `<div class="fzpick">Click to choose a photo</div><div class="fzhint">or drop an image here</div>`;
+  $("#facesubmit").disabled = true;
+}
+function setFaceFile(f) {
+  if (!f || !f.type || !f.type.startsWith("image/")) {
+    toast("Please choose an image file."); return;
+  }
+  if (facePreviewUrl) URL.revokeObjectURL(facePreviewUrl);
+  faceFile = f;
+  facePreviewUrl = URL.createObjectURL(f);
+  const dz = $("#facedropzone");
+  dz.classList.add("has-file");
+  dz.innerHTML = `<img alt="" src="${facePreviewUrl}"><button class="secondary fzclear" type="button">Choose a different photo</button>`;
+  $("#facesubmit").disabled = false;
+  dz.querySelector(".fzclear").addEventListener("click", (ev) => {
+    ev.stopPropagation(); resetFaceDropzone(); faceFile = null;
+  });
+}
+
+$("#btn-face").addEventListener("click", openFaceModal);
+$("#faceclose").addEventListener("click", closeFaceModal);
+$("#facemodal").addEventListener("click", (e) => { if (e.target.id === "facemodal") closeFaceModal(); });
+$("#facedropzone").addEventListener("click", () => $("#facefileinput").click());
+$("#facedropzone").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("#facefileinput").click(); }
 });
+$("#facedropzone").addEventListener("dragover", (e) => { e.preventDefault(); $("#facedropzone").classList.add("dragover"); });
+$("#facedropzone").addEventListener("dragleave", () => $("#facedropzone").classList.remove("dragover"));
+$("#facedropzone").addEventListener("drop", (e) => {
+  e.preventDefault(); $("#facedropzone").classList.remove("dragover");
+  const f = e.dataTransfer?.files?.[0];
+  if (f) setFaceFile(f);
+});
+const faceFileEl = document.createElement("input");
+faceFileEl.type = "file";
+faceFileEl.id = "facefileinput";
+faceFileEl.accept = "image/*";
+faceFileEl.style.display = "none";
+faceFileEl.addEventListener("change", () => {
+  const f = faceFileEl.files[0];
+  if (f) setFaceFile(f);
+  faceFileEl.value = "";
+});
+document.body.appendChild(faceFileEl);
+
+$("#facesubmit").addEventListener("click", async () => {
+  if (!faceFile) { toast("Pick a photo first."); return; }
+  showLoader("Searching by face…");
+  closeFaceModal();
+  try {
+    const fd = new FormData();
+    fd.append("file", faceFile);
+    const r = await fetch("/api/search/face", { method: "POST", body: fd });
+    if (!r.ok) {
+      const txt = await r.text();
+      let msg = "No face found in that image.";
+      try { const j = JSON.parse(txt); if (j.detail) msg = j.detail; } catch {}
+      toast("Search failed: " + msg);
+      return;
+    }
+    const data = await r.json();
+    state.q = "";
+    $("#q").value = "";
+    state.photoSource = { type: "all" };
+    state.view = "photos";
+    document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
+    document.querySelector('nav a[data-view="photos"]').classList.add("active");
+    $("#mapwrap").style.display = "none";
+    $("#daterailwrap").style.display = "none";
+    $("#memorieswrap").style.display = "none";
+    renderPhotos(data.results || [], false);
+    state.photos = data.results || [];
+    photoOffset = (data.results || []).length;
+    photoDone = true;
+    const sentinel = $("#sentinel"); if (sentinel) sentinel.remove();
+    $("#counts").textContent = `${(data.results || []).length} matches by face`;
+  } catch (err) {
+    toast("Search failed: " + err.message);
+  } finally {
+    hideLoader();
+  }
+});
+
+// --- bottom status bar + details overlay ----------------------------------
+
+let lastStatus = null;
+function fmtBytes(n) {
+  if (n == null) return "—";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i === 0 ? 0 : 1)} ${u[i]}`;
+}
+function fmtRelative(ts) {
+  if (!ts) return "never";
+  const delta = Math.max(0, Date.now() / 1000 - ts);
+  if (delta < 60) return `${Math.floor(delta)}s ago`;
+  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
+  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
+  return `${Math.floor(delta / 86400)}d ago`;
+}
+function fmtAbs(ts) {
+  if (!ts) return "—";
+  return new Date(ts * 1000).toLocaleString();
+}
+function pill(ok) { return `<span class="pill${ok ? " ok" : " bad"}">${ok ? "yes" : "no"}</span>`; }
+
+function renderStatusBar(s) {
+  const br = s.bridge || {};
+  const dot = $("#sb-dot");
+  const txt = $("#sb-bridge-text");
+  if (br.loggedIn) { dot.className = "dot ok"; txt.textContent = "Proton: connected"; }
+  else if (br.reachable) { dot.className = "dot bad"; txt.textContent = "bridge: not logged in"; }
+  else { dot.className = "dot bad"; txt.textContent = "bridge: unreachable"; }
+
+  const st = s.stats || {};
+  const p = st.photos || {};
+  const pendingTxt = p.pending ? ` · ${p.pending} pending` : "";
+  $("#sb-progress-text").textContent =
+    `${p.done || 0}/${p.total || 0} photos indexed${pendingTxt}`;
+
+  $("#sb-counts-text").textContent =
+    `${st.faces || 0} faces · ${st.people || 0} people`;
+
+  const idx = s.indexer || {};
+  $("#sb-sync").textContent = "sync: " + fmtRelative(idx.last_sync);
+  if (idx.last_sync_error) $("#sb-sync").title = idx.last_sync_error;
+}
+
+function renderStatusModal(s) {
+  const br = s.bridge || {};
+  const p = (s.stats || {}).photos || {};
+  const idx = s.indexer || {};
+  const d = s.disk || {};
+  const c = s.config || {};
+  const threads = idx.threads || {};
+  const threadRows = Object.keys(threads).length
+    ? Object.entries(threads).map(([n, alive]) => `<tr><td class="k">${esc(n)}</td><td class="v">${pill(!!alive)}</td></tr>`).join("")
+    : `<tr><td class="k">—</td><td class="v">no threads registered (start() may not have run yet)</td></tr>`;
+  $("#statusmodalbody").innerHTML = `
+    <h4>Bridge</h4>
+    <table>
+      <tr><td class="k">Reachable</td><td class="v">${pill(!!br.reachable)}</td></tr>
+      <tr><td class="k">Proton session</td><td class="v">${br.loggedIn ? "logged in" : "not logged in"}</td></tr>
+    </table>
+    <h4>Indexing</h4>
+    <table>
+      <tr><td class="k">Photos total / done</td><td class="v">${p.total || 0} / ${p.done || 0}</td></tr>
+      <tr><td class="k">Displayable</td><td class="v">${p.done_with_thumb || 0}</td></tr>
+      <tr><td class="k">Without preview (videos)</td><td class="v">${p.done_without_thumb || 0}</td></tr>
+      <tr><td class="k">Pending</td><td class="v">${p.pending || 0}</td></tr>
+      <tr><td class="k">By status</td><td class="v">${esc(JSON.stringify(p.by_status || {}))}</td></tr>
+      <tr><td class="k">Faces</td><td class="v">${(s.stats || {}).faces || 0}</td></tr>
+      <tr><td class="k">CLIP embeddings</td><td class="v">${(s.stats || {}).clips || 0}</td></tr>
+      <tr><td class="k">People</td><td class="v">${(s.stats || {}).people || 0}</td></tr>
+    </table>
+    <h4>Background jobs</h4>
+    <table>
+      <tr><td class="k">Indexer started</td><td class="v">${fmtAbs(idx.started_at)}</td></tr>
+      <tr><td class="k">Last sync</td><td class="v">${fmtAbs(idx.last_sync)} <span style="color:var(--muted)">(${fmtRelative(idx.last_sync)})</span></td></tr>
+      <tr><td class="k">Last sync error</td><td class="v">${esc(idx.last_sync_error || "—")}</td></tr>
+      <tr><td class="k">Last cluster</td><td class="v">${fmtAbs(idx.last_cluster)} <span style="color:var(--muted)">(${fmtRelative(idx.last_cluster)})</span></td></tr>
+      <tr><td class="k">Last GPS enrichment</td><td class="v">${fmtAbs(idx.last_gps)} <span style="color:var(--muted)">(${fmtRelative(idx.last_gps)})</span></td></tr>
+      <tr><td class="k">Pending queue</td><td class="v">${idx.pending_in_queue || 0}</td></tr>
+      ${threadRows}
+    </table>
+    <h4>Storage</h4>
+    <table>
+      <tr><td class="k">Thumbnails</td><td class="v">${fmtBytes(d.thumb_dir_bytes || 0)}</td></tr>
+      <tr><td class="k">SQLite index</td><td class="v">${fmtBytes(d.db_bytes || 0)}</td></tr>
+    </table>
+    <h4>Config</h4>
+    <table>
+      <tr><td class="k">sync_interval</td><td class="v">${c.sync_interval || 0}s</td></tr>
+      <tr><td class="k">cluster_interval</td><td class="v">${c.cluster_interval || 0}s</td></tr>
+      <tr><td class="k">gps_interval</td><td class="v">${c.gps_interval || 0}s</td></tr>
+      <tr><td class="k">workers</td><td class="v">${c.workers || 0}</td></tr>
+      <tr><td class="k">face_sim_threshold</td><td class="v">${c.face_sim_threshold}</td></tr>
+      <tr><td class="k">min_cluster_size</td><td class="v">${c.min_cluster_size}</td></tr>
+      <tr><td class="k">photos_dir</td><td class="v">${esc(c.photos_dir || "—")}</td></tr>
+    </table>
+    <h4>Snapshot</h4>
+    <table>
+      <tr><td class="k">Fetched at</td><td class="v">${fmtAbs(s.now)}</td></tr>
+    </table>`;
+}
+
+function openStatusModal() {
+  $("#statusmodal").classList.add("open");
+  if (lastStatus) renderStatusModal(lastStatus);
+}
+function closeStatusModal() { $("#statusmodal").classList.remove("open"); }
+function toggleStatusModal() {
+  if ($("#statusmodal").classList.contains("open")) closeStatusModal();
+  else openStatusModal();
+}
+
+$("#statusclose").addEventListener("click", closeStatusModal);
+$("#statusmodal").addEventListener("click", (e) => { if (e.target.id === "statusmodal") closeStatusModal(); });
+for (const id of ["sb-bridge", "sb-progress", "sb-counts", "sb-hint"]) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("click", () => openStatusModal());
+}
+document.addEventListener("keydown", (e) => {
+  // Don't hijack typing in inputs.
+  const tag = (e.target && e.target.tagName) || "";
+  const isTyping = tag === "INPUT" || tag === "TEXTAREA" || (e.target && e.target.isContentEditable);
+  if (isTyping) return;
+  if (e.key === "?" || (e.key === "i" && !e.ctrlKey && !e.metaKey && !e.altKey)) {
+    e.preventDefault();
+    toggleStatusModal();
+  } else if (e.key === "Escape") {
+    if ($("#statusmodal").classList.contains("open")) closeStatusModal();
+    else if ($("#facemodal").classList.contains("open")) closeFaceModal();
+  }
+});
+
+async function refresh() {
+  try {
+    const s = await api("/api/status");
+    lastStatus = s;
+    const p = s.stats.photos;
+    $("#counts").textContent =
+      `${p.done}/${p.total} photos indexed · ${p.done_with_thumb} displayable · ` +
+      `${p.done_without_thumb} without preview (videos) · ${s.stats.people} people · ${s.stats.faces} faces`;
+    renderStatusBar(s);
+    if ($("#statusmodal").classList.contains("open")) renderStatusModal(s);
+  } catch (e) {
+    lastStatus = null;
+    $("#sb-dot").className = "dot bad";
+    $("#sb-bridge-text").textContent = "API unreachable";
+    $("#sb-progress-text").textContent = "—";
+    $("#sb-counts-text").textContent = "—";
+    $("#sb-sync").textContent = "sync: —";
+  }
+}
 
 $("#dclose").addEventListener("click", () => $("#detail").classList.remove("open"));
 $("#lbclose").addEventListener("click", () => $("#lightbox").classList.remove("open"));

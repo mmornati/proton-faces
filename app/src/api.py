@@ -19,6 +19,7 @@ from bridge_client import get_bridge
 from clip import embed_text
 from config import settings
 from faces import embed_query_face
+from indexer import get_indexer_state
 from store import (
     all_albums,
     album_photos,
@@ -199,6 +200,66 @@ def health() -> dict:
 @app.get("/api/stats")
 def api_stats() -> dict:
     return stats()
+
+
+def _dir_size_bytes(path: Path) -> int:
+    """Cheap directory size in bytes (sum of immediate children). Best-effort."""
+    if not path.exists():
+        return 0
+    total = 0
+    try:
+        for entry in path.iterdir():
+            try:
+                if entry.is_file():
+                    total += entry.stat().st_size
+                elif entry.is_dir():
+                    total += _dir_size_bytes(entry)
+            except OSError:
+                continue
+    except OSError:
+        return total
+    return total
+
+
+@app.get("/api/status")
+def api_status() -> dict:
+    """Aggregated status snapshot for the bottom status bar / details overlay.
+
+    Combines bridge health, indexer stats, runtime state (thread liveness,
+    last-sync timestamps, pending queue), and data-dir disk usage. Designed
+    to be cheap to poll every few seconds.
+    """
+    try:
+        b = get_bridge().health()
+        bridge_ok = bool(b.get("ok"))
+        bridge_logged_in = bool(b.get("loggedIn"))
+    except Exception as exc:
+        bridge_ok = False
+        bridge_logged_in = False
+        log.warning("bridge health failed: %s", exc)
+    s = stats()
+    rt = get_indexer_state()
+    thumbs_bytes = _dir_size_bytes(settings.thumb_dir)
+    db_bytes = settings.db_path.stat().st_size if settings.db_path.exists() else 0
+    return {
+        "now": time.time(),
+        "bridge": {"reachable": bridge_ok, "loggedIn": bridge_logged_in},
+        "stats": s,
+        "indexer": rt,
+        "disk": {
+            "thumb_dir_bytes": thumbs_bytes,
+            "db_bytes": db_bytes,
+        },
+        "config": {
+            "sync_interval": settings.sync_interval,
+            "cluster_interval": settings.cluster_interval,
+            "gps_interval": settings.gps_interval,
+            "workers": settings.workers,
+            "face_sim_threshold": settings.face_sim_threshold,
+            "min_cluster_size": settings.min_cluster_size,
+            "photos_dir": settings.photos_dir or None,
+        },
+    }
 
 
 # --- photos ----------------------------------------------------------------
