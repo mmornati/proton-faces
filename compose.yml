@@ -5,10 +5,17 @@ name: proton-faces
 # (or  docker compose up -d --build  to build locally from source instead of pulling)
 # One-time setup:  scripts/export-session.sh  (places auth-session.json in ./credentials)
 #
-# The two services share the `data` volume:
-#   bridge writes thumbnails to data/work, the app consumes them, keeps a
-#   permanent cache in data/thumbs, and stores its SQLite index there too.
-#   The bridge's auth session lives at data/auth-session.json.
+# Three services share the `data` volume:
+#   bridge writes thumbnails to data/work, the indexer consumes them and keeps
+#   a permanent cache in data/thumbs, the API serves both. The bridge's auth
+#   session lives at data/auth-session.json. All three share the SQLite index.
+#
+# The indexer runs in its own container so the face-detection workers can't
+# preempt the FastAPI event loop on the box's CPU cores. Cross-process safety
+# relies on per-status atomic claims in SQLite (`UPDATE ... WHERE status='new'`)
+# plus WAL mode + a 30 s busy_timeout — no extra coordination needed.
+# Set RUN_INDEXER=1 on the `app` service to fall back to the legacy
+# single-process layout.
 #
 # Configurable via environment (.env):
 #   PORT          host port for the web UI (default 8080)
@@ -41,12 +48,43 @@ services:
     networks:
       - internal
 
+  indexer:
+    # Runs the indexing pipeline only: sync / downloader / fullres / workers
+    # / cluster / gps / albums. No HTTP. Same image as `app`, but a
+    # different entry point.
+    build: ./app
+    image: ghcr.io/mmornati/proton-faces-app:latest
+    restart: unless-stopped
+    depends_on:
+      - proton-bridge
+    command: ["python", "indexer_main.py"]
+    volumes:
+      - ${DATA_MOUNT:-data}:/data
+      # Optional Google Takeout export for GPS backfill (read-only).
+      - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
+    environment:
+      - DATA_DIR=/data
+      - MODELS_DIR=/models
+      - PHOTOS_DIR=/takeout
+      - BRIDGE_URL=http://proton-bridge:8090
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-300}
+      - SYNC_LIMIT=${SYNC_LIMIT:-0}
+      - WORKERS=${WORKERS:-3}
+      - CLUSTER_INTERVAL=${CLUSTER_INTERVAL:-1800}
+      - GPS_INTERVAL=${GPS_INTERVAL:-21600}
+      - FACE_SIM_THRESHOLD=${FACE_SIM_THRESHOLD:-0.45}
+      - MIN_CLUSTER_SIZE=${MIN_CLUSTER_SIZE:-2}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - internal
+
   app:
     build: ./app
     image: ghcr.io/mmornati/proton-faces-app:latest
     restart: unless-stopped
     depends_on:
       - proton-bridge
+      - indexer
     ports:
       - "${PORT:-8080}:8080"
     volumes:
@@ -59,13 +97,9 @@ services:
       - PHOTOS_DIR=/takeout
       - BRIDGE_URL=http://proton-bridge:8090
       - PORT=8080
-      - SYNC_INTERVAL=${SYNC_INTERVAL:-300}
-      - SYNC_LIMIT=${SYNC_LIMIT:-0}
-      - WORKERS=${WORKERS:-2}
-      - CLUSTER_INTERVAL=${CLUSTER_INTERVAL:-1800}
-      - GPS_INTERVAL=${GPS_INTERVAL:-21600}
-      - FACE_SIM_THRESHOLD=${FACE_SIM_THRESHOLD:-0.45}
-      - MIN_CLUSTER_SIZE=${MIN_CLUSTER_SIZE:-2}
+      # RUN_INDEXER=0 -> serve API only; the `indexer` container handles
+      # the pipeline. Flip to 1 to fall back to the legacy in-process layout.
+      - RUN_INDEXER=${RUN_INDEXER:-0}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     networks:
       - internal

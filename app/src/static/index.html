@@ -1769,7 +1769,9 @@ function renderStatusModal(s) {
   const threads = idx.threads || {};
   const threadRows = Object.keys(threads).length
     ? Object.entries(threads).map(([n, alive]) => `<tr><td class="k">${esc(n)}</td><td class="v">${pill(!!alive)}</td></tr>`).join("")
-    : `<tr><td class="k">—</td><td class="v">no threads registered (start() may not have run yet)</td></tr>`;
+    : idx.remote
+      ? `<tr><td class="k">—</td><td class="v">indexer runs in its own container</td></tr>`
+      : `<tr><td class="k">—</td><td class="v">no threads registered (start() may not have run yet)</td></tr>`;
   $("#statusmodalbody").innerHTML = `
     <h4>Bridge</h4>
     <table>
