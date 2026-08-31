@@ -151,14 +151,25 @@ the web UI becomes useful right away as results stream in.
 
 ## 🖥️ Usage / web UI
 
-- **Search bar** — free text: *"dog"*, *"car"*, *"beach"*, *"Lille"*. Zero-shot CLIP.
+- **Search bar** — free text: *"dog"*, *"car"*, *"beach"*, *"Lille"*. Zero-shot CLIP. **Live
+  search-as-you-type** (250 ms debounce) re-runs results as you type.
 - **Photos** — infinite grid of cached thumbnails; click any photo for the full-resolution
-  download (fetched from Proton on demand, never stored).
+  download (fetched from Proton on demand, never stored). Videos get a play badge + duration
+  overlay and open inline with HTML5 playback + HTTP Range seeking. Above the grid, an **On this
+  day** strip resurfaces photos you took on today's date in past years.
+- **Favorites** — star any photo (toolbar or per-card button). The Favorites view filters the
+  grid to your starred photos.
+- **Archive** — hide photos from the main grid without deleting them; visit the Archive tab to
+  restore them.
+- **Tags** — free-form lowercase labels on any photo. Browse all tags from the Tags tab and
+  click one to filter the grid.
 - **People** — auto-clustered persons with face-crop avatars. Click a person to see their
-  photos, click the name to rename.
+  photos, click the name to rename. **Map** plots every geotagged photo of that person on a
+  Leaflet map.
 - **Face tagging** — every photo shows clickable boxes around detected faces. Name a face and
   **every similar unassigned face is tagged automatically**; assign to an existing person, or
   unassign.
+- **Duplicates** — groups photos by content hash; hide any you don't want.
 - **Unassigned** — a queue of every face that hasn't been clustered yet, so you can name the
   stragglers.
 - **Places** — a **Leaflet world map** with clustered city markers, plus a city list. Click any
@@ -250,11 +261,9 @@ The full-res bytes are discarded — only the small thumbnail is kept.
 
 ## 🧭 Roadmap / ideas
 
-- Merge / split people clusters
-- Album-aware browsing
-- Video thumbnails via ffmpeg frame extraction
-- Deduplication by content hash
-- A "map of one person" view (every photo of a person plotted)
+- Split people clusters (currently you can merge but not split — manually re-tag works)
+- Edit album membership (albums are read-only at present)
+- PWA / mobile install
 
 ---
 

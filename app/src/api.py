@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Body
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -24,6 +25,8 @@ from store import (
     all_clips,
     all_face_rows,
     all_people,
+    all_tags,
+    archived_photos,
     assign_face_person,
     clip_count,
     count_faces_for_person,
@@ -35,16 +38,25 @@ from store import (
     find_person_by_name,
     get_photo,
     get_person,
+    get_tags,
     map_markers,
     merge_person,
     person_mean_embedding,
     person_mean_embeddings,
+    person_map_markers,
     photo_anchors,
+    photos_by_tag,
+    duplicate_groups,
+    memories_for_today,
     photos_for_person,
     place_stats,
     rename_person,
     search_photos_by_place,
+    set_archived,
+    set_favorited,
+    set_hidden,
     set_person_cover_face,
+    set_tags,
     similar_faces,
     stats,
     unassign_face,
@@ -144,6 +156,25 @@ def _row_to_dict(row) -> dict:
         d["thumb_url"] = f"/api/photos/{d['uid']}/thumb"
     else:
         d["thumb_url"] = None
+    mt = d.get("media_type") or ""
+    if mt.startswith("video/"):
+        d["kind"] = "video"
+    elif mt.startswith("image/"):
+        d["kind"] = "image"
+    else:
+        d["kind"] = "other"
+    # Surface local-only metadata flags + tags as plain JSON-friendly values.
+    d["favorited"] = bool(d.get("favorited"))
+    d["archived"] = bool(d.get("archived"))
+    d["hidden"] = bool(d.get("hidden"))
+    raw_tags = d.get("tags")
+    if raw_tags:
+        try:
+            d["tags"] = list(json.loads(raw_tags))
+        except Exception:
+            d["tags"] = []
+    else:
+        d["tags"] = []
     return d
 
 
@@ -173,12 +204,106 @@ def api_stats() -> dict:
 # --- photos ----------------------------------------------------------------
 
 @app.get("/api/photos")
-def api_photos(limit: int = 200, offset: int = 0, place: str | None = None, before: int | None = None):
-    if place:
+def api_photos(limit: int = 200, offset: int = 0, place: str | None = None,
+               before: int | None = None, only_favorites: bool = False,
+               include_archived: bool = True, tag: str | None = None):
+    if tag:
+        rows = photos_by_tag(tag, limit=limit, offset=offset)
+    elif place:
         rows = search_photos_by_place(place, limit=limit, offset=offset)
     else:
-        rows = done_photos(limit=limit, offset=offset, before=before)
+        rows = done_photos(limit=limit, offset=offset, before=before,
+                            only_favorites=only_favorites, include_archived=include_archived)
     return {"photos": [_row_to_dict(r) for r in rows]}
+
+
+@app.get("/api/photos/archived")
+def api_archived_photos(limit: int = 200, offset: int = 0):
+    return {"photos": [_row_to_dict(r) for r in archived_photos(limit=limit, offset=offset)]}
+
+
+@app.get("/api/memories")
+def api_memories(month: int | None = None, day: int | None = None, limit: int = 60):
+    """Photos captured on (month, day) in previous years — "on this day".
+
+    Defaults to today's calendar date in UTC so the UI can just call the
+    endpoint without arguments. Each result includes ``age_days`` so the UI
+    can render "5 years ago today".
+    """
+    import datetime as _dt
+    now = _dt.datetime.utcnow()
+    m = month if month is not None else now.month
+    d = day if day is not None else now.day
+    rows = memories_for_today(m, d, limit=limit)
+    out = []
+    for r in rows:
+        photo = _row_to_dict(r)
+        age_days = int(r["age_days"]) if r["age_days"] is not None else None
+        photo["age_days"] = age_days
+        photo["age_years"] = int(age_days // 365) if age_days is not None else None
+        out.append(photo)
+    return {"month": m, "day": d, "photos": out}
+
+
+@app.get("/api/duplicates")
+def api_duplicates(limit: int = 200):
+    """Groups of photos that share a Proton content-hash (sha1).
+
+    Each group is rendered side-by-side in the Duplicates tab; users can
+    hide individual copies (``hidden=1``) so they don't re-appear.
+    """
+    groups = duplicate_groups(limit=limit)
+    out = []
+    for members in groups:
+        out.append({
+            "sha1": members[0]["sha1"],
+            "count": len(members),
+            "photos": [_row_to_dict(r) for r in members],
+        })
+    return {"groups": out}
+
+
+@app.get("/api/tags")
+def api_tags():
+    return {"tags": [{"name": r[0], "count": r[1]} for r in all_tags()]}
+
+
+@app.patch("/api/photos/{uid}")
+def api_patch_photo(uid: str, body: dict = Body(...)):
+    """Set local-only metadata flags on a photo: favorited, archived, hidden.
+
+    Body keys are all optional; only the provided ones are updated. Returns
+    the updated photo row.
+    """
+    if get_photo(uid) is None:
+        raise HTTPException(404, "photo not found")
+    if "favorited" in body:
+        set_favorited(uid, bool(body["favorited"]))
+    if "archived" in body:
+        set_archived(uid, bool(body["archived"]))
+    if "hidden" in body:
+        set_hidden(uid, bool(body["hidden"]))
+    row = get_photo(uid)
+    return _row_to_dict(row)
+
+
+@app.put("/api/photos/{uid}/tags")
+def api_set_tags(uid: str, body: dict = Body(...)):
+    """Replace the freeform tag set for a photo. ``tags`` is a list of strings."""
+    if get_photo(uid) is None:
+        raise HTTPException(404, "photo not found")
+    tags = body.get("tags") or []
+    if not isinstance(tags, list):
+        raise HTTPException(400, "tags must be a list of strings")
+    clean = set_tags(uid, tags)
+    return {"uid": uid, "tags": clean}
+
+
+@app.get("/api/photos/{uid}/tags")
+def api_get_tags(uid: str):
+    if get_photo(uid) is None:
+        raise HTTPException(404, "photo not found")
+    return {"uid": uid, "tags": get_tags(uid)}
 
 
 @app.get("/api/photos/anchors")
@@ -296,9 +421,14 @@ def api_photo_meta(uid: str):
         nodes = get_bridge().nodes([uid])
         if nodes:
             n = nodes[0]
-            for k in ("size", "creationTime", "modificationTime", "tags", "mainPhotoNodeUid", "relatedPhotoNodeUids", "mediaType"):
+            for k in ("size", "creationTime", "modificationTime", "mainPhotoNodeUid", "relatedPhotoNodeUids", "mediaType"):
                 if n.get(k) is not None:
                     meta[k] = n[k]
+            # Proton's read-only photo tags come back under `proton_tags` so
+            # they don't collide with the user's local tags column.
+            pt = n.get("tags")
+            if pt is not None:
+                meta["proton_tags"] = pt
     except Exception as exc:
         log.warning("bridge node metadata failed for %s: %s", uid, exc)
 
@@ -763,6 +893,28 @@ def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
 def api_person_photos(person_id: int, limit: int = 200, offset: int = 0):
     rows = photos_for_person(person_id, limit=limit, offset=offset)
     return {"photos": [_row_to_dict(r) for r in rows], "count": count_faces_for_person(person_id)}
+
+
+@app.get("/api/people/{person_id}/map")
+def api_person_map(person_id: int, limit: int = 500):
+    """Clustered map markers for one person: places they've been photographed in.
+
+    Same shape as ``/api/map`` but filtered to photos carrying faces of this
+    person. Drives the per-person "map of where I've seen them" view.
+    """
+    rows = person_map_markers(person_id, limit=limit)
+    markers = []
+    for r in rows:
+        city = r["place"].split(",")[0].strip()
+        markers.append({
+            "place": r["place"],
+            "city": city,
+            "count": r["photo_count"],
+            "lat": r["lat"],
+            "lng": r["lng"],
+            "thumb_url": f"/api/photos/{r['cover_uid']}/thumb" if r["cover_uid"] else None,
+        })
+    return {"markers": markers}
 
 
 # --- search ----------------------------------------------------------------

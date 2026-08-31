@@ -189,50 +189,41 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, url: URL):
         return Response.json({ ok: false, error: 'Missing photo uid' }, { status: 400 });
     }
 
-    const downloader = await ctx.photosSdk.getFileDownloader(uid);
-
-    // The SDK's getSeekableStream() returns a BufferedSeekableStream whose
-    // constructor immediately locks itself (reader = super.getReader()), so it
-    // cannot be handed to Response/Bun. Instead we mirror the CLI's
-    // downloadToPath pattern: downloadToStream() into a WritableStream adapter
-    // that pushes chunks into a fresh ReadableStream, await completion(),
-    // then close the controller.
+    // Download to a temp file, then hand off to Bun.file() so HTTP Range
+    // requests work (HTML5 <video> requires this for seeking — without
+    // Range support the browser must download the whole file before play).
     //
-    // NOTE: we deliberately do NOT send Content-Length — getClaimedSizeInBytes()
-    // can differ from the actually-decrypted byte count, and a mismatched
-    // Content-Length makes clients think the stream was truncated. Chunked
-    // transfer avoids that.
-    const stream = new ReadableStream<Uint8Array>({
-        async start(controller) {
-            const writable = new WritableStream<Uint8Array>({
-                write(chunk) {
-                    controller.enqueue(chunk);
-                },
-                close() {
-                    controller.close();
-                },
-                abort(err) {
-                    controller.error(err);
-                },
-            });
+    // We accept the trade-off of writing the full bytes to disk once: videos
+    // are typically tens-to-hundreds of MB and the indexer downloads them too
+    // for poster extraction, so the bridge's temp is no worse than that.
+    const tmp = path.join(DATA_DIR, 'work', `${uid}.full`);
+    await mkdir(path.dirname(tmp), { recursive: true });
 
-            try {
-                const dlController = downloader.downloadToStream(writable);
-                await dlController.completion();
-                controller.close();
-            } catch (err) {
-                controller.error(err);
+    // Resolve the real MIME type from the node (preferred) so the browser
+    // picks the right codec instead of guessing from .webp/.jpg extensions.
+    let mediaType: string | null = null;
+    try {
+        for await (const node of ctx.photosSdk.iterateNodes([uid])) {
+            if (!('missingUid' in node)) {
+                mediaType = (node as PhotoNode).mediaType ?? null;
             }
-        },
-    });
+            break;
+        }
+    } catch {
+        // fall through to octet-stream; the client will still get bytes.
+    }
 
+    const downloader = await ctx.photosSdk.getFileDownloader(uid);
+    await downloader.downloadToPath(tmp);
+
+    const file = Bun.file(tmp);
     const headers: Record<string, string> = {
-        'Content-Type': 'application/octet-stream',
         'Cache-Control': 'no-store',
         'X-Photo-Uid': uid,
+        'Accept-Ranges': 'bytes',
     };
-
-    return new Response(stream, { headers });
+    if (mediaType) headers['Content-Type'] = mediaType;
+    return new Response(file, { headers });
 }
 
 async function main(): Promise<void> {

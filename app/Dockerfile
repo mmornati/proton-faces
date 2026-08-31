@@ -10,9 +10,10 @@ FROM python:3.11-slim
 
 # System deps: onnxruntime wheels need libgomp1; build-essential is required to
 # compile insightface's Cython extension; curl downloads the baked CLIP models.
+# ffmpeg extracts video poster frames + reads durations via ffprobe.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        libgomp1 libglib2.0-0 build-essential curl \
+        libgomp1 libglib2.0-0 ffmpeg build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
