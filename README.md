@@ -147,6 +147,14 @@ The indexer starts immediately and is fully resumable. The first run processes y
 library (roughly 1–2 s per photo on a modern CPU — a 100k-photo library takes about a day), and
 the web UI becomes useful right away as results stream in.
 
+> **Two-process layout (issue #4).** `docker compose up` now starts three containers:
+> `proton-bridge`, `indexer`, and `app`. The `indexer` container owns the
+> recognition pipeline so face detection can't preempt the FastAPI event loop
+> on the box's CPU cores. Both processes share the same SQLite index via WAL
+> mode and per-row atomic claims — no extra coordination. If you'd rather keep
+> the legacy single-process layout (everything in `app`), set `RUN_INDEXER=1`
+> in `.env`.
+
 ---
 
 ## 🖥️ Usage / web UI
@@ -196,6 +204,8 @@ the web UI becomes useful right away as results stream in.
 app/              Python indexer + search API + web UI
   src/
     indexer.py    timeline diff / download / recognize / fullres / delete pipeline
+    indexer_main.py  dedicated entry point for the `indexer` container (no uvicorn)
+    main.py       dedicated entry point for the `app` container (uvicorn only by default)
     faces.py      InsightFace face detection + embeddings
     clip.py       CLIP ViT-B/32 embeddings (ONNX Runtime)
     cluster.py    HDBSCAN people clustering
@@ -205,7 +215,7 @@ app/              Python indexer + search API + web UI
     static/       vanilla-JS frontend (incl. Leaflet map)
 bridge/           Bun service wrapping the Proton Drive SDK
 scripts/          helper scripts (session export, backup, build)
-compose.yml       two-container deployment
+compose.yml       three-container deployment (bridge + indexer + app)
 .github/workflows GHCR image publishing
 ```
 
@@ -230,6 +240,7 @@ Environment variables (see `.env.example`):
 | `BRIDGE_URL`          | `http://proton-bridge:8090`| Bridge container address                    |
 | `MODELS_DIR`          | `DATA_DIR/models`          | Where ML models are stored                  |
 | `LOG_LEVEL`           | `INFO`                     | Logging verbosity                           |
+| `RUN_INDEXER`         | `0`                        | Set `1` on the `app` container to start the in-process indexer (legacy single-process layout). Default off: the `indexer` container handles the pipeline. |
 
 ### GPS / place enrichment
 
@@ -245,9 +256,9 @@ enrich GPS **automatically** in the background:
 Run it manually (e.g. after a fresh import):
 
 ```bash
-docker compose exec app python main.py --backfill-gps
+docker compose exec indexer python indexer_main.py --backfill-gps
 # after a new Takeout export, force a rehash of the local files:
-docker compose exec app python main.py --backfill-gps --rebuild-cache
+docker compose exec indexer python indexer_main.py --backfill-gps --rebuild-cache
 ```
 
 ### iPhone (HEIC) photos

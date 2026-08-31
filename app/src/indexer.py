@@ -83,6 +83,21 @@ def get_indexer_state() -> dict:
     recorded = _runtime.get("threads") or {}
     live = {n: threads.get(n, False) for n in recorded}
     _runtime["pending_in_queue"] = pending
+    # If this process never started the indexer (the post-split default:
+    # the API container, with RUN_INDEXER unset), surface an honest
+    # "remote" state so the UI doesn't show a wall of dead threads. The
+    # indexer container owns the live runtime.
+    if not recorded:
+        return {
+            "started_at": None,
+            "last_sync": None,
+            "last_sync_error": None,
+            "last_cluster": None,
+            "last_gps": None,
+            "pending_in_queue": 0,
+            "threads": {},
+            "remote": True,
+        }
     return {
         "started_at": _runtime.get("started_at"),
         "last_sync": _runtime.get("last_sync"),
