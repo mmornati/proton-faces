@@ -1185,12 +1185,11 @@ async function loadMorePeople() {
     if (more.length) {
       const grid = document.querySelector(".people-grid");
       if (grid) {
-        // We need the people list to bind cards. Re-fetch cached `people` set.
         peopleOffset += more.length;
         const frag = document.createElement("div");
         frag.innerHTML = more.map(personCardHtml).join("");
-        grid.appendChild(frag);
-        bindPersonCards(more);
+        bindPersonCards(more, frag);
+        while (frag.firstChild) grid.appendChild(frag.firstChild);
       }
     }
     if (more.length < peoplePage) {
@@ -1259,8 +1258,8 @@ function toggleDups() {
   if (willOpen && (box.dataset.dirty || !box.dataset.loaded)) loadDuplicates();
 }
 
-function bindPersonCards(people) {
-  const el = $("#view");
+function bindPersonCards(people, scope) {
+  const el = scope || $("#view");
   el.querySelectorAll(".person").forEach((card) => {
     const pid = +card.dataset.id;
     card.querySelector(".rename").addEventListener("click", (e) => e.stopPropagation());
@@ -1549,6 +1548,7 @@ document.querySelectorAll("nav a").forEach((a) => {
     state.view = a.dataset.view;
     $("#q").value = "";
     state.q = "";
+    $("#memorieswrap").style.display = "none";
     if (state.view === "people") {
       $("#daterailwrap").style.display = "none"; $("#mapwrap").style.display = "none";
       loadPeople();
