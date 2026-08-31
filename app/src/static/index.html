@@ -2025,7 +2025,7 @@ function renderStatusModal(s) {
       <tr><td class="k">Last sync error</td><td class="v">${esc(idx.last_sync_error || "—")}</td></tr>
       <tr><td class="k">Last cluster</td><td class="v">${fmtAbs(idx.last_cluster)} <span style="color:var(--muted)">(${fmtRelative(idx.last_cluster)})</span></td></tr>
       <tr><td class="k">Last GPS enrichment</td><td class="v">${fmtAbs(idx.last_gps)} <span style="color:var(--muted)">(${fmtRelative(idx.last_gps)})</span></td></tr>
-      <tr><td class="k">Pending queue</td><td class="v">${idx.pending_in_queue || 0}</td></tr>
+      <tr><td class="k">Pending queue</td><td class="v">live: ${idx.pending_in_queue || 0} <span style="color:var(--muted)">· db: ${idx.pending_db ?? p.pending ?? 0}</span></td></tr>
       ${threadRows}
     </table>
     <h4>Storage</h4>

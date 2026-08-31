@@ -24,6 +24,16 @@ class Settings:
         self.min_cluster_size = int(os.environ.get("MIN_CLUSTER_SIZE", "2"))
         self.log_level = os.environ.get("LOG_LEVEL", "INFO")
 
+        # Internal-only endpoint that the `indexer` container exposes on
+        # 127.0.0.1 so the `app` container can read its live runtime state
+        # (last_sync, live queue depth, thread liveness). Defaults to the
+        # compose-network DNS name `indexer` on port 8091; can be overridden
+        # for local single-process dev (`http://127.0.0.1:8091`).
+        self.indexer_status_port = int(os.environ.get("INDEXER_STATUS_PORT", "8091"))
+        self.indexer_status_url = os.environ.get(
+            "INDEXER_STATUS_URL", f"http://indexer:{self.indexer_status_port}"
+        )
+
         # Derived paths
         self.work_dir = self.data_dir / "work"
         self.thumb_dir = self.data_dir / "thumbs"

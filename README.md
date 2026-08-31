@@ -276,6 +276,7 @@ Environment variables (see `.env.example`):
 | `MODELS_DIR`          | `DATA_DIR/models`          | Where ML models are stored                  |
 | `LOG_LEVEL`           | `INFO`                     | Logging verbosity                           |
 | `RUN_INDEXER`         | `0`                        | Set `1` on the `app` container to start the in-process indexer (legacy single-process layout). Default off: the `indexer` container handles the pipeline. |
+| `INDEXER_STATUS_PORT` | `8091`                     | Internal-only port (127.0.0.1) on the `indexer` container that exposes its live runtime state to the `app` container for the footer/health modal. Not published to the host — reachable only over the compose network via `http://indexer:8091`. |
 | `AUTH_ACCESS_TTL`     | `28800`                    | Bearer access-token lifetime (seconds). 8 hours by default. |
 | `AUTH_REFRESH_TTL`    | `2592000`                  | Bearer refresh-token lifetime (seconds). 30 days by default. |
 

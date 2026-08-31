@@ -50,8 +50,10 @@ services:
 
   indexer:
     # Runs the indexing pipeline only: sync / downloader / fullres / workers
-    # / cluster / gps / albums. No HTTP. Same image as `app`, but a
-    # different entry point.
+    # / cluster / gps / albums. No public HTTP — only an internal status
+    # endpoint on 127.0.0.1:INDEXER_STATUS_PORT that the `app` container
+    # proxies to populate the footer. Same image as `app`, but a different
+    # entry point.
     build: ./app
     image: ghcr.io/mmornati/proton-faces-app:latest
     restart: unless-stopped
@@ -74,6 +76,10 @@ services:
       - GPS_INTERVAL=${GPS_INTERVAL:-21600}
       - FACE_SIM_THRESHOLD=${FACE_SIM_THRESHOLD:-0.45}
       - MIN_CLUSTER_SIZE=${MIN_CLUSTER_SIZE:-2}
+      # Internal-only port for the live status endpoint. Not published to
+      # the host; reachable from the `app` service over the compose
+      # network via the `indexer` hostname.
+      - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     networks:
       - internal
@@ -100,6 +106,10 @@ services:
       # RUN_INDEXER=0 -> serve API only; the `indexer` container handles
       # the pipeline. Flip to 1 to fall back to the legacy in-process layout.
       - RUN_INDEXER=${RUN_INDEXER:-0}
+      # Where to read the indexer's live state from. Defaults to
+      # http://indexer:8091 (internal compose network only — the
+      # indexer container does NOT publish this port to the host).
+      - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     networks:
       - internal

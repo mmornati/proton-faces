@@ -7,6 +7,8 @@ import logging
 import os
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -85,7 +87,6 @@ from store import (
     update_user,
 )
 import indexer
-
 log = logging.getLogger("api")
 
 app = FastAPI(title="proton-faces", version="0.1.0",
@@ -378,6 +379,91 @@ def _cached_stats() -> dict:
     return payload
 
 
+# Proxy cache for the indexer container's live runtime state. The API
+# process never runs the indexer itself (RUN_INDEXER=0 by default), so
+# `get_indexer_state()` would otherwise return an empty stub. Instead we
+# HTTP GET the dedicated /status endpoint that the indexer container
+# exposes on its internal network. 2 s TTL caps the cost of the frontend
+# 30 s poll to one round-trip every ~2 s of modal activity.
+_INDEXER_PROXY_CACHE_TTL = 2.0
+_INDEXER_PROXY_TIMEOUT = 0.25  # seconds; the endpoint is local to compose
+_indexer_proxy_cache: tuple[float, dict] | None = None
+
+
+def _indexer_is_local() -> bool:
+    """True when this process is running the indexer threads (RUN_INDEXER=1)."""
+    return bool(getattr(indexer, "_runtime", {}).get("threads"))
+
+
+def _empty_indexer_state(pending_db: int | None = None) -> dict:
+    """Fallback stub used when the indexer container is unreachable.
+
+    Returns the same shape as `get_indexer_state()` so the frontend can
+    keep rendering, plus an optional `pending_db` count read straight
+    from SQLite (still useful when the indexer is down).
+    """
+    out = {
+        "started_at": None,
+        "last_sync": None,
+        "last_sync_error": None,
+        "last_cluster": None,
+        "last_gps": None,
+        "pending_in_queue": 0,
+        "threads": {},
+        "remote": True,
+    }
+    if pending_db is not None:
+        out["pending_db"] = int(pending_db)
+    return out
+
+
+def _fetch_remote_indexer_state() -> dict:
+    """Proxy the indexer container's /status endpoint (cached + timeout).
+
+    On any failure (DNS, refused, timeout, non-2xx, bad JSON) returns the
+    empty stub augmented with `pending_db` from local SQLite so the
+    durable count is still surfaced.
+    """
+    global _indexer_proxy_cache
+    now = time.time()
+    if _indexer_proxy_cache is not None and now - _indexer_proxy_cache[0] < _INDEXER_PROXY_CACHE_TTL:
+        return _indexer_proxy_cache[1]
+    try:
+        pending_db = (stats().get("photos") or {}).get("pending", 0)
+    except Exception:
+        pending_db = None
+    url = settings.indexer_status_url.rstrip("/") + "/status"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=_INDEXER_PROXY_TIMEOUT) as resp:
+            if getattr(resp, "status", 200) != 200:
+                raise RuntimeError(f"indexer status {resp.status}")
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as exc:
+        log.warning("indexer status proxy failed (%s): %s", url, exc)
+        payload = _empty_indexer_state(pending_db=pending_db)
+    # Always surface the DB count even when the proxy succeeded, so both
+    # metrics are visible on the success path too (the proxy already
+    # includes pending_db, but local stats is fresher and never wrong).
+    if pending_db is not None and "pending_db" not in payload:
+        payload["pending_db"] = int(pending_db)
+    payload.setdefault("pending_db", 0)
+    payload.setdefault("pending_in_queue", 0)
+    _indexer_proxy_cache = (now, payload)
+    return payload
+
+
+def _merged_indexer_state() -> dict:
+    """Return the best indexer state for `/api/status`.
+
+    - In-process (RUN_INDEXER=1): local `_runtime` snapshot.
+    - Otherwise: proxy the indexer container's /status endpoint.
+    """
+    if _indexer_is_local():
+        return get_indexer_state()
+    return _fetch_remote_indexer_state()
+
+
 @app.get("/api/status", dependencies=[])
 def api_status() -> dict:
     """Aggregated status snapshot for the bottom status bar / details overlay.
@@ -395,7 +481,7 @@ def api_status() -> dict:
         bridge_logged_in = False
         log.warning("bridge health failed: %s", exc)
     s = _cached_stats()
-    rt = get_indexer_state()
+    rt = _merged_indexer_state()
     thumbs_bytes = _cached_dir_size(settings.thumb_dir)
     db_bytes = settings.db_path.stat().st_size if settings.db_path.exists() else 0
     return {

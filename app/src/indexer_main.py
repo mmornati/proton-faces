@@ -15,9 +15,13 @@ import argparse
 import logging
 import signal
 import sys
+import threading
+
+import uvicorn
 
 from config import settings
 from indexer import backfill_gps, enrich_places, start
+from indexer_status import app as status_app
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -49,6 +53,29 @@ def main() -> None:
 
     threads = start()
     log.info("indexer pipeline up (%d background threads)", len(threads))
+
+    # Tiny internal-only HTTP server that exposes the indexer's live
+    # state to the `app` container (see indexer_status.py). Bound to
+    # 127.0.0.1, no host port mapping — only the `app` service on the
+    # compose network can reach it. Daemon thread so it never blocks
+    # shutdown.
+    status_port = settings.indexer_status_port
+
+    def _run_status_server() -> None:
+        cfg = uvicorn.Config(
+            status_app,
+            host="127.0.0.1",
+            port=status_port,
+            log_level=settings.log_level.lower(),
+            access_log=False,
+        )
+        uvicorn.Server(cfg).run()
+
+    status_thread = threading.Thread(
+        target=_run_status_server, name="indexer-status", daemon=True
+    )
+    status_thread.start()
+    log.info("indexer status endpoint listening on 127.0.0.1:%d", status_port)
 
     # Park the main thread on a sleep loop until SIGTERM/SIGINT. uvicorn-style
     # signal handling isn't needed here because we never bind a port.
