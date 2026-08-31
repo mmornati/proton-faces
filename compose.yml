@@ -2,7 +2,6 @@ name: proton-faces
 
 # proton-faces: self-hosted people/object/location search over Proton Photos.
 # Bring up with:  docker compose up -d
-# (or  docker compose up -d --build  to build locally from source instead of pulling)
 # One-time setup:  scripts/export-session.sh  (places auth-session.json in ./credentials)
 #
 # Three services share the `data` volume:
@@ -27,13 +26,13 @@ name: proton-faces
 #                 used to backfill GPS/place data (see README). Unset by default;
 #                 uncomment the volume line below when you have one.
 #
-# Images are published to GitHub Container Registry. By default `docker compose up`
-# pulls the prebuilt images; use `docker compose up --build` to build from source
-# instead (useful on low-power boxes to skip the pull, or to test local changes).
+# Images are pulled from GitHub Container Registry. `docker compose up` always
+# pulls the prebuilt images — there is no local build step. Local development
+# against an edited source tree should use `docker compose build --pull` from
+# a separate checkout that adds `build:` keys, then push to GHCR.
 
 services:
   proton-bridge:
-    build: ./bridge
     image: ghcr.io/mmornati/proton-faces-bridge:latest
     restart: unless-stopped
     volumes:
@@ -54,7 +53,6 @@ services:
     # endpoint on 127.0.0.1:INDEXER_STATUS_PORT that the `app` container
     # proxies to populate the footer. Same image as `app`, but a different
     # entry point.
-    build: ./app
     image: ghcr.io/mmornati/proton-faces-app:latest
     restart: unless-stopped
     depends_on:
@@ -85,7 +83,6 @@ services:
       - internal
 
   app:
-    build: ./app
     image: ghcr.io/mmornati/proton-faces-app:latest
     restart: unless-stopped
     depends_on:
