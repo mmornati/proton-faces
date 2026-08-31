@@ -19,6 +19,12 @@ CREATE TABLE IF NOT EXISTS photos (
     capture_time INTEGER,
     sha1         TEXT,
     albums       TEXT,           -- JSON array of album node uids
+    size_bytes   INTEGER,        -- Proton claimedSize (UI display, video poster gate)
+    duration_sec REAL,           -- video duration (ffprobe); NULL for images
+    favorited    INTEGER NOT NULL DEFAULT 0,    -- local star
+    archived     INTEGER NOT NULL DEFAULT 0,    -- hidden from default grids
+    hidden       INTEGER NOT NULL DEFAULT 0,    -- user hid it (e.g. resolved duplicate)
+    tags         TEXT,           -- JSON array of freeform user tags
     status       TEXT NOT NULL DEFAULT 'new',  -- new|downloading|done|error|deleted
     thumb_path   TEXT,           -- relative path under DATA_DIR/thumbs
     gps_lat      REAL,
@@ -30,6 +36,10 @@ CREATE TABLE IF NOT EXISTS photos (
 CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(status);
 CREATE INDEX IF NOT EXISTS idx_photos_place  ON photos(place);
 CREATE INDEX IF NOT EXISTS idx_photos_time   ON photos(capture_time);
+CREATE INDEX IF NOT EXISTS idx_photos_favorited ON photos(favorited);
+CREATE INDEX IF NOT EXISTS idx_photos_archived  ON photos(archived);
+CREATE INDEX IF NOT EXISTS idx_photos_hidden   ON photos(hidden);
+CREATE INDEX IF NOT EXISTS idx_photos_sha1     ON photos(sha1);
 
 CREATE TABLE IF NOT EXISTS people (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +96,29 @@ def init_db() -> None:
 
 def migrate(conn: sqlite3.Connection) -> None:
     """Idempotent column migrations for older databases."""
+    pcols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
+    if "size_bytes" not in pcols:
+        conn.execute("ALTER TABLE photos ADD COLUMN size_bytes INTEGER")
+    if "duration_sec" not in pcols:
+        conn.execute("ALTER TABLE photos ADD COLUMN duration_sec REAL")
+    if "favorited" not in pcols:
+        conn.execute("ALTER TABLE photos ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0")
+    if "archived" not in pcols:
+        conn.execute("ALTER TABLE photos ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+    if "hidden" not in pcols:
+        conn.execute("ALTER TABLE photos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+    if "tags" not in pcols:
+        conn.execute("ALTER TABLE photos ADD COLUMN tags TEXT")
+    # Indexes for the new columns.
+    idx = {r["name"] for r in conn.execute("PRAGMA index_list(photos)")}
+    if "idx_photos_favorited" not in idx:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_photos_favorited ON photos(favorited)")
+    if "idx_photos_archived" not in idx:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_photos_archived ON photos(archived)")
+    if "idx_photos_hidden" not in idx:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_photos_hidden ON photos(hidden)")
+    if "idx_photos_sha1" not in idx:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_photos_sha1 ON photos(sha1)")
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(people)")}
     if "cover_face_id" not in cols:
         conn.execute("ALTER TABLE people ADD COLUMN cover_face_id INTEGER")
@@ -123,14 +156,15 @@ def upsert_photos(rows: list[dict]) -> int:
             if existing is None:
                 new += 1
             conn.execute(
-                """INSERT INTO photos (uid, name, media_type, capture_time, sha1, albums, status)
-                   VALUES (?, ?, ?, ?, ?, ?, 'new')
+                """INSERT INTO photos (uid, name, media_type, capture_time, sha1, albums, size_bytes, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'new')
                    ON CONFLICT(uid) DO UPDATE SET
                        name=excluded.name,
                        media_type=excluded.media_type,
                        capture_time=excluded.capture_time,
                        sha1=excluded.sha1,
                        albums=excluded.albums,
+                       size_bytes=excluded.size_bytes,
                        status=CASE WHEN photos.status='deleted' THEN 'new' ELSE photos.status END
                 """,
                 (
@@ -140,6 +174,7 @@ def upsert_photos(rows: list[dict]) -> int:
                     r.get("capture_time"),
                     r.get("sha1"),
                     json.dumps(r.get("albums", [])) if r.get("albums") else None,
+                    r.get("size"),
                 ),
             )
     return new
@@ -203,6 +238,14 @@ def set_photo_full(uid: str) -> None:
         conn.execute("UPDATE photos SET status='full', error=NULL WHERE uid=?", (uid,))
 
 
+def set_photo_duration(uid: str, duration_sec: float | None) -> None:
+    """Persist the ffprobe-measured video duration (no-op for None)."""
+    if duration_sec is None:
+        return
+    with get_conn() as conn:
+        conn.execute("UPDATE photos SET duration_sec=? WHERE uid=?", (duration_sec, uid))
+
+
 def claim_photo_for_full(uid: str) -> bool:
     """Atomically move a photo from 'full' to 'fullres' (full-res being downloaded)."""
     with _lock, get_conn() as conn:
@@ -213,10 +256,12 @@ def claim_photo_for_full(uid: str) -> bool:
 
 
 def backfill_fullres_images() -> int:
-    """Requeue image photos that were 'done' without a thumbnail.
+    """Requeue photos that finished without a thumbnail.
 
     Used at startup to pick up images (e.g. HEIC) that finished before we
-    generated local thumbnails. Videos (video/*) are intentionally excluded.
+    generated local thumbnails, AND videos that pre-date the ffmpeg poster
+    pipeline. Videos get a separate requeue so the fullres loop picks the
+    right strategy per media type.
     """
     with get_conn() as conn:
         cur = conn.execute(
@@ -224,7 +269,16 @@ def backfill_fullres_images() -> int:
             "WHERE status='done' AND (thumb_path IS NULL OR thumb_path='') "
             "AND media_type LIKE 'image/%'"
         )
-        return cur.rowcount
+        n = cur.rowcount
+        # Videos go to the same 'full' bucket; the fullres loop dispatches on
+        # media_type, not status.
+        cur = conn.execute(
+            "UPDATE photos SET status='full', error=NULL "
+            "WHERE status='done' AND (thumb_path IS NULL OR thumb_path='') "
+            "AND media_type LIKE 'video/%'"
+        )
+        n += cur.rowcount
+    return n
 
 
 def set_photo_error(uid: str, error: str) -> None:
@@ -598,17 +652,27 @@ def map_markers(limit: int = 1000) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def done_photos(limit: int = 200, offset: int = 0, before: int | None = None) -> list[sqlite3.Row]:
+def done_photos(limit: int = 200, offset: int = 0, before: int | None = None,
+                only_favorites: bool = False, include_archived: bool = True) -> list[sqlite3.Row]:
     """Indexed photos with thumbnails, newest first.
 
     `before` optionally restricts to photos captured at or before the given
     epoch timestamp (used as a date-anchor jump).
+
+    `only_favorites=True` returns only favorited photos (used by the Favorites
+    view). `include_archived=False` hides archived photos from the default
+    grid — they remain accessible from the Archive view.
     """
     sql = (
         "SELECT * FROM photos "
-        "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != ''"
+        "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
+        "AND hidden = 0"
     )
     params: list = []
+    if only_favorites:
+        sql += " AND favorited = 1"
+    if not include_archived:
+        sql += " AND archived = 0"
     if before is not None:
         sql += " AND capture_time <= ?"
         params.append(before)
@@ -616,6 +680,169 @@ def done_photos(limit: int = 200, offset: int = 0, before: int | None = None) ->
     params += [limit, offset]
     with get_conn() as conn:
         return conn.execute(sql, params).fetchall()
+
+
+def archived_photos(limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
+    """Photos the user has archived, newest first."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM photos "
+            "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
+            "AND hidden = 0 AND archived = 1 "
+            "ORDER BY capture_time DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+
+
+def set_favorited(uid: str, favorited: bool) -> None:
+    with get_conn() as conn:
+        conn.execute("UPDATE photos SET favorited=? WHERE uid=?", (1 if favorited else 0, uid))
+
+
+def set_archived(uid: str, archived: bool) -> None:
+    with get_conn() as conn:
+        conn.execute("UPDATE photos SET archived=? WHERE uid=?", (1 if archived else 0, uid))
+
+
+def set_hidden(uid: str, hidden: bool) -> None:
+    with get_conn() as conn:
+        conn.execute("UPDATE photos SET hidden=? WHERE uid=?", (1 if hidden else 0, uid))
+
+
+def get_tags(uid: str) -> list[str]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT tags FROM photos WHERE uid=?", (uid,)).fetchone()
+    if not row or not row["tags"]:
+        return []
+    try:
+        return list(json.loads(row["tags"]))
+    except Exception:
+        return []
+
+
+def set_tags(uid: str, tags: list[str]) -> list[str]:
+    """Replace the tag set for a photo. De-duped, lower-cased, blanks dropped."""
+    clean: list[str] = []
+    seen: set[str] = set()
+    for t in tags:
+        if not isinstance(t, str):
+            continue
+        t = t.strip().lower()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        clean.append(t)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE photos SET tags=? WHERE uid=?",
+            (json.dumps(clean) if clean else None, uid),
+        )
+    return clean
+
+
+def all_tags() -> list[sqlite3.Row]:
+    """Distinct user tags with counts (photos tagged with them)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT tags FROM photos WHERE status='done' AND tags IS NOT NULL AND tags != ''"
+        ).fetchall()
+    counts: dict[str, int] = {}
+    for r in rows:
+        try:
+            for t in json.loads(r["tags"]):
+                counts[t] = counts.get(t, 0) + 1
+        except Exception:
+            pass
+    return [sqlite3.Row((t, n)) for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
+def photos_by_tag(tag: str, limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
+    """Photos that carry the given tag (case-insensitive)."""
+    needle = json.dumps([tag.lower()])[1:-1]  # exact-match the JSON substring
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM photos "
+            "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
+            "AND hidden = 0 AND tags LIKE ? "
+            "ORDER BY capture_time DESC LIMIT ? OFFSET ?",
+            (f"%{needle}%", limit, offset),
+        ).fetchall()
+
+
+def duplicate_groups(limit: int = 500) -> list[list[sqlite3.Row]]:
+    """Photos whose Proton content-hash (sha1) appears more than once.
+
+    Returns a list of groups (each is a list of sqlite3.Row). Groups are
+    ordered by total photo count DESC so the worst offenders appear first.
+    A ``hidden`` flag on individual rows lets the user dismiss a duplicate
+    while keeping the original — that's why we filter ``hidden=0`` here.
+    """
+    with get_conn() as conn:
+        groups = conn.execute(
+            "SELECT sha1 FROM photos "
+            "WHERE status='done' AND sha1 IS NOT NULL AND sha1 != '' "
+            "GROUP BY sha1 HAVING COUNT(*) > 1 "
+            "ORDER BY COUNT(*) DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        out: list[list[sqlite3.Row]] = []
+        for g in groups:
+            members = conn.execute(
+                "SELECT * FROM photos "
+                "WHERE sha1 = ? AND status='done' "
+                "ORDER BY hidden ASC, capture_time DESC",
+                (g["sha1"],),
+            ).fetchall()
+            out.append(members)
+    return out
+
+
+def person_map_markers(person_id: int, limit: int = 500) -> list[sqlite3.Row]:
+    """Aggregate GPS-tagged photos for one person into clustered map markers.
+
+    Same shape as ``map_markers`` but restricted to photos carrying faces of
+    this person. Drives the per-person "where I've seen them" map.
+    """
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT photos.place, COUNT(*) AS photo_count, "
+            "AVG(photos.gps_lat) AS lat, AVG(photos.gps_lng) AS lng, "
+            "(SELECT uid FROM photos p2 "
+            "  WHERE p2.place = photos.place AND p2.status='done' "
+            "  AND p2.thumb_path IS NOT NULL AND p2.thumb_path != '' "
+            "  AND EXISTS (SELECT 1 FROM faces f "
+            "    WHERE f.photo_uid = p2.uid AND f.person_id = ?) "
+            "  ORDER BY p2.capture_time DESC LIMIT 1) AS cover_uid "
+            "FROM photos "
+            "WHERE photos.status='done' AND photos.hidden = 0 "
+            "AND photos.gps_lat IS NOT NULL AND photos.gps_lng IS NOT NULL "
+            "AND photos.place IS NOT NULL "
+            "AND EXISTS (SELECT 1 FROM faces f "
+            "  WHERE f.photo_uid = photos.uid AND f.person_id = ?) "
+            "GROUP BY photos.place ORDER BY photo_count DESC LIMIT ?",
+            (person_id, person_id, limit),
+        ).fetchall()
+
+
+def memories_for_today(month: int, day: int, limit: int = 200) -> list[sqlite3.Row]:
+    """Photos whose capture_time falls on (month, day) in any previous year.
+
+    "On this day" / "memories" feature — pairs with the current calendar
+    date so the UI can surface "X years ago today" thumbnails. Excludes the
+    current year so the same-day photo doesn't dominate.
+    """
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT *, CAST((julianday('now') - julianday(capture_time, 'unixepoch')) AS INTEGER) AS age_days "
+            "FROM photos "
+            "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
+            "AND hidden = 0 "
+            "AND strftime('%m', capture_time, 'unixepoch') = ? "
+            "AND strftime('%d', capture_time, 'unixepoch') = ? "
+            "AND capture_time IS NOT NULL "
+            "ORDER BY capture_time DESC LIMIT ?",
+            (f"{int(month):02d}", f"{int(day):02d}", limit),
+        ).fetchall()
 
 
 def photo_anchors(limit: int = 500) -> list[sqlite3.Row]:

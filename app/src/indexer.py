@@ -39,6 +39,7 @@ from store import (
     insert_face,
     mark_deleted,
     set_photo_done,
+    set_photo_duration,
     set_photo_error,
     set_photo_full,
     set_photo_deleted,
@@ -201,10 +202,11 @@ def _downloader_loop() -> None:
                 else:
                     err = r.get("error", "thumbnail unavailable")
                     if "no image preview" in str(err).lower():
-                        # No server-side preview. Images (e.g. HEIC) get a
-                        # locally-generated thumbnail via the fullres loop;
-                        # videos just get marked done (nothing to index).
-                        if _is_image(uid):
+                        # No server-side preview. Both HEIC/HEIF images AND
+                        # videos get routed to the fullres loop: the loop
+                        # dispatches on media_type to either decode-with-Pillow
+                        # or extract-a-frame-with-ffmpeg.
+                        if _is_image(uid) or _is_video(uid):
                             set_photo_full(uid)
                         else:
                             set_photo_done(uid, "", None, None)
@@ -296,17 +298,29 @@ def _is_image(uid: str) -> bool:
     return bool(row and row["media_type"] and str(row["media_type"]).startswith("image/"))
 
 
+def _is_video(uid: str) -> bool:
+    row = _photo_row(uid)
+    return bool(row and row["media_type"] and str(row["media_type"]).startswith("video/"))
+
+
 # --- fullres loop (local thumbnails for images without server preview) ----
 
 def _fullres_loop() -> None:
-    """Download full-res images without a server preview, decode locally, and
-    enqueue a generated thumbnail into the normal worker pipeline.
+    """Download full-res photos that lack a server preview and generate a thumbnail.
 
-    Uses the bridge's full-res downloader (read-only), decodes with
-    Pillow (pillow-heif handles HEIC/HEIF), downscales to 512px JPEG, and
-    writes it to work/<uid>.webp — the same file the workers expect. The
-    full-res bytes are deleted after processing; only the small thumbnail is
-    kept on disk.
+    Two strategies, dispatched on media_type:
+
+    - **Image** (HEIC/HEIF and anything Pillow+heif can decode): download full-res
+      bytes once, decode with Pillow, downscale to 512px WebP. Full-res is
+      discarded. The thumbnail then flows through the normal worker pipeline
+      (CLIP + face detection).
+
+    - **Video**: download the full-res video once, extract a mid-roll poster
+      frame via ffmpeg, downscale to 512px WebP, and read the duration via
+      ffprobe. Videos skip CLIP/faces and are marked done immediately.
+
+    In both cases the full-res bytes are deleted after processing; only the
+    small thumbnail (or for videos, the poster) is kept on disk.
     """
     while True:
         try:
@@ -334,15 +348,26 @@ def _fullres_loop() -> None:
                             fh.write(chunk)
                 finally:
                     resp.close()
-                _resize_to_thumb(tmp, _work_path(uid))
-                log.info("fullres: generated thumbnail for %s", uid)
-                tmp.unlink(missing_ok=True)
-                # Hand off to the normal worker pipeline.
-                with _db_conn() as conn:
-                    conn.execute(
-                        "UPDATE photos SET status='downloading' WHERE uid=?", (uid,)
-                    )
-                _pending.put(uid)
+
+                if _is_video(uid):
+                    _video_poster(tmp, uid)
+                    tmp.unlink(missing_ok=True)
+                    log.info("fullres: generated video poster for %s", uid)
+                    with _db_conn() as conn:
+                        conn.execute(
+                            "UPDATE photos SET status='done', thumb_path=?, processed_at=?, error=NULL WHERE uid=?",
+                            (_thumb_path(uid).name, int(time.time()), uid),
+                        )
+                else:
+                    _resize_to_thumb(tmp, _work_path(uid))
+                    log.info("fullres: generated thumbnail for %s", uid)
+                    tmp.unlink(missing_ok=True)
+                    # Hand off to the normal worker pipeline.
+                    with _db_conn() as conn:
+                        conn.execute(
+                            "UPDATE photos SET status='downloading' WHERE uid=?", (uid,)
+                        )
+                    _pending.put(uid)
             except Exception as exc:
                 log.warning("fullres failed for %s: %s", uid, exc)
                 tmp.unlink(missing_ok=True)
@@ -352,8 +377,69 @@ def _fullres_loop() -> None:
             time.sleep(10)
 
 
+def _video_poster(src: Path, uid: str) -> None:
+    """Extract a poster frame from a video and write it as 512px WebP.
+
+    Picks the seek point at ~10% of the duration (skips black leader frames
+    common in phone-captured video). Reads the duration via ffprobe so the UI
+    can show the clip length. Requires ``ffmpeg`` and ``ffprobe`` on PATH
+    (the app Dockerfile installs both).
+    """
+    import subprocess
+
+    # Probe duration first — ffmpeg can do it too but ffprobe is more robust
+    # against truncated files and reports the container-format duration.
+    duration_sec: float | None = None
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(src),
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            duration_sec = float(out.stdout.strip())
+    except Exception as exc:  # pragma: no cover
+        log.warning("ffprobe failed for %s: %s", uid, exc)
+
+    # Seek to ~10% in — avoids 0-second black first frames typical of phone video.
+    seek: list[str] = []
+    if duration_sec and duration_sec > 1:
+        seek = ["-ss", f"{duration_sec * 0.1:.2f}"]
+
+    dest = _thumb_path(uid)
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        *seek, "-i", str(src),
+        "-frames:v", "1",
+        "-vf", "scale='min(512,iw)':'min(512,ih)':force_original_aspect_ratio=decrease",
+        "-update", "1",  # write a single image file, not a mov/mjpeg
+        "-q:v", "5",      # mjpeg quality (we re-encode to WebP next, this is just a fast frame)
+        str(dest),
+    ]
+    subprocess.run(cmd, check=True, timeout=120)
+    # Re-encode the extracted frame as actual WebP (ffmpeg's webp muxer is slow;
+    # using Pillow matches the image-thumb pipeline for cache uniformity).
+    if dest.exists():
+        from PIL import Image
+        with Image.open(dest) as img:
+            img = img.convert("RGB")
+            img.save(dest, format="WEBP", quality=82, method=6)
+
+    if duration_sec is not None:
+        set_photo_duration(uid, duration_sec)
+
+
 def _resize_to_thumb(src: Path, dest: Path, max_side: int = 512) -> None:
-    """Decode src (any Pillow format incl. HEIC) and write a max-512px JPEG."""
+    """Decode src (any Pillow format incl. HEIC) and write a max-512px WebP.
+
+    WebP gives us ~30% smaller thumbs than JPEG at comparable visual quality,
+    and the API endpoint serves ``image/webp`` natively — so the bytes and the
+    extension finally match.
+    """
     from PIL import Image
 
     try:
@@ -365,7 +451,7 @@ def _resize_to_thumb(src: Path, dest: Path, max_side: int = 512) -> None:
     with Image.open(src) as img:
         img.thumbnail((max_side, max_side))
         img = img.convert("RGB")
-        img.save(dest, format="JPEG", quality=82)
+        img.save(dest, format="WEBP", quality=82, method=6)
 
 
 # --- cluster loop ----------------------------------------------------------
@@ -444,6 +530,10 @@ def _sync_loop() -> None:
     while True:
         try:
             _sync_once()
+            try:
+                cleanup_deleted()
+            except Exception as exc:  # pragma: no cover
+                log.warning("cleanup_deleted failed: %s", exc)
         except Exception as exc:  # pragma: no cover
             log.exception("sync loop error: %s", exc)
         time.sleep(settings.sync_interval)
