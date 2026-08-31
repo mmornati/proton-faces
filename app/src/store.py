@@ -478,18 +478,42 @@ def person_mean_embeddings() -> dict[int, np.ndarray]:
     return out
 
 
-def all_people() -> list[sqlite3.Row]:
+def all_people(q: str | None = None, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:
+    """People ordered by photo_count DESC.
+
+    With `q`, restricts to people whose name matches the LIKE pattern
+    (case-insensitive prefix is encouraged). With `limit`/`offset`, paginates.
+    """
+    sql = (
+        "SELECT p.id, p.name, p.cover_uid, p.cover_face_id, "
+        "       COUNT(f.id) AS face_count, "
+        "       COUNT(DISTINCT f.photo_uid) AS photo_count "
+        "FROM people p LEFT JOIN faces f ON f.person_id = p.id "
+    )
+    params: list = []
+    if q:
+        sql += "WHERE LOWER(p.name) LIKE LOWER(?) "
+        params.append(f"%{q}%")
+    sql += "GROUP BY p.id ORDER BY photo_count DESC, p.id ASC"
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params += [limit, offset]
     with get_conn() as conn:
-        return conn.execute(
-            """SELECT p.id, p.name, p.cover_uid, p.cover_face_id,
-                      COUNT(f.id) AS face_count,
-                      COUNT(DISTINCT f.photo_uid) AS photo_count
-               FROM people p LEFT JOIN faces f ON f.person_id = p.id
-               GROUP BY p.id ORDER BY photo_count DESC"""
-        ).fetchall()
+        return conn.execute(sql, params).fetchall()
 
 
-def photos_for_person(person_id: int, limit: int = 1000) -> list[sqlite3.Row]:
+def count_people(q: str | None = None) -> int:
+    """Total people (optionally matching `q`). Cheap — uses no joins."""
+    with get_conn() as conn:
+        if q:
+            return conn.execute(
+                "SELECT COUNT(*) FROM people WHERE LOWER(name) LIKE LOWER(?)",
+                (f"%{q}%",),
+            ).fetchone()[0]
+        return conn.execute("SELECT COUNT(*) FROM people").fetchone()[0]
+
+
+def photos_for_person(person_id: int, limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
             """SELECT ph.* FROM photos ph
@@ -498,8 +522,8 @@ def photos_for_person(person_id: int, limit: int = 1000) -> list[sqlite3.Row]:
                    WHERE f.person_id=? AND f.photo_uid IS NOT NULL
                )
                AND ph.status='done'
-               ORDER BY ph.capture_time DESC LIMIT ?""",
-            (person_id, limit),
+               ORDER BY ph.capture_time DESC LIMIT ? OFFSET ?""",
+            (person_id, limit, offset),
         ).fetchall()
 
 
@@ -523,13 +547,18 @@ def all_clips() -> list[sqlite3.Row]:
         return conn.execute("SELECT photo_uid, embedding FROM clips").fetchall()
 
 
+def clip_count() -> int:
+    with get_conn() as conn:
+        return conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0]
+
+
 # --- search helpers -------------------------------------------------------
 
-def search_photos_by_place(query: str, limit: int = 200) -> list[sqlite3.Row]:
+def search_photos_by_place(query: str, limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
-            "SELECT * FROM photos WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' AND place IS NOT NULL AND place LIKE ? ORDER BY capture_time DESC LIMIT ?",
-            (f"%{query}%", limit),
+            "SELECT * FROM photos WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' AND place IS NOT NULL AND place LIKE ? ORDER BY capture_time DESC LIMIT ? OFFSET ?",
+            (f"%{query}%", limit, offset),
         ).fetchall()
 
 

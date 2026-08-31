@@ -27,10 +27,11 @@ class Settings:
         # Derived paths
         self.work_dir = self.data_dir / "work"
         self.thumb_dir = self.data_dir / "thumbs"
+        self.crops_dir = self.data_dir / "crops"
         self.models_dir = Path(os.environ.get("MODELS_DIR", str(self.data_dir / "models"))).resolve()
         self.db_path = self.data_dir / "index.sqlite3"
 
-        for d in (self.data_dir, self.work_dir, self.thumb_dir, self.models_dir):
+        for d in (self.data_dir, self.work_dir, self.thumb_dir, self.crops_dir, self.models_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     # Thread-safety knobs

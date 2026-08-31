@@ -327,7 +327,15 @@ main { padding: 18px; }
 </div>
 <script>
 const $ = (s) => document.querySelector(s);
-let state = { view: "photos", q: "", photos: [], people: [], albumUid: null };
+let state = {
+  view: "photos",
+  q: "",
+  photos: [],
+  albumUid: null,
+  // photoSource describes what the Photos grid is currently showing.
+  // {type:'all'|'album'|'person'|'place', id?, name?, before?}
+  photoSource: { type: "all" },
+};
 let popoverFace = null;
 let map = null, markerGroup = null;
 // infinite scroll for the Photos view
@@ -336,8 +344,21 @@ let photoLoading = false;
 let photoDone = false;
 const photoPage = 200;
 const sentinelObserver = new IntersectionObserver((entries) => {
-  if (entries[0].isIntersecting) loadMorePhotos();
+  if (entries[0].isIntersecting) {
+    if (state.view === "people") loadMorePeople();
+    else loadMorePhotos();
+  }
 }, { rootMargin: "400px" });
+
+// People pagination + search
+let peopleOffset = 0;
+let peopleTotal = 0;
+let peopleLoading = false;
+let peopleQ = "";
+const peoplePage = 200;
+// Cache the people page-set in memory so tab switches don't refetch.
+let peopleGridCache = null; // { q, total, ids: number[] }
+let peopleSearchTimer = null;
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -518,12 +539,14 @@ async function loadFaceBoxes(uid) {
 async function openFacePopover(face, x, y) {
   popoverFace = face;
   const pv = $("#popover");
+  // Only fetch the top 12 people for quick-pick (was previously the full
+  // 23k-row people list — ~7 MB / 1.5 s per click). Server-side pagination.
   let people = [];
-  try { people = (await api("/api/people")).people || []; } catch (e) {}
+  try { people = (await api("/api/people?limit=12")).people || []; } catch (e) {}
   const nameHtml = face.person_name ? `<h3>${esc(face.person_name)} <span style="color:var(--muted);font-weight:400">(face #${face.id})</span></h3>` : `<h3>Unassigned face #${face.id}</h3>`;
   pv.innerHTML = `${nameHtml}
     <input id="popname" placeholder="Type a name and press Enter" value="${esc(face.person_name || "")}">
-    <div class="faces">${people.slice(0, 12).map((p) => `<button class="small" data-pid="${p.id}">${esc(p.name || "person " + p.id)}</button>`).join("") || '<span style="color:var(--muted);font-size:12px">No people yet</span>'}</div>
+    <div class="faces">${people.map((p) => `<button class="small" data-pid="${p.id}">${esc(p.name || "person " + p.id)}</button>`).join("") || '<span style="color:var(--muted);font-size:12px">No people yet</span>'}</div>
     <div class="row">
       <button class="secondary small" id="pop-unassign" style="margin-left:auto">Unassign</button>
     </div>
@@ -576,23 +599,35 @@ function resetPhotoPaging() {
 
 async function loadPhotos() {
   resetPhotoPaging();
-  const base = state.q
-    ? `/api/search?q=${encodeURIComponent(state.q)}`
-    : state.albumUid
-      ? `/api/albums/${encodeURIComponent(state.albumUid)}/photos`
-      : "/api/photos";
-  const url = `${base}?limit=${photoPage}&offset=0${state.beforeTs ? `&before=${state.beforeTs}` : ""}`;
-  if (state.albumUid) showLoader("Loading album…");
+  const src = state.photoSource || { type: "all" };
+  let url;
+  if (state.q) {
+    url = `/api/search?q=${encodeURIComponent(state.q)}&limit=${photoPage}&offset=0`;
+  } else if (src.type === "album") {
+    url = `/api/albums/${encodeURIComponent(src.id)}/photos?limit=${photoPage}&offset=0`;
+  } else if (src.type === "person") {
+    url = `/api/people/${src.id}/photos?limit=${photoPage}&offset=0`;
+  } else if (src.type === "place") {
+    url = `/api/photos?place=${encodeURIComponent(src.name)}&limit=${photoPage}&offset=0`;
+  } else if (state.beforeTs) {
+    url = `/api/photos?before=${state.beforeTs}&limit=${photoPage}&offset=0`;
+  } else {
+    url = `/api/photos?limit=${photoPage}&offset=0`;
+  }
+  if (src.type === "album") showLoader("Loading album…");
   try {
     const data = await api(url);
-    renderPhotos(data.results || data.photos || [], false);
-    state.photos = data.results || data.photos || [];
+    const rows = data.results || data.photos || [];
+    renderPhotos(rows, false);
+    state.photos = rows;
     if (!state.q) {
-      photoOffset = (data.photos || []).length;
-      if ((data.photos || []).length < photoPage) photoDone = true;
+      photoOffset = rows.length;
+      if (rows.length < photoPage) photoDone = true;
+    } else {
+      photoDone = true; // search has no pagination for now
     }
   } finally {
-    if (state.albumUid) hideLoader();
+    if (src.type === "album") hideLoader();
   }
 }
 
@@ -600,10 +635,17 @@ async function loadMorePhotos() {
   if (state.q || photoLoading || photoDone) return;
   photoLoading = true;
   try {
-    const base = state.albumUid
-      ? `/api/albums/${encodeURIComponent(state.albumUid)}/photos`
-      : "/api/photos";
-    const url = `${base}?limit=${photoPage}&offset=${photoOffset}${state.beforeTs ? `&before=${state.beforeTs}` : ""}`;
+    const src = state.photoSource || { type: "all" };
+    let url;
+    if (src.type === "album") {
+      url = `/api/albums/${encodeURIComponent(src.id)}/photos?limit=${photoPage}&offset=${photoOffset}`;
+    } else if (src.type === "person") {
+      url = `/api/people/${src.id}/photos?limit=${photoPage}&offset=${photoOffset}`;
+    } else if (src.type === "place") {
+      url = `/api/photos?place=${encodeURIComponent(src.name)}&limit=${photoPage}&offset=${photoOffset}`;
+    } else {
+      url = `/api/photos?limit=${photoPage}&offset=${photoOffset}${state.beforeTs ? `&before=${state.beforeTs}` : ""}`;
+    }
     const data = await api(url);
     const rows = data.photos || [];
     if (rows.length) {
@@ -634,11 +676,11 @@ async function loadAlbums() {
       <div class="acount">${a.photo_count} photos · ${fmtAlbumRange(a)}</div>
     </div>`).join("")}</div>`;
   el.querySelectorAll(".album").forEach((card) => card.addEventListener("click", async () => {
-    state.albumUid = card.dataset.uid;
+    state.photoSource = { type: "album", id: card.dataset.uid };
     state.beforeTs = null;
-    state.view = "albums";
+    state.view = "photos";
     document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
-    document.querySelector('nav a[data-view="albums"]').classList.add("active");
+    document.querySelector('nav a[data-view="photos"]').classList.add("active");
     loadPhotos();
   }));
 }
@@ -689,7 +731,7 @@ async function loadAnchors() {
 
 function jumpToDate(ym, firstTs) {
   state.beforeTs = firstTs;
-  state.albumUid = null;
+  state.photoSource = { type: "all" };
   state.q = "";
   $("#q").value = "";
   resetPhotoPaging();
@@ -704,15 +746,73 @@ function jumpToDate(ym, firstTs) {
     .catch((e) => toast("Error: " + e.message));
 }
 
-async function loadPeople() {
-  const data = await api("/api/people");
-  renderPeopleGrid(data.people);
+async function loadPeople(q = null) {
+  if (q !== null) peopleQ = q;
+  // Reset paging on every fresh load (search change or first open).
+  peopleOffset = 0;
+  const data = await api(`/api/people?limit=${peoplePage}&offset=0${peopleQ ? `&q=${encodeURIComponent(peopleQ)}` : ""}`);
+  peopleTotal = data.total || 0;
+  renderPeopleGrid(data.people || []);
+  peopleOffset = (data.people || []).length;
+  peopleGridCache = { q: peopleQ, total: peopleTotal };
+  // Always render the sentinel: search results also load more.
+  attachPeopleSentinel();
+}
+
+function attachPeopleSentinel() {
+  // The grid is rendered, drop any old sentinel and attach a fresh one.
+  const el = $("#view");
+  if (!el) return;
+  let s = $("#sentinel");
+  if (!s) {
+    s = document.createElement("div");
+    s.id = "sentinel";
+    s.style.height = "1px";
+    el.appendChild(s);
+  }
+  sentinelObserver.observe(s);
+}
+
+async function loadMorePeople() {
+  if (peopleLoading) return;
+  // Only paginate the unfiltered grid; filtered result is bounded.
+  if (peopleQ) return;
+  if (peopleOffset === 0) return; // first page already loaded
+  if (peopleTotal && peopleOffset >= peopleTotal) return;
+  peopleLoading = true;
+  try {
+    const data = await api(`/api/people?limit=${peoplePage}&offset=${peopleOffset}`);
+    const more = data.people || [];
+    if (more.length) {
+      const grid = document.querySelector(".people-grid");
+      if (grid) {
+        // We need the people list to bind cards. Re-fetch cached `people` set.
+        peopleOffset += more.length;
+        const frag = document.createElement("div");
+        frag.innerHTML = more.map(personCardHtml).join("");
+        grid.appendChild(frag);
+        bindPersonCards(more);
+      }
+    }
+    if (more.length < peoplePage) {
+      const s = $("#sentinel");
+      if (s) s.remove();
+    }
+  } finally {
+    peopleLoading = false;
+  }
+}
+
+function onPeopleSearchInput(value) {
+  peopleQ = value.trim();
+  clearTimeout(peopleSearchTimer);
+  peopleSearchTimer = setTimeout(() => loadPeople(), 200);
 }
 
 function personCardHtml(p) {
   return `
     <div class="person" data-id="${p.id}">
-      ${p.cover_url ? `<img src="${p.cover_url}" alt="">` : '<div style="width:84px;height:84px;border-radius:50%;background:var(--panel2);margin:0 auto 8px"></div>'}
+      ${p.cover_url ? `<img loading="lazy" decoding="async" src="${p.cover_url}" alt="">` : '<div style="width:84px;height:84px;border-radius:50%;background:var(--panel2);margin:0 auto 8px"></div>'}
       <div class="name">${esc(p.name || "Unknown person")}</div>
       <div class="meta">${p.photo_count} photos · ${p.face_count} faces</div>
       <input class="rename" placeholder="Name" value="${esc(p.name || "")}">
@@ -722,15 +822,29 @@ function personCardHtml(p) {
 
 function renderPeopleGrid(people) {
   const el = $("#view");
-  if (!people.length) {
+  if (!people.length && !peopleQ) {
     el.innerHTML = '<div class="empty">No people found yet.</div>';
     return;
   }
-  el.innerHTML = `<div class="dups" id="dups">
+  el.innerHTML = `
+    <div id="peopleheader" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+      <input id="peoplesearch" type="text" placeholder="Search people by name…" autocomplete="off"
+             style="flex:1;min-width:200px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:14px">
+      <span id="peopletotal" style="color:var(--muted);font-size:13px"></span>
+    </div>
+    <div class="dups" id="dups">
       <button class="duphead" id="duphead">Suggested merges<span class="dupcount" id="dupcount" style="display:none"></span><span class="dupchev">&#9656;</span></button>
       <div class="dupbody" id="dupbody"><div class="dup"><span class="dupsim">Expand to check for suggested merges.</span></div></div>
     </div>
     <div class="people-grid">${people.map(personCardHtml).join("")}</div>`;
+  $("#peoplesearch").value = peopleQ;
+  $("#peoplesearch").addEventListener("input", (e) => onPeopleSearchInput(e.target.value));
+  const total = $("#peopletotal");
+  if (peopleQ) {
+    total.textContent = `${people.length} of ${peopleTotal} matching`;
+  } else {
+    total.textContent = `${peopleTotal.toLocaleString()} people`;
+  }
   $("#duphead").addEventListener("click", toggleDups);
   bindPersonCards(people);
 }
@@ -764,14 +878,18 @@ function bindPersonCards(people) {
     });
     card.querySelector(".merge-btn").addEventListener("click", (e) => {
       e.stopPropagation();
-      openMergePicker(pid, people);
+      openMergePicker(pid);
     });
     card.addEventListener("click", async () => {
+      state.photoSource = { type: "person", id: pid };
+      state.view = "photos";
+      document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
+      document.querySelector('nav a[data-view="photos"]').classList.add("active");
+      $("#daterailwrap").style.display = "none";
+      $("#mapwrap").style.display = "none";
       showLoader("Loading photos…");
       try {
-        const data = await api(`/api/people/${pid}/photos`);
-        renderPhotos(data.photos);
-        $("#counts").textContent = `${data.count} faces`;
+        await loadPhotos();
       } catch (e) {
         toast("Error: " + e.message);
       } finally {
@@ -792,36 +910,52 @@ function patchAfterMerge(srcId, targetId, r) {
   }
   loadDuplicates();
 }
-
 let mpSrcId = null;
 let mpPeople = [];
+let mpSearchTimer = null;
 
-function openMergePicker(srcId, people) {
-  const src = people.find((p) => p.id === srcId) || { id: srcId, name: null, cover_url: null };
-  $("#mpsrcimg").src = src.cover_url || "";
-  $("#mpsrcname").textContent = src.name || "Unknown person";
+async function openMergePicker(srcId) {
   mpSrcId = srcId;
-  mpPeople = people;
-  $("#mpsearch").value = "";
-  renderMergePickerList();
+  $("#mpsrcname").textContent = "Loading…";
+  $("#mpsrcimg").src = "";
   $("#mergepick").classList.add("open");
+  $("#mpsearch").value = "";
   $("#mpsearch").focus();
+  // Pull a starter list of top people (paginated) for the initial render.
+  mpPeople = [];
+  try {
+    const data = await api(`/api/people?limit=200&offset=0`);
+    mpPeople = (data.people || []).filter((p) => p.id !== srcId);
+    const src = data.people.find((p) => p.id === srcId);
+    if (src) {
+      $("#mpsrcimg").src = src.cover_url || "";
+      $("#mpsrcname").textContent = src.name || "Unknown person";
+    } else {
+      $("#mpsrcname").textContent = `Person #${srcId}`;
+    }
+  } catch (e) {
+    $("#mpsrcname").textContent = "Unknown person";
+  }
+  renderMergePickerList();
 }
 
-function renderMergePickerList() {
-  const q = $("#mpsearch").value.trim().toLowerCase();
+async function renderMergePickerList() {
+  const q = $("#mpsearch").value.trim();
+  if (q) {
+    // Server-side name search (the in-memory `mpPeople` only has the top 200).
+    try {
+      const data = await api(`/api/people?q=${encodeURIComponent(q)}&limit=200`);
+      mpPeople = (data.people || []).filter((p) => p.id !== mpSrcId);
+    } catch (e) {}
+  }
   const list = $("#mergepicklist");
-  const others = mpPeople.filter((p) => p.id !== mpSrcId);
   const filtered = q
-    ? others.filter((p) =>
-        (p.name || "").toLowerCase().includes(q) ||
-        String(p.id).includes(q.replace(/^#/, ""))
-      )
-    : others;
+    ? mpPeople
+    : mpPeople;
   list.innerHTML = filtered.length
     ? filtered.map((p) => `
       <button class="mpitem" data-tid="${p.id}">
-        ${p.cover_url ? `<img loading="lazy" src="${p.cover_url}" alt="">` : '<div style="width:42px;height:42px;border-radius:8px;background:var(--panel2);flex:none"></div>'}
+        ${p.cover_url ? `<img loading="lazy" decoding="async" src="${p.cover_url}" alt="">` : '<div style="width:42px;height:42px;border-radius:8px;background:var(--panel2);flex:none"></div>'}
         <div>
           <div class="mpname">${esc(p.name || "Unknown person")}</div>
           <div class="mpmeta">${p.photo_count} photos · ${p.face_count} faces · #${p.id}</div>
@@ -887,14 +1021,13 @@ async function loadDuplicates() {
 
 function showPlacePhotos(place) {
   state.view = "photos";
+  state.photoSource = { type: "place", name: place };
   document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
   document.querySelector('nav a[data-view="photos"]').classList.add("active");
   state.q = "";
   $("#q").value = "";
   $("#mapwrap").style.display = "none";
-  api(`/api/photos?place=${encodeURIComponent(place)}&limit=500`)
-    .then((rows) => renderPhotos(rows.photos))
-    .catch((e) => toast("Error: " + e.message));
+  loadPhotos();
 }
 
 function initMap() {
@@ -985,23 +1118,44 @@ document.querySelectorAll("nav a").forEach((a) => {
     state.view = a.dataset.view;
     $("#q").value = "";
     state.q = "";
-    if (state.view === "people") { $("#daterailwrap").style.display = "none"; $("#mapwrap").style.display = "none"; loadPeople(); }
-    else if (state.view === "unassigned") { $("#daterailwrap").style.display = "none"; $("#mapwrap").style.display = "none"; loadUnassigned(); }
-    else if (state.view === "places") { $("#daterailwrap").style.display = "none"; loadPlaces(); }
-    else if (state.view === "albums") { state.albumUid = null; state.beforeTs = null; $("#daterailwrap").style.display = "none"; $("#mapwrap").style.display = "none"; loadAlbums(); }
-    else { $("#mapwrap").style.display = "none"; state.albumUid = null; state.beforeTs = null; loadPhotos(); loadAnchors(); }
+    if (state.view === "people") {
+      $("#daterailwrap").style.display = "none"; $("#mapwrap").style.display = "none";
+      loadPeople();
+    }
+    else if (state.view === "unassigned") {
+      $("#daterailwrap").style.display = "none"; $("#mapwrap").style.display = "none";
+      loadUnassigned();
+    }
+    else if (state.view === "places") {
+      $("#daterailwrap").style.display = "none"; loadPlaces();
+    }
+    else if (state.view === "albums") {
+      state.photoSource = { type: "all" };
+      $("#daterailwrap").style.display = "none"; $("#mapwrap").style.display = "none";
+      loadAlbums();
+    }
+    else {
+      $("#mapwrap").style.display = "none";
+      state.photoSource = { type: "all" };
+      state.beforeTs = null;
+      loadPhotos();
+      loadAnchors();
+    }
   });
 });
 
 $("#btn-search").addEventListener("click", async () => {
   state.q = $("#q").value.trim();
-  if (!state.q) return loadPhotos();
+  if (!state.q) {
+    state.photoSource = { type: "all" };
+    return loadPhotos();
+  }
   if (state.view !== "photos") {
     document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
     document.querySelector('nav a[data-view="photos"]').classList.add("active");
     state.view = "photos";
   }
-  state.albumUid = null;
+  state.photoSource = { type: "all" };
   $("#mapwrap").style.display = "none";
   $("#daterailwrap").style.display = "none";
   loadPhotos();
@@ -1024,7 +1178,10 @@ $("#dclose").addEventListener("click", () => $("#detail").classList.remove("open
 $("#lbclose").addEventListener("click", () => $("#lightbox").classList.remove("open"));
 $("#lightbox").addEventListener("click", (e) => { if (e.target.id === "lightbox") $("#lightbox").classList.remove("open"); });
 $("#mpclose").addEventListener("click", closeMergePicker);
-$("#mpsearch").addEventListener("input", renderMergePickerList);
+$("#mpsearch").addEventListener("input", () => {
+  clearTimeout(mpSearchTimer);
+  mpSearchTimer = setTimeout(renderMergePickerList, 200);
+});
 $("#mergepick").addEventListener("click", (e) => { if (e.target.id === "mergepick") closeMergePicker(); });
 document.addEventListener("click", (e) => {
   if ($("#popover").classList.contains("open") && !$("#popover").contains(e.target)) closePopover();

@@ -4,6 +4,8 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
+import threading
 import time
 from pathlib import Path
 
@@ -23,7 +25,9 @@ from store import (
     all_face_rows,
     all_people,
     assign_face_person,
+    clip_count,
     count_faces_for_person,
+    count_people,
     create_person,
     done_photos,
     face_embedding,
@@ -58,10 +62,77 @@ _STATIC = Path(__file__).parent / "static"
 _DUP_CACHE_TTL = 30.0
 _dups_cache: tuple[float, dict] | None = None
 
+# TTL caches (cheap, frequently re-requested on navigation).
+_ANCHORS_CACHE_TTL = 30.0
+_anchors_cache: tuple[float, dict] | None = None
+
+_PEOPLE_CACHE_TTL = 5.0
+_people_cache: tuple[float, dict] | None = None  # keyed by (q, limit, offset)
+
+# In-memory CLIP matrix cache: avoids rebuilding an 88 MB numpy stack on
+# every text-search request. Rebuilds only when the clip row count changes
+# or after TTL.
+_CLIP_CACHE_TTL = 60.0
+_clip_cache: tuple[float, int, list[str], np.ndarray] | None = None
+
+# Disk + lock for face crops (computed lazily, then served as plain files).
+_crop_lock = threading.Lock()
+
+_IMMUTABLE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
+
 
 def _invalidate_dups_cache() -> None:
     global _dups_cache
     _dups_cache = None
+
+
+def _invalidate_people_cache() -> None:
+    global _people_cache
+    _people_cache = None
+
+
+def _invalidate_clip_cache() -> None:
+    global _clip_cache
+    _clip_cache = None
+
+
+def _crop_cache_path(face_id: int) -> Path:
+    return settings.crops_dir / f"{face_id}.jpg"
+
+
+def _drop_crop_cache(face_id: int) -> None:
+    """Remove a single cached face crop (e.g. after the face was assigned)."""
+    with _crop_lock:
+        try:
+            _crop_cache_path(face_id).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _drop_person_crops(person_id: int) -> None:
+    """Remove cached face crops for every face belonging to a person."""
+    import sqlite3
+
+    from config import settings as _s
+
+    conn = sqlite3.connect(_s.db_path)
+    try:
+        face_ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT id FROM faces WHERE person_id=?", (person_id,)
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+    if not face_ids:
+        return
+    with _crop_lock:
+        for fid in face_ids:
+            try:
+                _crop_cache_path(fid).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 # --- helpers ---------------------------------------------------------------
@@ -91,7 +162,6 @@ def health() -> dict:
     return {
         "ok": True,
         "bridge": {"reachable": bridge_ok, "loggedIn": bridge_logged_in},
-        "stats": stats(),
     }
 
 
@@ -105,7 +175,7 @@ def api_stats() -> dict:
 @app.get("/api/photos")
 def api_photos(limit: int = 200, offset: int = 0, place: str | None = None, before: int | None = None):
     if place:
-        rows = search_photos_by_place(place, limit=limit)
+        rows = search_photos_by_place(place, limit=limit, offset=offset)
     else:
         rows = done_photos(limit=limit, offset=offset, before=before)
     return {"photos": [_row_to_dict(r) for r in rows]}
@@ -113,17 +183,25 @@ def api_photos(limit: int = 200, offset: int = 0, place: str | None = None, befo
 
 @app.get("/api/photos/anchors")
 def api_photo_anchors():
+    """Year-month anchors for the date rail. Cached for `_ANCHORS_CACHE_TTL`."""
+    global _anchors_cache
+    now = time.time()
+    if _anchors_cache is not None and now - _anchors_cache[0] < _ANCHORS_CACHE_TTL:
+        return _anchors_cache[1]
+
+    import datetime as _dt
+
     anchors = []
     for r in photo_anchors():
         ym = r["ym"]
         try:
-            import datetime as _dt
-
             label = _dt.datetime.strptime(ym, "%Y-%m").strftime("%b %Y")
         except Exception:
             label = ym
         anchors.append({"ym": ym, "label": label, "first_ts": r["first_ts"]})
-    return {"anchors": anchors}
+    payload = {"anchors": anchors}
+    _anchors_cache = (now, payload)
+    return payload
 
 
 @app.get("/api/albums")
@@ -254,7 +332,7 @@ def api_thumb(uid: str):
     p = settings.thumb_dir / row["thumb_path"]
     if not p.exists():
         raise HTTPException(404, "thumbnail file missing")
-    return FileResponse(p, media_type="image/webp")
+    return FileResponse(p, media_type="image/webp", headers=_IMMUTABLE_HEADERS)
 
 
 @app.get("/api/photos/{uid}/full")
@@ -293,23 +371,40 @@ def api_full(uid: str):
 # --- people ----------------------------------------------------------------
 
 @app.get("/api/people")
-def api_people():
-    people = []
-    for row in all_people():
-        people.append(
-            {
-                "id": row["id"],
-                "name": row["name"],
-                "cover_uid": row["cover_uid"],
-                "cover_face_id": row["cover_face_id"],
-                "face_count": row["face_count"],
-                "photo_count": row["photo_count"],
-                "cover_url": (
-                    f"/api/people/{row['id']}/cover" if row["cover_face_id"] else None
-                ),
-            }
-        )
-    return {"people": people}
+def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
+    """People ordered by photo_count DESC. Paginated, optionally filtered by name."""
+    q = (q or "").strip() or None
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
+    global _people_cache
+    now = time.time()
+    key = (q, limit, offset)
+    if (
+        _people_cache is not None
+        and _people_cache[0] == key
+        and now - _people_cache[1] < _PEOPLE_CACHE_TTL
+    ):
+        return _people_cache[2]
+
+    rows = all_people(q=q, limit=limit, offset=offset)
+    total = count_people(q=q)
+    people = [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "cover_uid": r["cover_uid"],
+            "cover_face_id": r["cover_face_id"],
+            "face_count": r["face_count"],
+            "photo_count": r["photo_count"],
+            "cover_url": (
+                f"/api/people/{r['id']}/cover" if r["cover_face_id"] else None
+            ),
+        }
+        for r in rows
+    ]
+    payload = {"people": people, "total": total, "limit": limit, "offset": offset}
+    _people_cache = (key, now, payload)
+    return payload
 
 
 @app.get("/api/people/{person_id}/cover")
@@ -325,18 +420,32 @@ def api_person_cover(person_id: int):
         p = settings.thumb_dir / photo["thumb_path"]
         if not p.exists():
             raise HTTPException(404, "thumbnail file missing")
-        return FileResponse(p, media_type="image/webp")
-    crop = _face_crop_bytes(face_id)
-    if crop is None:
-        raise HTTPException(404, "cover face crop unavailable")
-    return Response(content=crop, media_type="image/jpeg")
+        return FileResponse(p, media_type="image/webp", headers=_IMMUTABLE_HEADERS)
+    cache_path = _crop_cache_path(face_id)
+    if not cache_path.exists():
+        crop = _face_crop_bytes(face_id)
+        if crop is None:
+            raise HTTPException(404, "cover face crop unavailable")
+    return FileResponse(cache_path, media_type="image/jpeg", headers=_IMMUTABLE_HEADERS)
 
 
 def _face_crop_bytes(face_id: int) -> bytes | None:
-    """Crop a face from its photo's cached thumbnail using the normalized bbox."""
+    """Crop a face from its photo's cached thumbnail using the normalized bbox.
+
+    Caches the result on disk under `crops/{face_id}.jpg` so subsequent
+    requests serve a plain file (and `api_person_cover` / `api_face_crop`
+    can use `FileResponse` with immutable cache headers).
+    """
     import json
 
     from PIL import Image
+
+    cache_path = _crop_cache_path(face_id)
+    if cache_path.exists():
+        try:
+            return cache_path.read_bytes()
+        except OSError:
+            pass
 
     row = _face_row(face_id)
     if row is None:
@@ -365,10 +474,23 @@ def _face_crop_bytes(face_id: int) -> bytes | None:
         crop = img.crop((left, top, right, bottom))
         out = io.BytesIO()
         crop.save(out, format="JPEG", quality=90)
-        return out.getvalue()
+        data = out.getvalue()
     except Exception as exc:
         log.warning("face crop failed for face %s: %s", face_id, exc)
         return None
+
+    with _crop_lock:
+        tmp = cache_path.with_suffix(".tmp")
+        try:
+            tmp.write_bytes(data)
+            os.replace(tmp, cache_path)
+        except OSError as exc:
+            log.warning("face crop cache write failed for %s: %s", face_id, exc)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return data
 
 
 def _face_row(face_id: int):
@@ -414,10 +536,12 @@ def api_unassigned_faces(limit: int = 500):
 
 @app.get("/api/faces/{face_id}/crop")
 def api_face_crop(face_id: int):
-    crop = _face_crop_bytes(face_id)
-    if crop is None:
-        raise HTTPException(404, "face crop unavailable")
-    return Response(content=crop, media_type="image/jpeg")
+    cache_path = _crop_cache_path(face_id)
+    if not cache_path.exists():
+        crop = _face_crop_bytes(face_id)
+        if crop is None:
+            raise HTTPException(404, "face crop unavailable")
+    return FileResponse(cache_path, media_type="image/jpeg", headers=_IMMUTABLE_HEADERS)
 
 
 @app.get("/api/photos/{uid}/faces")
@@ -484,6 +608,7 @@ def api_face_assign(face_id: int, body: dict):
 
     assign_face_person(face_id, person_id)
     set_person_cover_face(person_id, face_id)
+    _drop_crop_cache(face_id)
 
     # similarity propagation: tag unassigned look-alikes
     emb = face_embedding(face_id)
@@ -494,6 +619,7 @@ def api_face_assign(face_id: int, body: dict):
                 assign_face_person(sim_row[0], person_id)
                 assigned += 1
     _invalidate_dups_cache()
+    _invalidate_people_cache()
     return {
         "ok": True,
         "person_id": person_id,
@@ -505,6 +631,9 @@ def api_face_assign(face_id: int, body: dict):
 @app.post("/api/faces/{face_id}/unassign")
 def api_face_unassign(face_id: int):
     unassign_face(face_id)
+    _drop_crop_cache(face_id)
+    _invalidate_people_cache()
+    _invalidate_dups_cache()
     return {"ok": True}
 
 
@@ -516,9 +645,11 @@ def api_people_rename(person_id: int, body: dict):
         raise HTTPException(400, "name required")
     existing = find_person_by_name(name, exclude_id=person_id)
     if existing is not None:
+        _drop_person_crops(person_id)
         merge_person(person_id, existing["id"])
         _merge_propagate(existing["id"])
         _invalidate_dups_cache()
+        _invalidate_people_cache()
         tgt = get_person(existing["id"])
         return {
             "ok": True,
@@ -529,6 +660,7 @@ def api_people_rename(person_id: int, body: dict):
         }
     rename_person(person_id, name)
     _invalidate_dups_cache()
+    _invalidate_people_cache()
     return {"ok": True, "merged": False}
 
 
@@ -543,9 +675,11 @@ def api_people_merge(source_id: int, body: dict):
     target = get_person(target_id)
     if target is None:
         raise HTTPException(404, "target person not found")
+    _drop_person_crops(source_id)
     merge_person(source_id, target_id)
     assigned = _merge_propagate(target_id)
     _invalidate_dups_cache()
+    _invalidate_people_cache()
     tgt = get_person(target_id)
     return {
         "ok": True,
@@ -626,8 +760,8 @@ def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
 
 
 @app.get("/api/people/{person_id}/photos")
-def api_person_photos(person_id: int, limit: int = 1000):
-    rows = photos_for_person(person_id, limit=limit)
+def api_person_photos(person_id: int, limit: int = 200, offset: int = 0):
+    rows = photos_for_person(person_id, limit=limit, offset=offset)
     return {"photos": [_row_to_dict(r) for r in rows], "count": count_faces_for_person(person_id)}
 
 
@@ -665,12 +799,29 @@ async def api_face_search(file: UploadFile = File(...), limit: int = 50):
     return _face_similarity(emb, limit)
 
 
-def _semantic_search(vec: np.ndarray, limit: int) -> dict:
+def _get_clip_matrix() -> tuple[list[str], np.ndarray]:
+    """Cached (uids, X) matrix of every CLIP embedding. Rebuilt only when the
+    clip row count changes or after `_CLIP_CACHE_TTL`."""
+    global _clip_cache
+    now = time.time()
+    n_now = clip_count()
+    if _clip_cache is not None:
+        ts, n_cached, uids, X = _clip_cache
+        if n_cached == n_now and (now - ts) < _CLIP_CACHE_TTL:
+            return uids, X
     rows = all_clips()
     if not rows:
-        return {"results": [], "total": 0}
+        return [], np.empty((0, 512), dtype=np.float32)
     uids = [r["photo_uid"] for r in rows]
     X = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
+    _clip_cache = (now, n_now, uids, X)
+    return uids, X
+
+
+def _semantic_search(vec: np.ndarray, limit: int) -> dict:
+    uids, X = _get_clip_matrix()
+    if X.size == 0:
+        return {"results": [], "total": 0}
     sims = X @ vec  # all embeddings are L2-normalized
     idx = np.argsort(-sims)[:limit]
     results = []
