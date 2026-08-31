@@ -89,15 +89,41 @@ _AUTH_FREE_PATHS = frozenset({
     "/api/status",
 })
 
+# Path-segment suffixes for routes that return binary responses (image/video
+# bytes) consumed by <img>/<video>/<source> tags. Those browser primitives
+# can't attach an Authorization header, so they have to be world-readable —
+# the server is already gated by the login modal and (in front of Traefik)
+# the auth-aware reverse proxy in real deployments.
+_AUTH_FREE_BINARY_SUFFIXES = frozenset({
+    "/thumb",
+    "/full",
+    "/cover",
+    "/crop",
+})
+
+
+def _is_auth_free(path: str) -> bool:
+    if path in _AUTH_FREE_PATHS:
+        return True
+    for suffix in _AUTH_FREE_BINARY_SUFFIXES:
+        if (
+            len(path) > len(suffix)
+            and path.endswith(suffix)
+            and path[-len(suffix) - 1] == "/"
+        ):
+            return True
+    return False
+
 
 def require_user(request: Request) -> CurrentUser | None:
     """Resolve the bearer token to a CurrentUser; raise 401 otherwise.
 
-    Auth-free paths (`/api/auth/*`, `/api/health`, `/api/status`) short-circuit
+    Auth-free paths (`/api/auth/*`, `/api/health`, `/api/status`, plus the
+    binary `/thumb`, `/full`, `/cover`, `/crop` tail endpoints) short-circuit
     and return None — those routes don't need a user. All other routes
     receive a fully-populated CurrentUser or raise 401.
     """
-    if request.url.path in _AUTH_FREE_PATHS:
+    if _is_auth_free(request.url.path):
         return None
     token = _extract_token(request)
     if not token:
