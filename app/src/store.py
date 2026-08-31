@@ -90,8 +90,10 @@ def get_conn() -> sqlite3.Connection:
 
 def init_db() -> None:
     with get_conn() as conn:
-        conn.executescript(_SCHEMA)
+        # Migrations first: existing DBs need ALTER TABLE ADD COLUMN before the
+        # _SCHEMA block runs CREATE INDEX against those new columns.
         migrate(conn)
+        conn.executescript(_SCHEMA)
 
 
 def migrate(conn: sqlite3.Connection) -> None:
