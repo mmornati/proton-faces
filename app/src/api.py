@@ -740,21 +740,16 @@ def _face_row(face_id: int):
 @app.get("/api/faces/unassigned")
 def api_unassigned_faces(limit: int = 500):
     rows = unassigned_faces(limit=limit)
-    faces = []
-    for r in rows:
-        import json
-
-        bbox = json.loads(r["bbox"])
-        faces.append(
-            {
-                "id": r["id"],
-                "photo_uid": r["photo_uid"],
-                "bbox": bbox,
-                "confidence": r["confidence"],
-                "thumb_url": f"/api/photos/{r['photo_uid']}/thumb",
-                "crop_url": f"/api/faces/{r['id']}/crop",
-            }
-        )
+    faces = [
+        {
+            "id": r["id"],
+            "photo_uid": r["photo_uid"],
+            "confidence": r["confidence"],
+            "thumb_url": f"/api/photos/{r['photo_uid']}/thumb",
+            "crop_url": f"/api/faces/{r['id']}/crop",
+        }
+        for r in rows
+    ]
     return {"faces": faces}
 
 

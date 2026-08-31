@@ -414,7 +414,12 @@ def faces_for_photo(photo_uid: str) -> list[sqlite3.Row]:
 def unassigned_faces(limit: int = 500) -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
-            """SELECT f.id, f.photo_uid, f.confidence, f.bbox, ph.thumb_path
+            """SELECT f.id, f.photo_uid, f.confidence,
+                      json_extract(f.bbox, '$[0]') AS bbox_x,
+                      json_extract(f.bbox, '$[1]') AS bbox_y,
+                      json_extract(f.bbox, '$[2]') AS bbox_w,
+                      json_extract(f.bbox, '$[3]') AS bbox_h,
+                      ph.thumb_path
                FROM faces f JOIN photos ph ON ph.uid = f.photo_uid
                WHERE f.person_id IS NULL AND ph.status='done'
                ORDER BY f.id ASC LIMIT ?""",
