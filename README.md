@@ -155,6 +155,41 @@ the web UI becomes useful right away as results stream in.
 > the legacy single-process layout (everything in `app`), set `RUN_INDEXER=1`
 > in `.env`.
 
+### 👥 Users & roles
+
+proton-faces ships a small multi-user account system. Proton does not publish
+an OAuth/OIDC provider, so each family member gets a local account
+(username + bcrypt password) instead of "Sign in with Proton". The single
+Proton session still drives the library — that lives in the bridge exactly
+as before — and every user on your server sees the same library under their
+own identity.
+
+| Role | Browse / search / map / albums / places / memories | Per-user ★ favorites | Tags, archive, hide, face naming, person rename/merge |
+|------|:-:|:-:|:-:|
+| **read**  | ✅ | ✅ | ❌ |
+| **write** | ✅ | ✅ | ✅ |
+| **admin** | ✅ | ✅ | ✅ + future admin menu (`/api/admin/users/*` for CRUD) |
+
+Anyone on `:8080` must log in. Tokens are bearer JWT-free (opaque random
+hex), stored in your browser's `localStorage` under `pf.auth`. Access TTL
+defaults to 8 hours, refresh to 30 days (configurable via `AUTH_ACCESS_TTL`
+and `AUTH_REFRESH_TTL`).
+
+Other admin tasks (after the first admin is created):
+
+```bash
+# Add more users (admin-only endpoint also exists at POST /api/admin/users):
+scripts/create-admin.sh dad
+scripts/create-admin.sh kid
+
+# Reset a forgotten password (revokes all that user's sessions):
+docker compose exec app python main.py --reset-password mom
+```
+
+Per-user favorites live in the `user_favorites` table; the legacy global
+`photos.favorited` column is kept only as a one-time backfill target the
+first time `--create-admin` runs on an existing library.
+
 ---
 
 ## 🖥️ Usage / web UI
@@ -241,6 +276,8 @@ Environment variables (see `.env.example`):
 | `MODELS_DIR`          | `DATA_DIR/models`          | Where ML models are stored                  |
 | `LOG_LEVEL`           | `INFO`                     | Logging verbosity                           |
 | `RUN_INDEXER`         | `0`                        | Set `1` on the `app` container to start the in-process indexer (legacy single-process layout). Default off: the `indexer` container handles the pipeline. |
+| `AUTH_ACCESS_TTL`     | `28800`                    | Bearer access-token lifetime (seconds). 8 hours by default. |
+| `AUTH_REFRESH_TTL`    | `2592000`                  | Bearer refresh-token lifetime (seconds). 30 days by default. |
 
 ### GPS / place enrichment
 
