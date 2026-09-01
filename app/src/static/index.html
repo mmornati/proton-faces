@@ -441,6 +441,45 @@ body { padding-bottom: 34px; }
   font-size: 12px; color: var(--muted);
 }
 #login-user-chip b { color: var(--text); }
+
+/* --- admin modal --- */
+#adminmodal {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 100;
+  display: none; align-items: center; justify-content: center;
+}
+#adminmodal.open { display: flex; }
+#adminmodalbox {
+  width: min(560px, 94vw); max-height: 90vh;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5); display: flex; flex-direction: column;
+}
+#adminmodalhead { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+#adminmodalhead .title { font-size: 15px; font-weight: 600; }
+#adminmodalhead .hint { color: var(--muted); font-size: 12px; }
+#adminmodalhead button { margin-left: auto; }
+#adminmodalbody { overflow: auto; padding: 14px 16px; font-size: 13px; }
+#adminmodalbody h4 { margin: 12px 0 6px; font-size: 13px; font-weight: 600; color: var(--text); }
+#adminmodalbody h4:first-child { margin-top: 0; }
+#adminmodalbody table { width: 100%; border-collapse: collapse; }
+#adminmodalbody td { padding: 4px 6px; vertical-align: top; }
+#adminmodalbody td.k { color: var(--muted); white-space: nowrap; }
+#adminmodalbody td.v { color: var(--text); word-break: break-all; font-variant-numeric: tabular-nums; }
+#adminmodalbody .pill { border: 1px solid var(--border); border-radius: 8px; padding: 1px 7px; font-size: 11px; color: var(--muted); }
+#adminmodalbody .pill.ok { color: var(--green); border-color: rgba(52,201,123,.5); }
+#adminmodalbody .pill.bad { color: var(--red); border-color: rgba(255,95,87,.5); }
+#adminmodalbody button { margin: 0 4px; }
+#adminmodalbody button.small { padding: 4px 8px; font-size: 12px; border-radius: 6px; }
+#adminmodalbody input[type=number], #adminmodalbody select {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 5px 8px; border-radius: 6px; font-size: 13px;
+}
+#adminmodalbody .adminactions { margin-bottom: 8px; }
+#adminmodalbody .chkrow { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+#adminmodalbody .userform { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; align-items: center; margin-bottom: 8px; }
+#adminmodalbody .userform input, #adminmodalbody .userform select {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 5px 8px; border-radius: 6px; font-size: 13px;
+}
 </style>
 </head>
 <body>
@@ -486,6 +525,7 @@ body { padding-bottom: 34px; }
     <input id="q" placeholder="Search: &quot;dog&quot;, &quot;car&quot;, &quot;Lille&quot;, &quot;beach&quot;...">
     <button id="btn-search">Search</button>
     <button id="btn-face" class="secondary" title="Find photos of a person from a photo on your computer">Search by example</button>
+    <button id="btn-admin" class="secondary" title="Admin" style="display:none">⚙</button>
   </div>
 </header>
 <main>
@@ -556,6 +596,16 @@ body { padding-bottom: 34px; }
       <button id="statusclose" class="secondary small">Close</button>
     </div>
     <div id="statusmodalbody"><div class="empty">Loading…</div></div>
+  </div>
+</div>
+<div id="adminmodal" role="dialog" aria-labelledby="adminmodaltitle">
+  <div id="adminmodalbox">
+    <div id="adminmodalhead">
+      <div class="title" id="adminmodaltitle">Admin</div>
+      <div class="hint">Press <kbd>Esc</kbd> to close</div>
+      <button id="adminclose" class="secondary small">Close</button>
+    </div>
+    <div id="adminmodalbody"><div class="empty">Loading…</div></div>
   </div>
 </div>
 <div id="statusbar" aria-label="Status bar">
@@ -759,7 +809,14 @@ async function bootAuth() {
   _me = await fetchMe();
   if (!_me) { _signOutLocal(); showLogin(); return false; }
   hideLogin();
+  syncAdminButton();
   return true;
+}
+
+function syncAdminButton() {
+  const b = $("#btn-admin");
+  if (!b) return;
+  b.style.display = (_me && _me.role === "admin") ? "" : "none";
 }
 
 async function doLoginSubmit(ev) {
@@ -1966,6 +2023,13 @@ function fmtAbs(ts) {
   return new Date(ts * 1000).toLocaleString();
 }
 function pill(ok) { return `<span class="pill${ok ? " ok" : " bad"}">${ok ? "yes" : "no"}</span>`; }
+function fmtAge(sec) {
+  if (sec == null || sec < 0) return "never";
+  if (sec < 60) return `${Math.floor(sec)}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h`;
+  return `${Math.floor(sec / 86400)}d`;
+}
 
 function renderStatusBar(s) {
   const br = s.bridge || {};
@@ -2065,6 +2129,346 @@ for (const id of ["sb-bridge", "sb-progress", "sb-counts", "sb-hint"]) {
   const el = document.getElementById(id);
   if (el) el.addEventListener("click", () => openStatusModal());
 }
+
+// --- admin modal ------------------------------------------------------------
+
+let adminOverview = null;
+let adminChecks = null;
+let adminBackups = [];
+let adminSchedule = { enabled: false, hour: 3, minute: 0, keep: 7 };
+let adminUsers = [];
+let adminBusy = false;
+
+function openAdminModal() {
+  $("#adminmodal").classList.add("open");
+  renderAdminModal();
+}
+function closeAdminModal() { $("#adminmodal").classList.remove("open"); }
+function toggleAdminModal() {
+  if ($("#adminmodal").classList.contains("open")) closeAdminModal();
+  else openAdminModal();
+}
+
+function pillFor(level, okLevels) {
+  const ok = okLevels.includes(level);
+  return `<span class="pill ${ok ? "ok" : "bad"}">${esc(level)}</span>`;
+}
+
+async function renderAdminModal() {
+  const body = $("#adminmodalbody");
+  body.innerHTML = `<div class="empty">Loading…</div>`;
+  try {
+    [adminOverview, adminBackups, adminSchedule, adminUsersWrap] = await Promise.all([
+      api("/api/admin/overview"),
+      api("/api/admin/backups"),
+      api("/api/admin/schedule"),
+      api("/api/admin/users"),
+    ]);
+    adminUsers = (adminUsersWrap && adminUsersWrap.users) || [];
+  } catch (e) {
+    body.innerHTML = `<div class="empty">Failed to load admin data: ${esc(String(e.message || e))}</div>`;
+    return;
+  }
+  body.innerHTML =
+    renderAdminOverviewSection() +
+    renderAdminChecksSection() +
+    renderAdminBackupSection() +
+    renderAdminScheduleSection() +
+    renderAdminUsersSection();
+  wireAdminHandlers();
+}
+
+function renderAdminOverviewSection() {
+  const o = adminOverview || {};
+  const s = o.server || {};
+  const d = o.disk || {};
+  const b = o.backup || {};
+  return `
+    <h4>Server</h4>
+    <table>
+      <tr><td class="k">Role</td><td class="v">${esc(_me ? _me.role : "—")}</td></tr>
+      <tr><td class="k">Hostname</td><td class="v">${esc(s.hostname || "—")}</td></tr>
+      <tr><td class="k">App version</td><td class="v">${esc(s.app_version || "—")}</td></tr>
+      <tr><td class="k">Python</td><td class="v">${esc(s.python || "—")}</td></tr>
+      <tr><td class="k">Uptime</td><td class="v">${esc(fmtDuration(s.uptime_sec || 0))}</td></tr>
+      <tr><td class="k">Data dir</td><td class="v">${esc(d.path || "—")}</td></tr>
+      <tr><td class="k">Data size</td><td class="v">${esc(fmtBytes(d.data_bytes || 0))}</td></tr>
+      <tr><td class="k">Last backup</td><td class="v">${b.last_name ? `${esc(b.last_name)} · ${esc(fmtAbs(b.last_ts * 1000))}` : "<span class='pill bad'>none</span>"}</td></tr>
+      <tr><td class="k">Backup count</td><td class="v">${adminBackups.length} / keep ${adminSchedule.keep}</td></tr>
+    </table>`;
+}
+
+function renderAdminChecksSection() {
+  const items = adminChecks || null;
+  const running = !items;
+  let rows = "";
+  if (items) {
+    for (const c of items.checks) {
+      const klass = c.ok ? "ok" : "bad";
+      rows += `<tr>
+        <td class="k">${esc(c.name)}</td>
+        <td class="v"><span class="pill ${klass}">${esc(c.status)}</span></td>
+        <td class="v">${esc(c.detail || "")}</td>
+      </tr>`;
+    }
+  }
+  return `
+    <h4>Server checks</h4>
+    <div class="adminactions">
+      <button id="admin-run-checks" class="small">${running ? "Running…" : "Run checks now"}</button>
+      <span class="hint">${items ? `last run ${fmtRelative((Date.now() - items.ts) / 1000)} ago` : ""}</span>
+    </div>
+    ${items ? `<table>${rows}</table>` : `<div class="empty">Click "Run checks now" to evaluate.</div>`}`;
+}
+
+function renderAdminBackupSection() {
+  let rows = "";
+  if (adminBackups.length === 0) {
+    rows = `<tr><td colspan="4" class="empty">No backups yet.</td></tr>`;
+  } else {
+    for (const b of adminBackups) {
+      rows += `<tr>
+        <td class="v">${esc(b.name)}</td>
+        <td class="v">${esc(fmtBytes(b.size_bytes))}</td>
+        <td class="v">${esc(fmtAbs(b.ts * 1000))}</td>
+        <td class="v"><button class="small admin-del-backup" data-name="${esc(b.name)}">Delete</button></td>
+      </tr>`;
+    }
+  }
+  return `
+    <h4>Backup</h4>
+    <div class="adminactions">
+      <button id="admin-trigger-backup" class="small">Create backup now</button>
+      <button id="admin-prune-backups" class="small secondary">Prune to keep ${adminSchedule.keep}</button>
+      <span class="hint">Backups are SQLite VACUUM snapshots in the data dir.</span>
+    </div>
+    <table>${rows}</table>`;
+}
+
+function renderAdminScheduleSection() {
+  const s = adminSchedule || {};
+  return `
+    <h4>Schedule</h4>
+    <div class="chkrow"><label><input type="checkbox" id="admin-sched-enabled" ${s.enabled ? "checked" : ""}> Enable daily auto-backup</label></div>
+    <div class="userform">
+      <label>Hour (0-23) <input type="number" id="admin-sched-hour" min="0" max="23" value="${s.hour || 0}"></label>
+      <label>Minute (0-59) <input type="number" id="admin-sched-minute" min="0" max="59" value="${s.minute || 0}"></label>
+      <label>Keep <input type="number" id="admin-sched-keep" min="1" max="365" value="${s.keep || 7}"></label>
+    </div>
+    <div class="adminactions">
+      <button id="admin-save-schedule" class="small">Save schedule</button>
+    </div>`;
+}
+
+function renderAdminUsersSection() {
+  let rows = "";
+  for (const u of adminUsers) {
+    rows += `<tr>
+      <td class="v">${esc(u.username)}</td>
+      <td class="v">${esc(u.display_name || "")}</td>
+      <td class="v">${pillFor(u.role, ["read", "write", "admin"])}</td>
+      <td class="v">${esc(fmtRelative((Date.now() / 1000 - u.created_at) / 86400) + " old")}</td>
+      <td class="v">
+        <button class="small admin-edit-user" data-id="${u.id}">Edit</button>
+        <button class="small admin-logout-user" data-id="${u.id}">Revoke</button>
+        <button class="small secondary admin-del-user" data-id="${u.id}">Delete</button>
+      </td>
+    </tr>`;
+  }
+  return `
+    <h4>Users</h4>
+    <div class="userform">
+      <input type="text" id="admin-new-username" placeholder="username">
+      <input type="text" id="admin-new-display" placeholder="display name (optional)">
+      <input type="password" id="admin-new-password" placeholder="password">
+      <select id="admin-new-role">
+        <option value="read">read</option>
+        <option value="write" selected>write</option>
+        <option value="admin">admin</option>
+      </select>
+      <button class="small" id="admin-create-user">Create</button>
+    </div>
+    <table>${rows || `<tr><td colspan="5" class="empty">No users.</td></tr>`}</table>
+    <div id="admin-edit-row" style="display:none" class="userform">
+      <span class="hint">Editing user <span id="admin-edit-id"></span></span>
+      <input type="text" id="admin-edit-display" placeholder="display name">
+      <input type="password" id="admin-edit-password" placeholder="new password (blank = keep)">
+      <select id="admin-edit-role">
+        <option value="read">read</option>
+        <option value="write">write</option>
+        <option value="admin">admin</option>
+      </select>
+      <button class="small" id="admin-save-user">Save</button>
+      <button class="small secondary" id="admin-cancel-edit">Cancel</button>
+    </div>`;
+}
+
+function wireAdminHandlers() {
+  const $ = (s, r = document) => r.querySelector(s);
+
+  $("#admin-run-checks").addEventListener("click", async () => {
+    if (adminBusy) return;
+    adminBusy = true;
+    $("#admin-run-checks").textContent = "Running…";
+    try {
+      adminChecks = await api("/api/admin/checks", { method: "POST" });
+      $("#adminmodalbody").innerHTML =
+        renderAdminOverviewSection() +
+        renderAdminChecksSection() +
+        renderAdminBackupSection() +
+        renderAdminScheduleSection() +
+        renderAdminUsersSection();
+      wireAdminHandlers();
+    } catch (e) { toast("Checks failed: " + (e.message || e)); }
+    finally { adminBusy = false; }
+  });
+
+  $("#admin-trigger-backup").addEventListener("click", async () => {
+    if (adminBusy) return;
+    adminBusy = true;
+    toast("Creating backup…");
+    try {
+      const r = await api("/api/admin/backup", { method: "POST" });
+      toast(`Backup created: ${r.name}`);
+      adminBackups = await api("/api/admin/backups");
+      $("#adminmodalbody").innerHTML =
+        renderAdminOverviewSection() +
+        renderAdminChecksSection() +
+        renderAdminBackupSection() +
+        renderAdminScheduleSection() +
+        renderAdminUsersSection();
+      wireAdminHandlers();
+    } catch (e) { toast("Backup failed: " + (e.message || e)); }
+    finally { adminBusy = false; }
+  });
+
+  $("#admin-prune-backups").addEventListener("click", async () => {
+    if (adminBusy) return;
+    if (!confirm(`Keep only the ${adminSchedule.keep} most recent backups?`)) return;
+    adminBusy = true;
+    try {
+      const r = await api("/api/admin/backups/prune", { method: "POST" });
+      toast(`Pruned: ${r.removed} removed, ${r.kept} kept`);
+      adminBackups = await api("/api/admin/backups");
+      $("#adminmodalbody").innerHTML =
+        renderAdminOverviewSection() +
+        renderAdminChecksSection() +
+        renderAdminBackupSection() +
+        renderAdminScheduleSection() +
+        renderAdminUsersSection();
+      wireAdminHandlers();
+    } catch (e) { toast("Prune failed: " + (e.message || e)); }
+    finally { adminBusy = false; }
+  });
+
+  document.querySelectorAll(".admin-del-backup").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm(`Delete backup ${b.dataset.name}?`)) return;
+      try {
+        await api(`/api/admin/backups/${encodeURIComponent(b.dataset.name)}`, { method: "DELETE" });
+        adminBackups = await api("/api/admin/backups");
+        renderAdminModal();
+      } catch (e) { toast("Delete failed: " + (e.message || e)); }
+    })
+  );
+
+  $("#admin-save-schedule").addEventListener("click", async () => {
+    const body = JSON.stringify({
+      enabled: $("#admin-sched-enabled").checked,
+      hour: parseInt($("#admin-sched-hour").value, 10),
+      minute: parseInt($("#admin-sched-minute").value, 10),
+      keep: parseInt($("#admin-sched-keep").value, 10),
+    });
+    try {
+      adminSchedule = await api("/api/admin/schedule", { method: "PUT", headers: { "content-type": "application/json" }, body });
+      toast("Schedule saved");
+      renderAdminModal();
+    } catch (e) { toast("Save failed: " + (e.message || e)); }
+  });
+
+  $("#admin-create-user").addEventListener("click", async () => {
+    const obj = {
+      username: $("#admin-new-username").value.trim(),
+      display_name: $("#admin-new-display").value.trim(),
+      password: $("#admin-new-password").value,
+      role: $("#admin-new-role").value,
+    };
+    if (!obj.username || !obj.password) { toast("Username and password are required"); return; }
+    try {
+      await api("/api/admin/users", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(obj) });
+      toast(`User ${obj.username} created`);
+      $("#admin-new-username").value = "";
+      $("#admin-new-display").value = "";
+      $("#admin-new-password").value = "";
+      adminUsers = await api("/api/admin/users");
+      renderAdminModal();
+    } catch (e) { toast("Create failed: " + (e.message || e)); }
+  });
+
+  document.querySelectorAll(".admin-edit-user").forEach((b) =>
+    b.addEventListener("click", () => {
+      const u = adminUsers.find((x) => x.id === parseInt(b.dataset.id, 10));
+      if (!u) return;
+      $("#admin-edit-id").textContent = u.username;
+      $("#admin-edit-display").value = u.display_name || "";
+      $("#admin-edit-password").value = "";
+      $("#admin-edit-role").value = u.role;
+      $("#admin-edit-row").style.display = "";
+    })
+  );
+
+  $("#admin-cancel-edit").addEventListener("click", () => { $("#admin-edit-row").style.display = "none"; });
+
+  $("#admin-save-user").addEventListener("click", async () => {
+    const username = $("#admin-edit-id").textContent;
+    const u = adminUsers.find((x) => x.username === username);
+    if (!u) { toast("No user selected"); return; }
+    const obj = {
+      display_name: $("#admin-edit-display").value.trim(),
+      role: $("#admin-edit-role").value,
+    };
+    const pw = $("#admin-edit-password").value;
+    if (pw) obj.password = pw;
+    try {
+      await api(`/api/admin/users/${u.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(obj) });
+      toast(`User ${username} updated`);
+      adminUsers = await api("/api/admin/users");
+      $("#admin-edit-row").style.display = "none";
+      renderAdminModal();
+    } catch (e) { toast("Update failed: " + (e.message || e)); }
+  });
+
+  document.querySelectorAll(".admin-logout-user").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        await api(`/api/admin/users/${b.dataset.id}/logout`, { method: "POST" });
+        toast("Tokens revoked");
+      } catch (e) { toast("Revoke failed: " + (e.message || e)); }
+    })
+  );
+
+  document.querySelectorAll(".admin-del-user").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const u = adminUsers.find((x) => x.id === parseInt(b.dataset.id, 10));
+      if (!u) return;
+      if (!confirm(`Delete user ${u.username}?`)) return;
+      try {
+        await api(`/api/admin/users/${b.dataset.id}`, { method: "DELETE" });
+        toast(`User ${u.username} deleted`);
+        adminUsers = await api("/api/admin/users");
+        renderAdminModal();
+      } catch (e) { toast("Delete failed: " + (e.message || e)); }
+    })
+  );
+}
+
+$("#btn-admin").addEventListener("click", () => {
+  if (!(_me && _me.role === "admin")) { toast("Admin only"); return; }
+  toggleAdminModal();
+});
+$("#adminclose").addEventListener("click", closeAdminModal);
+$("#adminmodal").addEventListener("click", (e) => { if (e.target.id === "adminmodal") closeAdminModal(); });
+
 document.addEventListener("keydown", (e) => {
   // Don't hijack typing in inputs.
   const tag = (e.target && e.target.tagName) || "";
@@ -2075,6 +2479,7 @@ document.addEventListener("keydown", (e) => {
     toggleStatusModal();
   } else if (e.key === "Escape") {
     if ($("#statusmodal").classList.contains("open")) closeStatusModal();
+    else if ($("#adminmodal").classList.contains("open")) closeAdminModal();
     else if ($("#facemodal").classList.contains("open")) closeFaceModal();
   }
 });

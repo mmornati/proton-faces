@@ -138,6 +138,9 @@ def main() -> None:
         )
 
     from config import settings
+    # Start the admin's auto-backup daemon (schedule read from admin_config.json).
+    from admin import start_backup_worker
+    start_backup_worker()
     uvicorn.run(app, host="0.0.0.0", port=settings.port, log_level="info")
 
 
