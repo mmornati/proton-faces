@@ -21,6 +21,7 @@ RUN git clone --depth 1 --branch "${SDK_REF}" "${SDK_REPO}" .
 
 # Drop our HTTP service into the CLI source tree so it can import ./init etc.
 COPY src/bridge.ts cli/src/bridge.ts
+COPY src/rateLimit.ts cli/src/rateLimit.ts
 
 # Overlay a patched copy of the account SDK's addresses.ts. Upstream
 # getOwnPublicKeys() decrypts the address-key token via cryptoProxy.decryptMessage,
@@ -74,6 +75,12 @@ ENV PROTON_DRIVE_CACHE_DIR=/data
 # addresses.ts patch then skips verification keys and fileDownloader.ts honors this flag
 # to skip the manifest check (instead of failing after streaming the whole file)。
 ENV PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=1
+# Optional outbound throttle on Proton HTTPS. Default OFF (0). Set e.g. 5 (req/s) to
+# protect a small home router/CPE from NAT-table saturation during big syncs.
+ENV PROTON_BRIDGE_RATE_LIMIT=0
+ENV PROTON_BRIDGE_RATE_BURST=10
+# Hard ceiling on a single full-res download. Aborts with 502 if Proton hangs.
+ENV PROTON_BRIDGE_FULL_RES_TIMEOUT_MS=300000
 
 # The session/auth files live in DATA_DIR (mounted volume).
 VOLUME /data

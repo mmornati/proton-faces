@@ -35,6 +35,8 @@ services:
   proton-bridge:
     image: ghcr.io/mmornati/proton-faces-bridge:latest
     restart: unless-stopped
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     volumes:
       - ${DATA_MOUNT:-data}:/data
     environment:
@@ -55,6 +57,8 @@ services:
     # entry point.
     image: ghcr.io/mmornati/proton-faces-app:latest
     restart: unless-stopped
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       - proton-bridge
     command: ["python", "indexer_main.py"]
@@ -85,6 +89,8 @@ services:
   app:
     image: ghcr.io/mmornati/proton-faces-app:latest
     restart: unless-stopped
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       - proton-bridge
       - indexer
