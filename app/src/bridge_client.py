@@ -17,6 +17,47 @@ class BridgeError(Exception):
     pass
 
 
+class BridgeTransientError(BridgeError):
+    """Raised when the bridge returned a transient error (429/502/503/etc.)
+    that the caller should retry after a backoff rather than treating as a
+    permanent failure.
+
+    `retry_after_sec` is the wait time suggested by the upstream
+    `Retry-After` header (clamped to [0, 600] seconds). 0 if the server
+    didn't include a header.
+    """
+
+    def __init__(self, status_code: int, message: str, retry_after_sec: float = 0):
+        super().__init__(f"{status_code} {message} (retry_after={retry_after_sec}s)")
+        self.status_code = status_code
+        self.retry_after_sec = retry_after_sec
+
+
+def _parse_retry_after(value: str | None) -> float:
+    """Parse an HTTP Retry-After header value. Returns seconds (clamped 0-600).
+
+    Supports both delta-seconds ("120") and HTTP-date formats; the date form
+    is rare in practice for Proton Drive but we handle it for completeness.
+    """
+    if not value:
+        return 0
+    try:
+        sec = float(value)
+    except ValueError:
+        # HTTP-date form: "Wed, 21 Oct 2026 07:28:00 GMT"
+        try:
+            from email.utils import parsedate_to_datetime
+            target = parsedate_to_datetime(value)
+            if target is None:
+                return 0
+            import datetime as _dt
+            now = _dt.datetime.now(target.tzinfo)
+            sec = (target - now).total_seconds()
+        except Exception:
+            return 0
+    return max(0.0, min(600.0, sec))
+
+
 class BridgeClient:
     def __init__(self, base_url: str | None = None) -> None:
         self.base_url = (base_url or settings.bridge_url).rstrip("/")
@@ -109,6 +150,13 @@ class BridgeClient:
 
         ``range_header`` (e.g. ``bytes=0-``) is forwarded so HTTP Range
         seeking works end-to-end for videos.
+
+        For transient errors (429 / 502 / 503) we raise
+        `BridgeTransientError` carrying the parsed Retry-After value so the
+        caller can back off without flagging the photo as `error`. Other
+        non-2xx statuses still raise `httpx.HTTPStatusError` via the caller's
+        `resp.raise_for_status()` so behavior is preserved for permanent
+        failures (e.g. 401, 404).
         """
         # Streaming: return the raw response so the caller can iterate the body
         # as it arrives (full-res downloads can be slow; don't buffer them).
@@ -118,7 +166,17 @@ class BridgeClient:
             headers={"Range": range_header} if range_header else None,
             timeout=httpx.Timeout(1800.0, connect=30.0),
         )
-        return self._client.send(req, stream=True)
+        resp = self._client.send(req, stream=True)
+        # Eagerly check status so the caller doesn't have to drain the stream
+        # before learning the bridge is rate-limiting them. We only re-raise
+        # transient statuses; permanent ones are still surfaced via
+        # resp.raise_for_status() in the caller.
+        if resp.status_code in (429, 502, 503):
+            retry_after = _parse_retry_after(resp.headers.get("Retry-After") or resp.headers.get("retry-after"))
+            resp.close()
+            msg = resp.headers.get("X-Error-Message", "")
+            raise BridgeTransientError(resp.status_code, msg or "upstream transient error", retry_after)
+        return resp
 
     def close(self) -> None:
         self._client.close()

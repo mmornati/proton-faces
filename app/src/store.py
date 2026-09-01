@@ -25,13 +25,15 @@ CREATE TABLE IF NOT EXISTS photos (
     archived     INTEGER NOT NULL DEFAULT 0,    -- hidden from default grids
     hidden       INTEGER NOT NULL DEFAULT 0,    -- user hid it (e.g. resolved duplicate)
     tags         TEXT,           -- JSON array of freeform user tags
-    status       TEXT NOT NULL DEFAULT 'new',  -- new|downloading|done|error|deleted
+    status       TEXT NOT NULL DEFAULT 'new',  -- new|downloading|processing|done|error|deleted|pending_removal|full|fullres
     thumb_path   TEXT,           -- relative path under DATA_DIR/thumbs
     gps_lat      REAL,
     gps_lng      REAL,
     place        TEXT,           -- reverse-geocoded human place name
     processed_at INTEGER,
-    error        TEXT
+    error        TEXT,
+    was_deleted_at INTEGER,      -- unix epoch when this row was confirmed deleted (NULL if never). Survives reclaim so we have a historical record.
+    retry_count  INTEGER NOT NULL DEFAULT 0  -- times a `status='full'` row has been re-queued; capped to avoid infinite loops
 );
 CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(status);
 CREATE INDEX IF NOT EXISTS idx_photos_place  ON photos(place);
@@ -166,6 +168,10 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE photos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
     if "tags" not in pcols:
         conn.execute("ALTER TABLE photos ADD COLUMN tags TEXT")
+    if "was_deleted_at" not in pcols:
+        conn.execute("ALTER TABLE photos ADD COLUMN was_deleted_at INTEGER")
+    if "retry_count" not in pcols:
+        conn.execute("ALTER TABLE photos ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
     # Indexes for the new columns.
     idx = {r["name"] for r in conn.execute("PRAGMA index_list(photos)")}
     if "idx_photos_favorited" not in idx:
@@ -176,6 +182,14 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_photos_hidden ON photos(hidden)")
     if "idx_photos_sha1" not in idx:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_photos_sha1 ON photos(sha1)")
+    if "idx_photos_status_pending" not in idx:
+        # Helps the grace-period sweep: list rows stuck in pending_removal
+        # long enough to be confirmed-deleted.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_photos_status_pending "
+            "ON photos(status, processed_at) "
+            "WHERE status='pending_removal'"
+        )
     # Partial index for done_photos() — added in issue #5. Idempotent: if the
     # index already exists (current _SCHEMA branch), the IF NOT EXISTS is a
     # no-op. Keeps the migration path stable for older DBs that pre-date the
@@ -232,7 +246,14 @@ def upsert_photos(rows: list[dict]) -> int:
                        sha1=excluded.sha1,
                        albums=excluded.albums,
                        size_bytes=excluded.size_bytes,
-                       status=CASE WHEN photos.status='deleted' THEN 'new' ELSE photos.status END
+                       -- Reclaim: if the row was marked deleted or pending_removal
+                       -- (i.e. missing from the timeline for >= grace cycles),
+                       -- bring it back to 'new' so the indexer reprocesses it.
+                       -- Clear was_deleted_at so the historical record reflects
+                       -- the *current* state (i.e. no longer deleted).
+                       status=CASE WHEN photos.status IN ('deleted','pending_removal') THEN 'new' ELSE photos.status END,
+                       was_deleted_at=CASE WHEN photos.status IN ('deleted','pending_removal') THEN NULL ELSE photos.was_deleted_at END,
+                       retry_count=CASE WHEN photos.status IN ('deleted','pending_removal') THEN 0 ELSE photos.retry_count END
                 """,
                 (
                     r["uid"],
@@ -247,13 +268,109 @@ def upsert_photos(rows: list[dict]) -> int:
     return new
 
 
+def mark_pending_removal(uids: list[str]) -> int:
+    """Stage uids for deletion. The row becomes status='pending_removal' until
+    `confirm_deletions(grace_cycles=...)` is called; that helper promotes any
+    pending_removal rows whose processed_at is older than the grace window to
+    status='deleted' with was_deleted_at populated.
+
+    Idempotent: rows already in 'pending_removal' are left untouched
+    (preserving their original processed_at as the start of the grace timer),
+    rows already in 'deleted' are left untouched (preserve historical record),
+    rows in any other status get moved to 'pending_removal'.
+
+    Returns number of rows newly transitioned to pending_removal.
+    """
+    if not uids:
+        return 0
+    now = int(time.time())
+    placeholders = ",".join("?" * len(uids))
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"""UPDATE photos
+                   SET status='pending_removal',
+                       processed_at=CASE WHEN status='pending_removal' THEN processed_at ELSE ? END
+                 WHERE uid IN ({placeholders})
+                   AND status NOT IN ('deleted','pending_removal')""",
+            (now, *uids),
+        )
+        return cur.rowcount
+
+
+def confirm_deletions(grace_seconds: int, now: int | None = None) -> int:
+    """Promote pending_removal rows to deleted once the grace window has passed.
+
+    A row that has been in pending_removal for >= grace_seconds is considered
+    truly gone from Proton and is moved to 'deleted' with was_deleted_at set.
+
+    Returns number of rows confirmed.
+    """
+    now = int(time.time()) if now is None else now
+    with get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE photos
+                  SET status='deleted',
+                      was_deleted_at=COALESCE(was_deleted_at, ?)
+                WHERE status='pending_removal'
+                  AND processed_at IS NOT NULL
+                  AND processed_at <= ?""",
+            (now, now - grace_seconds),
+        )
+        return cur.rowcount
+
+
+def reset_stuck_fullres(retry_after_sec: int, max_retry_count: int = 5, now: int | None = None) -> int:
+    """Re-queue `status='full'` rows whose processed_at is older than
+    retry_after_sec. Bumps retry_count so we never spin forever on a poison
+    row — once retry_count >= max_retry_count the row is parked in
+    `status='error'` with a descriptive error string.
+
+    Returns (requeued, parked) tuple.
+    """
+    now = int(time.time()) if now is None else now
+    requeued = 0
+    parked = 0
+    with get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE photos
+                  SET status='new',
+                      retry_count=retry_count+1
+                WHERE status='full'
+                  AND processed_at IS NOT NULL
+                  AND processed_at <= ?
+                  AND retry_count < ?""",
+            (now - retry_after_sec, max_retry_count),
+        )
+        requeued = cur.rowcount
+        cur = conn.execute(
+            """UPDATE photos
+                  SET status='error',
+                      error='stuck in full for > max_retry_count cycles; not retrying',
+                      retry_count=retry_count+1
+                WHERE status='full'
+                  AND processed_at IS NOT NULL
+                  AND processed_at <= ?
+                  AND retry_count >= ?""",
+            (now - retry_after_sec, max_retry_count),
+        )
+        parked = cur.rowcount
+    return requeued, parked
+
+
 def mark_deleted(uids: list[str]) -> None:
+    """Hard-delete (kept for tests and explicit use). Production code should
+    use mark_pending_removal + confirm_deletions for the grace-period path."""
     if not uids:
         return
+    now = int(time.time())
     with get_conn() as conn:
-        conn.executemany(
-            "UPDATE photos SET status='deleted' WHERE uid=? AND status!='deleted'",
-            [(u,) for u in uids],
+        conn.execute(
+            f"""UPDATE photos
+                   SET status='deleted',
+                       was_deleted_at=COALESCE(was_deleted_at, ?)
+                 WHERE uid IN ({",".join("?" * len(uids))})
+                   AND status!='deleted'""",
+            (now, *uids),
         )
 
 
@@ -371,7 +488,35 @@ def stats() -> dict:
             "SELECT COUNT(*) FROM photos WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != ''"
         ).fetchone()[0]
         done_without_thumb = done - done_with_thumb
-        pending = conn.execute("SELECT COUNT(*) FROM photos WHERE status IN ('new','downloading','processing')").fetchone()[0]
+        done_without_thumb_videos = conn.execute(
+            "SELECT COUNT(*) FROM photos WHERE status='done' "
+            "AND (thumb_path IS NULL OR thumb_path='') "
+            "AND media_type LIKE 'video/%'"
+        ).fetchone()[0]
+        done_without_thumb_other = done_without_thumb - done_without_thumb_videos
+        # Real denominator: photos actually in the library (excludes 'deleted',
+        # which are kept only as historical record). `orphan` surfaces them
+        # separately so the UI can show "X indexed, Y orphan" honestly.
+        active_total = conn.execute(
+            "SELECT COUNT(*) FROM photos WHERE status != 'deleted'"
+        ).fetchone()[0]
+        # Pending covers all in-flight statuses including the new
+        # pending_removal grace-period state so the footer reflects current
+        # work, not the misleading '0' from the old counter.
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM photos WHERE status IN "
+            "('new','downloading','processing','pending_removal')"
+        ).fetchone()[0]
+        # Videos (and other media) currently stuck waiting for full-res /
+        # poster extraction. Separate from `pending` because they take much
+        # longer and deserve their own visibility.
+        stuck_fullres = conn.execute(
+            "SELECT COUNT(*) FROM photos WHERE status='full' "
+            "AND media_type LIKE 'video/%'"
+        ).fetchone()[0]
+        orphan = conn.execute(
+            "SELECT COUNT(*) FROM photos WHERE status='deleted'"
+        ).fetchone()[0]
         faces = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
         clips = conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0]
         people = conn.execute("SELECT COUNT(*) FROM people").fetchone()[0]
@@ -382,10 +527,15 @@ def stats() -> dict:
     return {
         "photos": {
             "total": total,
+            "active_total": active_total,
             "done": done,
             "done_with_thumb": done_with_thumb,
             "done_without_thumb": done_without_thumb,
+            "done_without_thumb_videos": done_without_thumb_videos,
+            "done_without_thumb_other": done_without_thumb_other,
             "pending": pending,
+            "stuck_fullres": stuck_fullres,
+            "orphan": orphan,
             "by_status": by_status,
         },
         "faces": faces,
