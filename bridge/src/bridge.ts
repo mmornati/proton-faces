@@ -5,7 +5,21 @@
  * operations the Python indexer needs:
  *
  *   GET  /health                 →  {"ok": true, "loggedIn": bool}
+ *   GET  /cache                  →  {files:[{name,size,mtime}], uptimeSec}
+ *                                     reports the on-disk SDK caches so the
+ *                                     admin "stale cache" check can detect a
+ *                                     hung getFileDownloader without scraping
+ *                                     logs.
+ *   POST /cache/clear            →  {ok, removed:[...]} — unlinks the SDK
+ *                                     caches in DATA_DIR and exits with code
+ *                                     1 so compose restarts us with a fresh
+ *                                     cache (fixes the "stale cache after a
+ *                                     Proton incident" hang).
  *   GET  /timeline               →  array of photo nodes (uid, name, captureTime, sha1, mediaType)
+ *   POST /nodes                   →  body {"uids": [...]} → array of photo nodes
+ *                                     for the requested uids (used by the
+ *                                     indexer's reclaim path)
+ *   GET  /albums                 →  array of {uid, name}
  *   POST /thumbnails             →  body {"uids": [...]} → downloads Type1 (512px) thumbnails
  *                                   into DATA_DIR/work/<uid>.webp, returns results
  *   GET  /photo/{uid}/full       →  streams the full-resolution photo (on-demand, read-only)
@@ -18,7 +32,7 @@ import { init } from './init';
 import type { PhotoNode } from '@protontech/drive-sdk';
 import { ThumbnailType } from '@protontech/drive-sdk';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { openSync, fsyncSync, closeSync } from 'node:fs';
+import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, extractRetryAfter, type TokenBucket } from './rateLimit';
@@ -26,6 +40,63 @@ import { createRateLimiter, extractRetryAfter, type TokenBucket } from './rateLi
 const PORT = Number(process.env.PORT ?? 8090);
 const DATA_DIR = process.env.DATA_DIR ?? '/data';
 const FULL_RES_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_FULL_RES_TIMEOUT_MS ?? 5 * 60_000);
+
+// SDK writes its on-disk caches into DATA_DIR (PROTON_DRIVE_CACHE_DIR=/data
+// in the Dockerfile). Two known files today — crypto keys and encrypted
+// entity blobs — plus their SQLite WAL/SHM siblings. Globbing the whole
+// `cache-*.sqlite*` family keeps the helper future-proof: if the SDK adds
+// another cache file later, "clear cache" still picks it up. The session
+// file (auth-session.json) and work/ are NOT matched, so authentication
+// state survives a clear.
+const CACHE_FILE_GLOB = /^cache-.*\.sqlite(-(shm|wal))?$/i;
+
+// Cache-control knobs for the admin "stale cache" check. We report the
+// cache files' sizes + mtimes so the Python admin check can flag a
+// hung/stale SDK without having to scrape logs.
+function reportCache(): { files: Array<{ name: string; size: number; mtime: number }>; uptimeSec: number } {
+    const files: Array<{ name: string; size: number; mtime: number }> = [];
+    try {
+        for (const name of readdirSync(DATA_DIR)) {
+            if (!CACHE_FILE_GLOB.test(name)) continue;
+            try {
+                const st = statSync(path.join(DATA_DIR, name));
+                files.push({ name, size: st.size, mtime: Math.floor(st.mtimeMs / 1000) });
+            } catch {
+                // file vanished between readdir and stat (e.g. concurrent
+                // SDK writer rotating the WAL) — skip silently
+            }
+        }
+    } catch {
+        // DATA_DIR unreadable — return what we have (likely empty)
+    }
+    files.sort((a, b) => a.name.localeCompare(b.name));
+    return { files, uptimeSec: Math.floor(process.uptime()) };
+}
+
+// Unlink every cache-*.sqlite* in DATA_DIR. Best-effort: a file that's
+// already gone (rotation in flight, etc.) is treated as "removed" so the
+// caller still gets a clean response. The SDK may have these open, but on
+// Linux unlinking an open file is safe — the inode is freed only when the
+// SDK closes its handles, and the SDK will simply recreate a fresh empty
+// DB on the next write after restart.
+async function clearCache(): Promise<{ removed: string[] }> {
+    const removed: string[] = [];
+    try {
+        for (const name of readdirSync(DATA_DIR)) {
+            if (!CACHE_FILE_GLOB.test(name)) continue;
+            const p = path.join(DATA_DIR, name);
+            try {
+                await Bun.file(p).unlink();
+                removed.push(name);
+            } catch {
+                removed.push(name); // already gone counts as removed
+            }
+        }
+    } catch {
+        // ignore — return whatever we managed to remove
+    }
+    return { removed };
+}
 
 async function ensureLoggedIn(ctx: Awaited<ReturnType<typeof init>>): Promise<Response> {
     const loggedIn = ctx.auth.isLoggedIn();
@@ -387,6 +458,28 @@ async function main(): Promise<void> {
             try {
                 if (url.pathname === '/health') {
                     return await ensureLoggedIn(ctx);
+                }
+                if (url.pathname === '/cache' && request.method === 'GET') {
+                    // No auth required — same trust model as /health: the
+                    // bridge is reachable only from the compose `internal`
+                    // network, and exposing cache file sizes/mtimes to the
+                    // app container is necessary for the admin "stale
+                    // cache" check to work.
+                    return Response.json({ ok: true, ...reportCache() });
+                }
+                if (url.pathname === '/cache/clear' && request.method === 'POST') {
+                    // Unlink the on-disk SDK caches and restart the
+                    // container. compose's `restart: unless-stopped`
+                    // policy will respawn the bridge with a fresh cache;
+                    // the auth-session file is not in the cache glob so
+                    // login state survives.
+                    const res = await clearCache();
+                    const body = Response.json({ ok: true, ...res });
+                    // Flush the response before exiting so the caller
+                    // gets confirmation. process.exit(1) trips
+                    // `unless-stopped` → docker restarts us.
+                    setTimeout(() => process.exit(1), 500);
+                    return body;
                 }
                 if (url.pathname === '/timeline') {
                     return await fetchTimeline(ctx, limiter, url, false);
