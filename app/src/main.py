@@ -151,7 +151,35 @@ def main() -> None:
     # Start the admin's auto-backup daemon (schedule read from admin_config.json).
     from admin import start_backup_worker
     start_backup_worker()
+    # Janitor: purge expired auth tokens every hour so the SQLite index
+    # doesn't bloat with stale rows. store.purge_expired_tokens exists but
+    # was never called on a schedule (issue #N — pre-fix, revoked + expired
+    # tokens accumulated forever).
+    _start_token_janitor()
     uvicorn.run(app, host="0.0.0.0", port=settings.port, log_level="info")
+
+
+def _start_token_janitor() -> None:
+    """Daemon thread that calls store.purge_expired_tokens() every hour."""
+    import threading
+    import time as _time
+
+    def _loop() -> None:
+        from store import purge_expired_tokens
+        log = logging.getLogger("token-janitor")
+        while True:
+            try:
+                removed = purge_expired_tokens()
+                if removed:
+                    log.info("purged %d expired auth tokens", removed)
+            except Exception:
+                log.exception("token janitor iteration failed")
+            for _ in range(360):  # 1h = 3600s / 10s tick
+                _time.sleep(10)
+
+    t = threading.Thread(target=_loop, name="token-janitor", daemon=True)
+    t.start()
+    logging.getLogger(__name__).info("token janitor started (interval=1h)")
 
 
 if __name__ == "__main__":

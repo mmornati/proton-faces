@@ -236,12 +236,19 @@ def ensure_default_admin() -> None:
         role="admin",
         display_name="Demo Admin",
     )
-    log.warning("=" * 60)
-    log.warning("DEMO_MODE: created default admin user")
-    log.warning("  username: demo")
-    log.warning("  password: %s", password)
-    log.warning("  (set DEMO_ADMIN_PASSWORD=... to override)")
-    log.warning("=" * 60)
+    # DEMO_LOGIN_LOGS controls whether the password is logged at WARN.
+    # Default ON in pure-demo mode; OFF in DEMO_HARDENING_MODE / public demo.
+    from auth import demo_login_logs
+    if demo_login_logs():
+        log.warning("=" * 60)
+        log.warning("DEMO_MODE: created default admin user")
+        log.warning("  username: demo")
+        log.warning("  password: %s", password)
+        log.warning("  (set DEMO_ADMIN_PASSWORD=... to override)")
+        log.warning("=" * 60)
+    else:
+        log.warning("DEMO_MODE: created default admin user (username=demo, "
+                    "password hidden — set DEMO_LOGIN_LOGS=1 to log it)")
 
 
 # --- Inject demo-only metadata after sync --------------------------------

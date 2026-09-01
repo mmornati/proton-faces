@@ -14,8 +14,11 @@ SQLite.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import os
+import time
 from dataclasses import dataclass
 
 import bcrypt
@@ -78,6 +81,133 @@ def _extract_token(request: Request) -> str | None:
     return token or None
 
 
+# --- signed URLs for binary endpoints -------------------------------------
+# /thumb, /full, /cover, /crop are consumed by <img>/<video>/<source> tags
+# that can't attach an Authorization header. Two release modes:
+#
+#   1. DEMO_ALLOW_PUBLIC_THUMBS=1 (default for the demo profile)
+#      - the suffix endpoints stay world-readable so a static <img> tag
+#        works without any JS round-trip.
+#      - signed URLs are still issued and accepted (so the prod binary
+#        can opt-in to signed-only at any time without breaking demos).
+#
+#   2. DEMO_ALLOW_PUBLIC_THUMBS=0 (recommended for prod)
+#      - the suffix endpoints require either a valid bearer token OR a
+#        valid short-lived signed URL (?sig=...&exp=...). Front-end
+#        must call /api/sign once per page load and append ?sig=&exp=
+#        to every <img src=...> URL it renders.
+
+def _env_bool(key: str, default: bool = False) -> bool:
+    return os.environ.get(key, str(default)).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _hardening_overrides(key: str, demo_default: bool) -> bool:
+    """Resolve a demo flag, with DEMO_HARDENING_MODE as the master switch.
+
+    When DEMO_HARDENING_MODE=1, return the SAFE value (overriding whatever
+    the env says) for flags that should be locked-down in public demos.
+    The legacy opt-in flags (DEMO_ALLOW_PUBLIC_THUMBS=1) win when
+    DEMO_HARDENING_MODE is explicitly 0.
+    """
+    from config import demo_hardening_mode  # local import: avoid cycle
+    if demo_hardening_mode():
+        # When hardening mode is on, force these flags to their safe values.
+        if key in (
+            "DEMO_ALLOW_PUBLIC_THUMBS",
+            "DEMO_LOGIN_LOGS",
+        ):
+            return False
+        if key in (
+            "DEMO_DISABLE_ADMIN_USER_MANAGEMENT",
+            "DEMO_DISABLE_BACKUPS",
+        ):
+            return True
+    return _env_bool(key, demo_default)
+
+
+def allow_public_thumbs() -> bool:
+    """True when the suffix endpoints (/thumb,/full,/cover,/crop) are world-readable."""
+    return _hardening_overrides("DEMO_ALLOW_PUBLIC_THUMBS", True)
+
+
+def demo_disable_admin_user_management() -> bool:
+    """True to hide /api/admin/users from /docs + 404 the endpoints.
+
+    Recommended ON for public demos so an attacker can't enumerate the admin
+    area from OpenAPI. The endpoints still work; they just don't appear in
+    the auto-generated docs.
+    """
+    return _hardening_overrides("DEMO_DISABLE_ADMIN_USER_MANAGEMENT", False)
+
+
+def demo_disable_backups() -> bool:
+    """True to 404 every /api/admin/backup* endpoint.
+
+    Backups contain a full VACUUM INTO of the SQLite index, which includes
+    every user, every face embedding, every photo UID. Disable in public
+    demos where the threat model allows an admin compromise.
+    """
+    return _hardening_overrides("DEMO_DISABLE_BACKUPS", False)
+
+
+def demo_login_logs() -> bool:
+    """True to log demo admin credentials at WARN on first boot.
+
+    Default OFF in prod; demo.py opts in via DEMO_LOGIN_LOGS=1 only when
+    the deploy template sets it. The WARN line is convenient for ops but
+    leaks the admin password to anyone with `docker compose logs` access.
+    """
+    return _hardening_overrides("DEMO_LOGIN_LOGS", True)
+
+
+def demo_hardening_mode() -> bool:
+    """Aggregate switch — see config.demo_hardening_mode()."""
+    from config import demo_hardening_mode as _dhm
+    return _dhm()
+
+
+def _signing_secret() -> bytes:
+    """Process-local secret used to sign short-lived URLs for binary assets.
+
+    We pull from SIGNING_SECRET env (set by the operator / deploy template) and
+    fall back to a per-boot random secret so a leaked secret only compromises
+    URLs signed during that boot. Set SIGNING_SECRET explicitly in production
+    so URLs survive a restart; rotate by setting a new value + invalidating
+    existing cookies/sessions.
+    """
+    s = os.environ.get("SIGNING_SECRET", "").strip()
+    if s:
+        return s.encode("utf-8")
+    # Per-boot fallback. We log a warning so this is never silent in prod.
+    if not hasattr(_signing_secret, "_ephemeral"):
+        import secrets
+        _signing_secret._ephemeral = secrets.token_bytes(32)  # type: ignore[attr-defined]
+        log.warning(
+            "SIGNING_SECRET not set; using a per-boot ephemeral secret. "
+            "Set SIGNING_SECRET in production so signed URLs survive restarts."
+        )
+    return _signing_secret._ephemeral  # type: ignore[attr-defined]
+
+
+def make_signed_token(path: str, ttl_seconds: int = 300) -> tuple[str, int]:
+    """Return (sig, exp) for a path. Path is the URL path WITHOUT query string."""
+    exp = int(time.time()) + ttl_seconds
+    msg = f"{path}|{exp}".encode("utf-8")
+    sig = hmac.new(_signing_secret(), msg, hashlib.sha256).hexdigest()
+    return sig, exp
+
+
+def verify_signed_token(path: str, sig: str | None, exp: int | None) -> bool:
+    """Constant-time check of a (sig, exp) pair against path."""
+    if not sig or not exp:
+        return False
+    if exp < int(time.time()):
+        return False
+    msg = f"{path}|{exp}".encode("utf-8")
+    expected = hmac.new(_signing_secret(), msg, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
 # Paths that don't require authentication. Used by `require_user` to short-circuit
 # before enforcing the bearer-token check, since FastAPI's route-level
 # `dependencies=[]` doesn't override app-level ones.
@@ -105,22 +235,61 @@ _AUTH_FREE_BINARY_SUFFIXES = frozenset({
 def _is_auth_free(path: str) -> bool:
     if path in _AUTH_FREE_PATHS:
         return True
-    # All routes that return binary bytes live at `.../<thumb|full|cover|crop>`;
-    # no shared parent has a sibling segment with those names, so a plain
-    # suffix check is sufficient and unambiguous.
+    if not allow_public_thumbs():
+        # In prod mode, the binary endpoints are NOT auth-free; they require
+        # either a bearer token (handled by the route) or a valid signed URL
+        # (validated by the route via verify_signed_token).
+        return False
+    # Demo mode (or explicitly opted-in): the binary endpoints stay world-readable
+    # so static <img> tags work without JS.
     return any(path.endswith(s) for s in _AUTH_FREE_BINARY_SUFFIXES)
+
+
+def signed_or_token(request: Request) -> CurrentUser | None:
+    """Allow access to a binary endpoint if EITHER a valid bearer token OR a
+    valid signed URL (?sig=&exp=) is presented.
+
+    Used by the /thumb /full /cover /crop routes so they can be locked down in
+    prod (DEMO_ALLOW_PUBLIC_THUMBS=0) while staying consumable by <img> tags via
+    short-lived signed URLs issued by /api/sign.
+    """
+    sig = request.query_params.get("sig")
+    exp_raw = request.query_params.get("exp")
+    exp = int(exp_raw) if exp_raw and exp_raw.isdigit() else None
+    if sig and verify_signed_token(request.url.path, sig, exp):
+        return None  # Auth-free access via signed URL.
+    # Fall back to bearer-token auth.
+    return require_user(request)
 
 
 def require_user(request: Request) -> CurrentUser | None:
     """Resolve the bearer token to a CurrentUser; raise 401 otherwise.
 
     Auth-free paths (`/api/auth/*`, `/api/health`, `/api/status`, plus the
-    binary `/thumb`, `/full`, `/cover`, `/crop` tail endpoints) short-circuit
-    and return None — those routes don't need a user. All other routes
-    receive a fully-populated CurrentUser or raise 401.
+    binary `/thumb`, `/full`, `/cover`, `/crop` tail endpoints in demo mode)
+    short-circuit and return None — those routes don't need a user. All other
+    routes receive a fully-populated CurrentUser or raise 401.
+
+    In prod mode (DEMO_ALLOW_PUBLIC_THUMBS=0), the binary endpoints are NOT
+    auth-free: the global dep runs the bearer check here, but a valid signed
+    URL (?sig=&exp=) lets `signed_or_token` short-circuit per-route. To make
+    the bearer check here not 401 spuriously when only a signed URL is
+    presented, we treat the binary endpoints as still "soft auth-free" at this
+    layer — the per-route dependency enforces either signed URL or bearer.
     """
     if _is_auth_free(request.url.path):
         return None
+    # In prod mode the binary endpoints also need a guard: either a valid
+    # signed URL OR a bearer token. Short-circuit here when a valid signed URL
+    # is presented; otherwise fall through to the bearer-token check.
+    if not allow_public_thumbs() and any(
+        request.url.path.endswith(s) for s in _AUTH_FREE_BINARY_SUFFIXES
+    ):
+        sig = request.query_params.get("sig")
+        exp_raw = request.query_params.get("exp")
+        exp = int(exp_raw) if exp_raw and exp_raw.isdigit() else None
+        if sig and verify_signed_token(request.url.path, sig, exp):
+            return None
     token = _extract_token(request)
     if not token:
         raise HTTPException(

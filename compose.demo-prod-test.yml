@@ -1,0 +1,9 @@
+# Test override: prod-mode (binary endpoints require signed URL).
+# Not for production — used only for local verification of the signed-URL PR.
+services:
+  app-demo:
+    environment:
+      - DEMO_ALLOW_PUBLIC_THUMBS=0
+  indexer-demo:
+    environment:
+      - DEMO_ALLOW_PUBLIC_THUMBS=0

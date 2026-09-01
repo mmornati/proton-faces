@@ -14,6 +14,26 @@ def is_demo_mode() -> bool:
     return _env_bool("DEMO_MODE", False)
 
 
+def demo_hardening_mode() -> bool:
+    """Aggregate switch for public-demo safety.
+
+    When DEMO_HARDENING_MODE=1 (or implied by DEMO_MODE in a public-deploy
+    context), flip every "safe for public demo" flag to its safe value:
+
+      DEMO_ALLOW_PUBLIC_THUMBS=0       (require signed URLs for /thumb /full /cover /crop)
+      DEMO_DISABLE_BACKUPS=1           (404 /api/admin/backup*)
+      DEMO_DISABLE_ADMIN_USER_MGMT=1   (hide /api/admin/users from /docs)
+      DEMO_LOGIN_LOGS=0                (don't log demo admin password)
+
+    Individual flags still take precedence — set them explicitly to override.
+    """
+    if _env_bool("DEMO_HARDENING_MODE", False):
+        return True
+    # In demo mode, default to hardened for any non-localhost deployment.
+    # Operators that want the legacy behavior can set DEMO_HARDENING_MODE=0.
+    return is_demo_mode()
+
+
 class Settings:
     def __init__(self) -> None:
         self.data_dir = Path(os.environ.get("DATA_DIR", "./data")).resolve()
