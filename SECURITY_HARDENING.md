@@ -408,3 +408,76 @@ Each service gets its own LE cert. They share the same `pf-security`
 and `pf-ratelimit` middlewares (load them with `@file` suffix in the
 labels).
 
+---
+
+## 9. Content Security Policy
+
+The Traefik `pf-security` middleware ships the following CSP:
+
+```
+default-src 'self';
+img-src 'self' data: blob: https://*.tile.openstreetmap.org;
+media-src 'self' blob:;
+style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+connect-src 'self' https://cdn.jsdelivr.net https://*.tile.openstreetmap.org;
+frame-ancestors 'none';
+base-uri 'self';
+form-action 'self'
+```
+
+Why each directive is set the way it is:
+
+- **`default-src 'self'`** — baseline. Everything must come from the
+  same origin unless explicitly listed below.
+- **`img-src` includes `https://*.tile.openstreetmap.org`** — the map
+  loads raster tiles from OSM. Without this, the map view would render
+  blank squares.
+- **`media-src 'self' blob:`** — videos come from `/api/photos/{uid}/full`,
+  which is same-origin. `blob:` is allowed for client-side face crops.
+- **`style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net`** —
+  `'unsafe-inline'` is needed because `index.html` has `<style>` blocks
+  and inline `style="..."` attributes. `cdn.jsdelivr.net` hosts the
+  Leaflet CSS.
+- **`script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net`** —
+  `'unsafe-inline'` is needed because the SPA is one big file with a
+  giant inline `<script>` block. **Refactor to a nonce-based CSP once
+  the inline code is extracted to a separate `.js` file.** `cdn.jsdelivr.net`
+  hosts Leaflet + MarkerCluster.
+- **`connect-src`** — fetch/XHR targets. The SPA calls same-origin
+  APIs, jsdelivr (for the CDN scripts), and OSM tile servers.
+- **`frame-ancestors 'none'`** — no embedding in iframes. Belt-and-
+  braces alongside `X-Frame-Options: DENY`.
+- **`base-uri 'self'`** — prevents `<base>` tag injection that could
+  rewrite relative URLs.
+- **`form-action 'self'`** — form posts can only target the same origin.
+
+### Tightening `'unsafe-inline'`
+
+A future PR should:
+
+1. Extract the inline `<script>` block to a separate `app.js` file
+   served by FastAPI's StaticFiles. The script tag becomes
+   `<script src="/static/app.js"></script>`.
+2. Either:
+   - Serve the CSP with a per-request nonce (Traefik `headers` middleware
+     doesn't natively support nonces; would need a small Lua plugin or
+     to compute a nonce in FastAPI and inject it into the HTML).
+   - Or hash the script content and pin `script-src 'self' 'sha256-…'`.
+
+For now `'unsafe-inline'` is acceptable because the SPA source is the
+same file the server ships — an XSS through the SPA would already need
+write access to `app/src/static/index.html`.
+
+### Troubleshooting CSP errors in the browser console
+
+If a feature breaks after a CSP change, the browser console shows the
+exact directive violated. Common cases:
+
+- **"Refused to load the script … because it violates script-src"** —
+  the script's origin isn't whitelisted. Add to `script-src`.
+- **"Refused to apply inline style because it violates style-src"** —
+  either add `'unsafe-inline'` (current setup) or hash the styles.
+- **"Refused to connect to … because it violates connect-src"** —
+  fetch/XHR target missing from the allow-list.
+
