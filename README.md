@@ -168,7 +168,7 @@ own identity.
 |------|:-:|:-:|:-:|
 | **read**  | ✅ | ✅ | ❌ |
 | **write** | ✅ | ✅ | ✅ |
-| **admin** | ✅ | ✅ | ✅ + future admin menu (`/api/admin/users/*` for CRUD) |
+| **admin** | ✅ | ✅ | ✅ + admin area (users, backups, schedule, health checks — see below) |
 
 Anyone on `:8080` must log in. Tokens are bearer JWT-free (opaque random
 hex), stored in your browser's `localStorage` under `pf.auth`. Access TTL
@@ -189,6 +189,40 @@ docker compose exec app python main.py --reset-password mom
 Per-user favorites live in the `user_favorites` table; the legacy global
 `photos.favorited` column is kept only as a one-time backfill target the
 first time `--create-admin` runs on an existing library.
+
+---
+
+## 🛠️ Admin area (admin role only)
+
+Log in as an admin and click the **⚙ gear icon** in the top-right of the
+header — it only appears for users with the `admin` role. The admin modal
+has four tabs:
+
+- **Overview** — server (hostname, Python version, uptime), disk usage of the
+  data volume, and last-backup summary.
+- **Health checks** — runs seven checks on demand: DB integrity, free disk
+  space, backup freshness, backup dir writable, data dir writable, indexer
+  liveness, Proton bridge reachability. Each check is an ok/bad pill with a
+  short status and detail string.
+- **Backups** — list every SQLite snapshot under `DATA_DIR/_backups/`, with
+  size and timestamp. Buttons: **Backup now** (creates a fresh
+  `index-<UTC-stamp>.sqlite3` via `VACUUM INTO` — consistent, non-blocking
+  against the live WAL DB), **Delete** (per row, with confirm), **Prune**
+  (keep the newest N per the retention setting). Path traversal is rejected.
+- **Schedule** — daily auto-backup inside the app container. **Enabled**,
+  **Hour** (0-23 UTC), **Minute** (0-59), **Keep** (1-365). Stored at
+  `DATA_DIR/admin_config.json`. The daemon thread wakes every minute and
+  runs at most one backup per UTC day to avoid piling up if the app was
+  down.
+- **Users** — list every account, create new (username ≥ 2 chars, password
+  ≥ 8 chars, role `read` / `write` / `admin`), edit display name / role /
+  disabled / password, **Logout** (revokes all of that user's sessions),
+  **Delete** (refuses to delete the last remaining admin so nobody gets
+  locked out).
+
+The user-management section is the same data model exposed by the existing
+`/api/admin/users/*` endpoints, now reachable from the UI. No new CLI is
+required — everything is in the web admin area.
 
 ---
 

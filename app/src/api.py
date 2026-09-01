@@ -1335,7 +1335,8 @@ def _face_similarity(emb: np.ndarray, limit: int, user_id: int) -> dict:
     return {"results": results, "total": len(results)}
 
 
-# --- admin: user management (future admin menu hooks here) -----------------
+# --- admin: user management + server ops -----------------------------------
+import admin
 
 def _user_row_public(row) -> dict:
     return {
@@ -1399,7 +1400,7 @@ def api_admin_update_user(user_id: int, body: dict,
 
 
 @app.delete("/api/admin/users/{user_id}")
-def api_admin_delete_user(user_id: int, body: dict,
+def api_admin_delete_user(user_id: int,
                            actor: CurrentUser = Depends(require_role("admin"))):
     """Remove a user. The last remaining admin cannot delete themselves."""
     row = get_user_by_id(user_id)
@@ -1420,6 +1421,65 @@ def api_admin_revoke_user_tokens(user_id: int,
     """Sign a user out of every device."""
     n = revoke_all_tokens(user_id)
     return {"ok": True, "revoked": n}
+
+
+# --- admin: server ops (backup / disk / checks / schedule) -----------------
+
+@app.get("/api/admin/overview")
+def api_admin_overview(_: CurrentUser = Depends(require_role("admin"))):
+    return admin.overview()
+
+
+@app.post("/api/admin/backup")
+def api_admin_backup(_: CurrentUser = Depends(require_role("admin"))):
+    """Trigger a manual snapshot now."""
+    try:
+        res = admin.snapshot_backup()
+    except FileNotFoundError as exc:
+        raise HTTPException(400, str(exc))
+    return {"name": res["name"], "size": res["size"], "ts": res["ts"]}
+
+
+@app.get("/api/admin/backups")
+def api_admin_list_backups(_: CurrentUser = Depends(require_role("admin"))):
+    return admin.list_backups()
+
+
+@app.delete("/api/admin/backups/{name}")
+def api_admin_delete_backup(name: str, _: CurrentUser = Depends(require_role("admin"))):
+    try:
+        return admin.delete_backup(name)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/admin/backups/prune")
+def api_admin_prune_backups(body: dict = Body(default={}),
+                            _: CurrentUser = Depends(require_role("admin"))):
+    try:
+        res = admin.prune_backups(body.get("keep"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": res.get("ok", True),
+            "removed": res.get("removed", []),
+            "removed_count": len(res.get("removed", [])),
+            "kept": res.get("kept", 0)}
+
+
+@app.get("/api/admin/schedule")
+def api_admin_get_schedule(_: CurrentUser = Depends(require_role("admin"))):
+    return admin.get_schedule()
+
+
+@app.put("/api/admin/schedule")
+def api_admin_set_schedule(body: dict = Body(...),
+                           _: CurrentUser = Depends(require_role("admin"))):
+    return admin.set_schedule(body)
+
+
+@app.post("/api/admin/checks")
+def api_admin_checks(_: CurrentUser = Depends(require_role("admin"))):
+    return admin.run_checks()
 
 
 # --- static UI -------------------------------------------------------------
