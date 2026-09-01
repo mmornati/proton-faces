@@ -22,6 +22,7 @@ These are read by `docker-compose.yml` itself, not by the containers:
 | `DEMO_ADMIN_PASSWORD` | `proton-faces` | Password for the auto-created `demo` admin in demo mode. |
 | `RUN_INDEXER` | `0` | Set `1` on the `app` service to start the in-process indexer (legacy single-process layout). |
 | `INDEXER_STATUS_PORT` | `8091` | Internal-only port on the `indexer` container for its `/status` endpoint. |
+| `BRIDGE_CACHE_STALE_SEC` | `21600` (6 h) | Age (seconds) at which the on-disk Proton SDK cache is flagged "stale" by the admin Server-checks panel. Only fires when full-res downloads are also failing. Lower it to surface stale caches earlier; raise it if your bridge is idle for longer than 6 h. |
 
 ## In-container
 
