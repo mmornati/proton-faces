@@ -22,6 +22,14 @@ RUN git clone --depth 1 --branch "${SDK_REF}" "${SDK_REPO}" .
 # Drop our HTTP service into the CLI source tree so it can import ./init etc.
 COPY src/bridge.ts cli/src/bridge.ts
 
+# Overlay a patched copy of the account SDK's addresses.ts. Upstream
+# getOwnPublicKeys() decrypts the address-key token via cryptoProxy.decryptMessage,
+
+# which hangs forever under Bun 1.2 (the WASM OpenPGP proxy), stalling every
+# full-resolution download. We import the armored PublicKey directly instead (same as
+# the other-user path already does), avoiding the broken decrypt path entirely.
+COPY patches/addresses.ts incubating/account/js/src/addresses.ts
+
 # The CLI's dependencies are file: links to sibling packages (client/js, incubating/account/js).
 # bun resolves those via realpath, so their own deps (ky, ttag, @protontech/crypto, ...) are
 # only reachable if the whole monorepo is one bun workspace. Create the root workspace and
