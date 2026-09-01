@@ -85,6 +85,7 @@ Authentication is via `Authorization: Bearer <token>`. Get a token from `POST /a
 | POST | `/api/people/{src}/merge` | write | Explicit merge `{target_id}` |
 | GET | `/api/faces/unassigned?limit=500` | read | The unassigned queue |
 | GET | `/api/faces/{id}/crop` | none (binary) | Face-crop JPEG |
+| GET | `/api/faces/{id}/suggest?limit=5` | read | Ranked "who might this be" people (face→person-mean-embedding similarity) |
 | POST | `/api/faces/{id}/person` | write | Assign (`{person_id}` or `{name}`); propagation kicks in |
 | POST | `/api/faces/{id}/unassign` | write | Unassign from person |
 
