@@ -78,7 +78,7 @@ services:
       # without rebuilding the image. Leave unset (default) in prod —
       # the image's baked-in source is used and `docker compose pull
       # && docker compose up -d` is enough.
-      - ${LOCAL_SRC:-/dev/null}:/app/src
+      - ${LOCAL_SRC:-}:/app/src
     environment:
       - DATA_DIR=/data
       - MODELS_DIR=/models
@@ -126,7 +126,7 @@ services:
       # full note. Leave LOCAL_SRC unset in prod — the image's baked-in
       # source is used and `docker compose pull && docker compose up -d`
       # is enough.
-      - ${LOCAL_SRC:-/dev/null}:/app/src
+      - ${LOCAL_SRC:-}:/app/src
     environment:
       - DATA_DIR=/data
       - MODELS_DIR=/models
