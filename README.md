@@ -93,17 +93,28 @@ opens the Cloudinary player (a direct MP4 is also committed at `docs/demo.mp4`).
 - The whole pipeline is **resumable** and runs in the background: add photos to Proton and the
   index catches up automatically.
 
-## Why two containers?
+## Why three containers?
 
-| Container       | Base                              | Role                                                        |
-|-----------------|-----------------------------------|-------------------------------------------------------------|
-| `proton-bridge` | `oven/bun` + Proton SDK monorepo  | The only component that talks to Proton (auth, thumbnails)  |
-| `proton-faces`  | `python:3.11-slim`                | All machine learning, indexing, search API, web UI          |
+Since [issue #4](https://github.com/mmornati/proton-faces/pull/7) the indexing
+pipeline runs in its own container so face detection can't preempt the FastAPI
+event loop on the box's CPU cores.
 
-The published npm `@protontech/drive-sdk` cannot run standalone — its authentication module is
-not published — so the bridge is built inside the Proton Drive SDK monorepo at image build time
-(pinned tag `cli/v0.8.0`). You never need to clone it yourself; the Docker build does it
-automatically.
+| Container       | Base                              | Role                                                                                                |
+|-----------------|-----------------------------------|-----------------------------------------------------------------------------------------------------|
+| `proton-bridge` | `oven/bun` + Proton SDK monorepo  | The only component that talks to Proton (auth, thumbnails). Strictly read-only.                      |
+| `indexer`       | `python:3.11-slim` + ML models    | Background recognition pipeline (sync / fullres / face detection / CLIP / cluster / GPS). Own entry point, no uvicorn on the host. Also serves an internal status endpoint (see `INDEXER_STATUS_PORT`). |
+| `app`           | `python:3.11-slim` + ML models    | FastAPI search API + vanilla-JS web UI on `:8080`. Proxies the indexer's status endpoint for the footer/health modal. |
+
+The `indexer` and `app` containers share the same SQLite index via **WAL mode + a
+30 s busy_timeout** and per-row atomic claims (`UPDATE ... WHERE status='new'`),
+so they interleave cleanly without any extra coordination. If you'd rather keep
+the legacy single-process layout (everything in `app`), set `RUN_INDEXER=1` in
+`.env` — the `app` container will then start the indexer threads in-process too.
+
+The published npm `@protontech/drive-sdk` cannot run standalone — its
+authentication module is not published — so the bridge is built inside the
+Proton Drive SDK monorepo at image build time (pinned tag `cli/v0.8.0`). You
+never need to clone it yourself; the Docker build does it automatically.
 
 ---
 
@@ -126,8 +137,12 @@ pass show ch.proton.drive/drive-sdk-cli/auth-session > credentials/auth-session.
 
 ```bash
 cp .env.example .env
-# DATA_DIR=/srv/proton-faces/data   # where thumbnails + indexes live
-# PHOTOS_DIR=                        # optional: local Google Takeout export for GPS enrichment
+# Inside the containers DATA_DIR is always /data and PHOTOS_DIR is always /takeout.
+# To persist data on a specific host disk (e.g. a big volume), set the compose-
+# level mount instead — defaults to the named volume "data":
+# DATA_MOUNT=/srv/proton-faces/data
+# To point indexer/app at a Google Takeout export on the host, set:
+# PHOTOS_MOUNT=/srv/photos-takeout
 ```
 
 ### 3. Start
@@ -147,13 +162,10 @@ The indexer starts immediately and is fully resumable. The first run processes y
 library (roughly 1–2 s per photo on a modern CPU — a 100k-photo library takes about a day), and
 the web UI becomes useful right away as results stream in.
 
-> **Two-process layout (issue #4).** `docker compose up` now starts three containers:
-> `proton-bridge`, `indexer`, and `app`. The `indexer` container owns the
-> recognition pipeline so face detection can't preempt the FastAPI event loop
-> on the box's CPU cores. Both processes share the same SQLite index via WAL
-> mode and per-row atomic claims — no extra coordination. If you'd rather keep
-> the legacy single-process layout (everything in `app`), set `RUN_INDEXER=1`
-> in `.env`.
+> **Three-process layout (issue #4).** `docker compose up` starts three containers:
+> `proton-bridge`, `indexer`, and `app` (see [Why three containers?](#why-three-containers)
+> above for the rationale). To fall back to the legacy single-process layout (everything
+> in `app`), set `RUN_INDEXER=1` in `.env`.
 
 ### 👥 Users & roles
 
@@ -180,7 +192,9 @@ Other admin tasks (after the first admin is created):
 ```bash
 # Add more users (admin-only endpoint also exists at POST /api/admin/users):
 scripts/create-admin.sh dad
-scripts/create-admin.sh kid
+scripts/create-admin.sh kid --display-name "Kid"
+# Non-interactive: ADMIN_PASSWORD=... scripts/create-admin.sh mom
+# (the admin endpoint and the inline form in the admin area work too).
 
 # Reset a forgotten password (revokes all that user's sessions):
 docker compose exec app python main.py --reset-password mom
@@ -252,6 +266,10 @@ required — everything is in the web admin area.
 - **Places** — a **Leaflet world map** with clustered city markers, plus a city list. Click any
   marker to filter the photo grid to that place.
 - **Search by example** — drop a photo of a face to find every photo containing that person.
+- **Bottom status bar + `?` diagnostics** — every view shows a slim footer with the indexer's live
+  state (last sync, pending queue depth, thread liveness). Click the `?` in the header to open the
+  full **Status & diagnostics** overlay — server info, runtime counts, and the data behind the
+  footer pills (powered by the internal `INDEXER_STATUS_PORT` endpoint; see the config table).
 
 ---
 
@@ -274,16 +292,21 @@ app/              Python indexer + search API + web UI
   src/
     indexer.py    timeline diff / download / recognize / fullres / delete pipeline
     indexer_main.py  dedicated entry point for the `indexer` container (no uvicorn)
+    indexer_status.py  tiny in-container HTTP endpoint that exposes the indexer's live state
     main.py       dedicated entry point for the `app` container (uvicorn only by default)
     faces.py      InsightFace face detection + embeddings
     clip.py       CLIP ViT-B/32 embeddings (ONNX Runtime)
     cluster.py    HDBSCAN people clustering
     geocode.py    offline reverse-geocoding
     store.py      SQLite schema + numpy vector store
+    auth.py       multi-user account model, bearer-token issuance, role checks
+    admin.py      admin-only endpoints + auto-backup worker + health checks
     api.py        FastAPI application
-    static/       vanilla-JS frontend (incl. Leaflet map)
+    bridge_client.py  thin HTTP client for the `proton-bridge` service
+    config.py     env-driven settings (Settings dataclass)
+    static/       vanilla-JS frontend (incl. Leaflet map + admin modal + status overlay)
 bridge/           Bun service wrapping the Proton Drive SDK
-scripts/          helper scripts (session export, backup, build)
+scripts/          helper scripts (session export, create-admin, backup, build)
 compose.yml       three-container deployment (bridge + indexer + app)
 .github/workflows GHCR image publishing
 ```
@@ -296,8 +319,10 @@ Environment variables (see `.env.example`):
 
 | Variable              | Default                    | Description                                 |
 |-----------------------|----------------------------|---------------------------------------------|
-| `DATA_DIR`            | `./data`                   | Persistent data (thumbnails, SQLite, vectors) |
-| `PHOTOS_DIR`          | *(empty)*                  | Local Google Takeout export — used to enrich photos with GPS/EXIF without any Proton full-res download |
+| `DATA_MOUNT`          | *(named volume `data`)*   | Compose-level: host path (or `:volume`) the data directory is bind-mounted at. Defaults to Docker's named volume `data`. Set e.g. `DATA_MOUNT=/srv/proton-faces/data` to persist on a big disk. The directory must be writable by UID 1000 (the user all containers run as). |
+| `PHOTOS_MOUNT`        | *(unset → `:/dev/null`)*  | Compose-level: optional read-only bind mount of a local Google Takeout export, used to backfill GPS/place data. Inside the indexer/app containers this is always mounted at `/takeout` (and `PHOTOS_DIR` is hardcoded to `/takeout`). To take effect, set e.g. `PHOTOS_MOUNT=/srv/photos-takeout`. |
+| `DATA_DIR`            | `/data` (in-container)    | Persistent data (thumbnails, SQLite, vectors). Fixed at `/data` inside the `indexer` and `app` containers; override only for local single-process dev. |
+| `PHOTOS_DIR`          | `/takeout` (in-container)  | Optional Google Takeout export mounted at `/takeout` in the indexer/app containers (via `PHOTOS_MOUNT`). Set to anything else only for local dev. |
 | `PORT`                | `8080`                     | Web UI port                                 |
 | `SYNC_INTERVAL`       | `300`                      | Seconds between timeline diffs              |
 | `SYNC_LIMIT`          | `0`                        | Only index the newest N photos (0 = all) — handy for testing |
@@ -310,14 +335,18 @@ Environment variables (see `.env.example`):
 | `MODELS_DIR`          | `DATA_DIR/models`          | Where ML models are stored                  |
 | `LOG_LEVEL`           | `INFO`                     | Logging verbosity                           |
 | `RUN_INDEXER`         | `0`                        | Set `1` on the `app` container to start the in-process indexer (legacy single-process layout). Default off: the `indexer` container handles the pipeline. |
-| `INDEXER_STATUS_PORT` | `8091`                     | Internal-only port (127.0.0.1) on the `indexer` container that exposes its live runtime state to the `app` container for the footer/health modal. Not published to the host — reachable only over the compose network via `http://indexer:8091`. |
+| `INDEXER_STATUS_PORT` | `8091`                     | Internal-only port on the `indexer` container (bound to `0.0.0.0`, no host port published in compose) that exposes its live runtime state to the `app` container for the footer/health modal. Reachable only over the compose network via the `indexer` hostname (`http://indexer:8091`). |
+| `INDEXER_STATUS_URL`  | `http://indexer:8091`      | Base URL the `app` container reads to proxy the indexer's status endpoint. Override to `http://127.0.0.1:8091` for local single-process dev with `RUN_INDEXER=1`. |
 | `AUTH_ACCESS_TTL`     | `28800`                    | Bearer access-token lifetime (seconds). 8 hours by default. |
 | `AUTH_REFRESH_TTL`    | `2592000`                  | Bearer refresh-token lifetime (seconds). 30 days by default. |
+| `ADMIN_PASSWORD`      | *(unset → prompt on stdin)*| If set, `python main.py --create-admin USER` and `--reset-password USER` read the password from this env var instead of prompting (so you can run them non-interactively from a script or init container). At least 8 characters or the command rejects the password. |
 
 ### GPS / place enrichment
 
 Proton's API does not expose photo location, but your Google Takeout export keeps GPS in local
-`*.supplemental-metadata.json` sidecars. Point `PHOTOS_DIR` at that export and the app will
+`*.supplemental-metadata.json` sidecars. Inside the containers the export is mounted at
+`/takeout`; on the host you point compose at the export with the **compose-level**
+`PHOTOS_MOUNT` variable (see the config table). Once mounted, the app will
 enrich GPS **automatically** in the background:
 
 - it sha1-hashes the local photo files (cache in `DATA_DIR/gps_sha1_cache.json`, so later runs
