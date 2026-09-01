@@ -98,13 +98,18 @@ class BridgeClient:
         r.raise_for_status()
         return r.json()
 
-    def full_photo(self, uid: str) -> httpx.Response:
-        """Stream a full-resolution photo (read-only, on demand)."""
+    def full_photo(self, uid: str, range_header: str | None = None) -> httpx.Response:
+        """Stream a full-resolution photo (read-only, on demand).
+
+        ``range_header`` (e.g. ``bytes=0-``) is forwarded so HTTP Range
+        seeking works end-to-end for videos.
+        """
         # Streaming: return the raw response so the caller can iterate the body
         # as it arrives (full-res downloads can be slow; don't buffer them).
         req = self._client.build_request(
             "GET",
             f"{self.base_url}/photo/{uid}/full",
+            headers={"Range": range_header} if range_header else None,
             timeout=httpx.Timeout(1800.0, connect=30.0),
         )
         return self._client.send(req, stream=True)

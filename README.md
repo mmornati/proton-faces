@@ -93,6 +93,23 @@ opens the Cloudinary player (a direct MP4 is also committed at `docs/demo.mp4`).
 - The whole pipeline is **resumable** and runs in the background: add photos to Proton and the
   index catches up automatically.
 
+### Image data flow — local cache vs. live Proton
+
+The **only** thing kept on local disk is a small **512px WebP thumbnail** per photo
+(`thumbs/<uid>.webp`, immutable, served by `/api/photos/{uid}/thumb` and reused by
+`/api/photos/{uid}/meta`). Full-resolution originals are **never persisted**: every
+"View full resolution" click streams the original bytes **live from Proton** through
+`/api/photos/{uid}/full` → bridge `/photo/{uid}/full` → Proton Drive SDK, then the
+browser. Images stream straight through (no temp file); videos are buffered to a
+per-request temp file (`work/<uid>-XXXXXX.full`, deleted as soon as the response ends) so
+the HTTP `Range` requests HTML5 `<video>` seeking needs work end-to-end (206 responses).
+
+The indexer additionally uses a throwaway `work/<uid>.download` for photos whose server
+preview is missing (HEIC, videos —to extract a poster frame); it is deleted as soon as the
+thumbnail exists. Because everything except the 512px thumbnail is fetched on demand, a
+slow Proton connection or a dead bridge degrades only the "View full resolution" experience —
+thumbing, search, faces, places, and memories all keep working from the local cache.
+
 ## Why three containers?
 
 Since [issue #4](https://github.com/mmornati/proton-faces/pull/7) the indexing
