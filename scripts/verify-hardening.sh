@@ -1,13 +1,38 @@
 #!/usr/bin/env bash
 # Verify that the security hardening on the proton-faces deployment is intact.
-# Usage: BASE=https://protonface.mornati.ovh ./scripts/verify-hardening.sh
+# Usage:
+#   BASE=https://protonface.mornati.ovh ./scripts/verify-hardening.sh
+#   INSECURE=1 ./scripts/verify-hardening.sh   # skip TLS cert verification
+#   HOST_HEADER=protonface.mornati.ovh BASE=https://51.77.144.149 \
+#     INSECURE=1 ./scripts/verify-hardening.sh  # pre-DNS testing
 #
-# Exits 0 on full pass, 1 on any failed check. Designed to run against the
-# publicly-deployed demo URL AND against localhost:8080 (with appropriate
-# DEMO_ALLOW_PUBLIC_THUMBS toggles).
+# Exits 0 on full pass, 1 on any failed check.
 
 set -u
 BASE="${BASE:-http://localhost:8080}"
+HOST_HEADER="${HOST_HEADER:-}"
+INSECURE="${INSECURE:-}"
+CURL_OPTS=""
+if [[ -n "$INSECURE" ]]; then
+  CURL_OPTS="-k"
+fi
+
+# HOST_HEADER lets you test against the public IP before DNS propagates.
+# We rewrite the URL host but also pass --resolve so curl can establish
+# the TCP connection to the original IP.
+if [[ -n "$HOST_HEADER" ]]; then
+  _scheme="${BASE%%://*}"
+  _rest="${BASE#*://}"
+  _hostport="${_rest%%/*}"
+  _path="${_rest#$_hostport}"
+  _host="${_hostport%:*}"
+  _port="${_hostport##*:}"
+  [[ "$_port" == "$_hostport" ]] && _port="443"
+  [[ "$_scheme" == "http" ]] && _port="80"
+  CURL_OPTS="$CURL_OPTS --resolve ${HOST_HEADER}:${_port}:${_host}"
+  BASE="${_scheme}://${HOST_HEADER}${_path}"
+fi
+
 FAILS=0
 PASSES=0
 
@@ -40,11 +65,11 @@ check_match() {
 section() { printf "\n=== %s ===\n" "$1"; }
 
 section "Reachability"
-HEALTH=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/api/health")
+HEALTH=$(curl $CURL_OPTS -sS -o /dev/null -w "%{http_code}" "$BASE/api/health")
 check "GET /api/health" "$HEALTH" "200"
 
 section "Traefik security headers (Route A middleware)"
-HEADERS=$(curl -sSI "$BASE/")
+HEADERS=$(curl $CURL_OPTS -sSI "$BASE/")
 STS=$(echo "$HEADERS" | grep -i "^strict-transport-security:" | tr -d '\r' | head -1)
 XFO=$(echo "$HEADERS" | grep -i "^x-frame-options:" | tr -d '\r' | head -1)
 XCTO=$(echo "$HEADERS" | grep -i "^x-content-type-options:" | tr -d '\r' | head -1)
@@ -58,15 +83,15 @@ check_match "Referrer-Policy set" "$RP" "no-referrer"
 check_match "Content-Security-Policy set" "$CSP" "default-src"
 
 section "/api/status config redaction (anon)"
-STATUS_ANON=$(curl -sS "$BASE/api/status")
-HAS_CONFIG_ANON=$(echo "$STATUS_ANON" | python3 -c "import json,sys;print('yes' if 'config' in json.load(sys.stdin) else 'no')")
+STATUS_ANON=$(curl $CURL_OPTS -sS "$BASE/api/status")
+HAS_CONFIG_ANON=$(echo "$STATUS_ANON" | python3 -c "import json,sys;print('yes' if 'config' in json.load(sys.stdin) else 'no')" 2>/dev/null || echo "err")
 check "anon /api/status hides config block" "$HAS_CONFIG_ANON" "no"
 
 section "Auth round-trip"
-LOGIN=$(curl -sS -X POST -H "content-type: application/json" \
-  -d '{"username":"demo","password":"'"${DEMO_ADMIN_PASSWORD:-proton-faces}"'"}' \
+LOGIN=$(curl $CURL_OPTS -sS -X POST -H "content-type: application/json" \
+  -d '{"username":"demo","password":"'"${DEMO_ADMIN_PASSWORD:-protonface-demo-2026-Q9vK3m}"'"}' \
   "$BASE/api/auth/login")
-TOKEN=$(echo "$LOGIN" | python3 -c "import json,sys;print(json.load(sys.stdin).get('access_token',''))")
+TOKEN=$(echo "$LOGIN" | python3 -c "import json,sys;print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || echo "")
 if [[ -z "$TOKEN" ]]; then
   echo "  FAIL  login did not return an access token"
   FAILS=$((FAILS + 1))
@@ -76,18 +101,18 @@ else
 fi
 
 section "/api/status config visibility (authed)"
-STATUS_AUTH=$(curl -sS -H "Authorization: Bearer $TOKEN" "$BASE/api/status")
-HAS_CONFIG_AUTH=$(echo "$STATUS_AUTH" | python3 -c "import json,sys;print('yes' if 'config' in json.load(sys.stdin) else 'no')")
+STATUS_AUTH=$(curl $CURL_OPTS -sS -H "Authorization: Bearer $TOKEN" "$BASE/api/status")
+HAS_CONFIG_AUTH=$(echo "$STATUS_AUTH" | python3 -c "import json,sys;print('yes' if 'config' in json.load(sys.stdin) else 'no')" 2>/dev/null || echo "err")
 check "authed /api/status shows config block" "$HAS_CONFIG_AUTH" "yes"
 
 section "Signed URL flow (prod mode)"
-SIGN_RESP=$(curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+SIGN_RESP=$(curl $CURL_OPTS -sS -X POST -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
   -d '{"paths":["/api/photos/pic-0149/thumb"]}' "$BASE/api/sign")
-SIG_PATH=$(echo "$SIGN_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);u=d.get('urls',[{}])[0];print(f\"{u.get('path','')}?sig={u.get('sig','')}&exp={u.get('exp','')}\")")
+SIG_PATH=$(echo "$SIGN_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);u=d.get('urls',[{}])[0];print(f\"{u.get('path','')}?sig={u.get('sig','')}&exp={u.get('exp','')}\")" 2>/dev/null || echo "")
 if [[ "$SIG_PATH" == *"sig="* && "$SIG_PATH" == *"exp="* ]]; then
   echo "  PASS  /api/sign returned a valid signed URL"
   PASSES=$((PASSES + 1))
-  SIGNED_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE$SIG_PATH")
+  SIGNED_STATUS=$(curl $CURL_OPTS -sS -o /dev/null -w "%{http_code}" "$BASE$SIG_PATH")
   check "signed URL serves the asset" "$SIGNED_STATUS" "200"
 else
   echo "  FAIL  /api/sign did not return a usable signed URL: $SIGN_RESP"
@@ -95,24 +120,23 @@ else
 fi
 
 section "Signed URL tamper detection"
-TAMPERED_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/api/photos/pic-0149/thumb?sig=deadbeef&exp=1")
+TAMPERED_STATUS=$(curl $CURL_OPTS -sS -o /dev/null -w "%{http_code}" "$BASE/api/photos/pic-0149/thumb?sig=deadbeef&exp=1")
 check "tampered sig is rejected" "$TAMPERED_STATUS" "401"
 
 section "Login rate-limit (Traefik middleware)"
 # Burst 12 requests; in prod mode we expect at least one 429 from the
-# pf-ratelimit middleware (5 rpm avg, burst 10). Demo mode has the
-# middleware loaded but the routes might be excluded by Coolify labels —
-# we only flag this as PASS if at least one 429 occurs; otherwise INFO.
+# pf-ratelimit middleware (5 rpm avg, burst 10).
 N429=0
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-  S=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+  S=$(curl $CURL_OPTS -sS -o /dev/null -w "%{http_code}" -X POST \
     -H "content-type: application/json" \
     -d '{"username":"probe","password":"probe"}' \
     "$BASE/api/auth/login")
   if [[ "$S" == "429" ]]; then N429=$((N429 + 1)); fi
 done
 if [[ "$N429" -gt 0 ]]; then
-  check "Traefik rate-limit triggers" "$N429" ">=1"
+  echo "  PASS  Traefik rate-limit triggers                    = $N429 (>0)"
+  PASSES=$((PASSES + 1))
 else
   printf "  INFO  no 429s observed in burst of 12 — Traefik middleware not attached to this route\n"
 fi
