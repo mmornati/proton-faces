@@ -794,35 +794,70 @@ def api_thumb(uid: str):
     return FileResponse(p, media_type="image/webp", headers=_IMMUTABLE_HEADERS)
 
 
+def _sniff_image_type(data: bytes) -> str | None:
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[4:8] == b"ftyp":
+        if data[8:12] in (b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"):
+            return "image/heic"
+        return "video/mp4"
+    if data[:4] == b"\x1a\x45\xdf\xa3":
+        return "video/webm"
+    return None
+
+
 @app.get("/api/photos/{uid}/full")
-def api_full(uid: str):
+def api_full(uid: str, request: Request):
     """Stream the full-resolution photo from Proton (on demand, read-only)."""
     row = get_photo(uid)
     if row is None:
         raise HTTPException(404, "photo not found")
+    range_header = request.headers.get("range")
     try:
-        resp = get_bridge().full_photo(uid)
+        resp = get_bridge().full_photo(uid, range_header=range_header)
     except Exception as exc:
         log.warning("full photo fetch failed for %s: %s", uid, exc)
         raise HTTPException(502, "bridge fetch failed")
-    if resp.status_code != 200:
+    if resp.status_code not in (200, 206):
+        log.warning("full photo bridge error for %s: status %s", uid, resp.status_code)
+        resp.close()
         raise HTTPException(resp.status_code, "bridge error")
     content_type = resp.headers.get("content-type", "application/octet-stream")
     headers = {"Cache-Control": "no-store"}
-    clen = resp.headers.get("content-length")
-    if clen:
-        headers["Content-Length"] = clen
+    for h in ("content-length", "accept-ranges", "content-range"):
+        v = resp.headers.get(h)
+        if v:
+            headers[h] = v
+
+    chunk_iter = resp.iter_bytes(1 << 16)
+    first_chunk = b""
+    if content_type == "application/octet-stream":
+        log.warning("full photo %s returned octet-stream; sniffing magic bytes", uid)
+        try:
+            first_chunk = next(chunk_iter)
+        except StopIteration:
+            pass
+        sniffed = _sniff_image_type(first_chunk)
+        headers["Content-Type"] = sniffed or "image/jpeg"
 
     def gen():
         try:
-            for chunk in resp.iter_bytes(1 << 16):
+            if first_chunk:
+                yield first_chunk
+            for chunk in chunk_iter:
                 yield chunk
         finally:
             resp.close()
 
     return StreamingResponse(
         gen(),
-        media_type=content_type,
+        status_code=resp.status_code,
         headers=headers,
     )
 

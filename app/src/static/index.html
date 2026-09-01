@@ -938,33 +938,54 @@ function fmtDuration(s) {
   return `${m}:${String(sec).padStart(2,"0")}`;
 }
 
-async function openLightbox(uid) {
+async function openLightbox(uid, kindHint) {
   $("#lightbox").classList.add("open");
   const img = $("#lbimg");
   const vid = $("#lbvideo");
+  img.onerror = null;
+  vid.onerror = null;
+  img.onload = null;
+  vid.onloadeddata = null;
+  const fail = () => { hideLoader(); toast("Couldn't load full resolution"); };
+  const loaded = () => hideLoader();
   img.style.display = "none";
   vid.style.display = "none";
   vid.pause();
   vid.removeAttribute("src");
+  showLoader("Loading full resolution…");
+  const isVideo = kindHint === "video";
   try {
     const m = await api(`/api/photos/${uid}/meta`);
     if (m.kind === "video") {
+      vid.onerror = fail;
+      vid.onloadeddata = loaded;
       vid.src = `/api/photos/${uid}/full`;
       vid.style.display = "block";
     } else {
+      img.onerror = fail;
+      img.onload = loaded;
       img.src = `/api/photos/${uid}/full`;
       img.style.display = "block";
     }
   } catch (e) {
-    img.src = `/api/photos/${uid}/full`;
-    img.style.display = "block";
+    if (isVideo) {
+      vid.onerror = fail;
+      vid.onloadeddata = loaded;
+      vid.src = `/api/photos/${uid}/full`;
+      vid.style.display = "block";
+    } else {
+      img.onerror = fail;
+      img.onload = loaded;
+      img.src = `/api/photos/${uid}/full`;
+      img.style.display = "block";
+    }
   }
 }
 
 async function openDetail(uid) {
   $("#detail").classList.add("open");
   $("#dname").textContent = uid;
-  $("#dfull").onclick = () => openLightbox(uid);
+  $("#dfull").onclick = () => openLightbox(uid, meta?.kind);
   let meta;
   try {
     meta = await api(`/api/photos/${uid}/meta`);
@@ -988,14 +1009,23 @@ async function openDetail(uid) {
 
   const img = $("#dimg");
   const vid = $("#dvideo");
+  img.onerror = null;
+  vid.onerror = null;
+  img.onload = null;
+  vid.onloadeddata = null;
   img.style.display = "none";
   vid.style.display = "none";
   vid.pause();
   vid.removeAttribute("src");
   if (meta?.kind === "video") {
+    const fail = () => { hideLoader(); toast("Couldn't load full resolution"); };
+    vid.onerror = fail;
+    vid.onloadeddata = () => hideLoader();
+    showLoader("Loading video…");
     vid.src = `/api/photos/${uid}/full`;
     vid.style.display = "block";
   } else {
+    img.onerror = () => toast("Couldn't load image");
     img.src = `/api/photos/${uid}/thumb`;
     img.dataset.uid = uid;
     img.style.display = "block";

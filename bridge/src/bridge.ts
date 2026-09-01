@@ -18,6 +18,7 @@ import { init } from './init';
 import type { PhotoNode } from '@protontech/drive-sdk';
 import { ThumbnailType } from '@protontech/drive-sdk';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { mkstemp, openSync, fsyncSync, closeSync } from 'node:fs';
 import path from 'node:path';
 
 const PORT = Number(process.env.PORT ?? 8090);
@@ -183,21 +184,11 @@ async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, body: unkn
     return Response.json({ ok: true, results });
 }
 
-async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, url: URL): Promise<Response> {
+async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, url: URL, request: Request): Promise<Response> {
     const uid = url.pathname.split('/')[2];
     if (!uid) {
         return Response.json({ ok: false, error: 'Missing photo uid' }, { status: 400 });
     }
-
-    // Download to a temp file, then hand off to Bun.file() so HTTP Range
-    // requests work (HTML5 <video> requires this for seeking — without
-    // Range support the browser must download the whole file before play).
-    //
-    // We accept the trade-off of writing the full bytes to disk once: videos
-    // are typically tens-to-hundreds of MB and the indexer downloads them too
-    // for poster extraction, so the bridge's temp is no worse than that.
-    const tmp = path.join(DATA_DIR, 'work', `${uid}.full`);
-    await mkdir(path.dirname(tmp), { recursive: true });
 
     // Resolve the real MIME type from the node (preferred) so the browser
     // picks the right codec instead of guessing from .webp/.jpg extensions.
@@ -210,20 +201,155 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, url: URL):
             break;
         }
     } catch {
-        // fall through to octet-stream; the client will still get bytes.
+        // fall through to a safe default; the client will still get bytes.
     }
 
-    const downloader = await ctx.photosSdk.getFileDownloader(uid);
-    await downloader.downloadToPath(tmp);
+    const isVideo = mediaType?.startsWith('video/') ?? false;
+    const contentType = mediaType ?? (isVideo ? 'application/octet-stream' : 'image/jpeg');
 
-    const file = Bun.file(tmp);
-    const headers: Record<string, string> = {
-        'Cache-Control': 'no-store',
-        'X-Photo-Uid': uid,
-        'Accept-Ranges': 'bytes',
-    };
-    if (mediaType) headers['Content-Type'] = mediaType;
-    return new Response(file, { headers });
+    const downloader = await ctx.photosSdk.getFileDownloader(uid);
+
+    if (!isVideo) {
+        // Images stream live straight from Proton — no temp file on disk. This
+        // avoids the clobber/partial-write races on a shared temp path that
+        // broke concurrent opens (and is the regression this replaces) and adds
+        // only download latency, no disk round-trip. <img> doesn't need Range.
+        //
+        // NOTE: we deliberately do NOT send Content-Length — getClaimedSizeInBytes()
+        // can differ from the actually-decrypted byte count, and a mismatched
+        // Content-Length makes clients think the stream was truncated. Chunked
+        // transfer avoids that.
+        const stream = new ReadableStream<Uint8Array>({
+            async start(controller) {
+                const writable = new WritableStream<Uint8Array>({
+                    write(chunk) {
+                        controller.enqueue(chunk);
+                    },
+                    close() {
+                        controller.close();
+                    },
+                    abort(err) {
+                        controller.error(err);
+                    },
+                });
+
+                try {
+                    const dlController = downloader.downloadToStream(writable);
+                    await dlController.completion();
+                    controller.close();
+                } catch (err) {
+                    controller.error(err);
+                }
+            },
+        });
+
+        return new Response(stream, {
+            headers: {
+                'Content-Type': contentType,
+                'Cache-Control': 'no-store',
+                'X-Photo-Uid': uid,
+            },
+        });
+    }
+
+    // Videos need HTTP Range for seeking (HTML5 <video> requires it — without
+    // Range support the browser must download the whole file before play). We
+    // buffer the decrypted bytes to a per-request temp file and stream it back,
+    // honoring `Range` so the player only pulls the bytes it needs.
+    //
+    // The path is unique per request (mkstemp) so concurrent opens of the same
+    // uid never clobber each other. We fsync + size-check before serving so a
+    // partially-written file (client abort) is never handed out, and we unlink
+    // the temp file once the response body finishes (or the client disconnects).
+    const workDir = path.join(DATA_DIR, 'work');
+    await mkdir(workDir, { recursive: true });
+    const [mkfd, tmp] = mkstemp(path.join(workDir, `${uid}-XXXXXX.full`));
+    try {
+        closeSync(mkfd); // mkstemp created the file; downloadToPath writes it via its own fd
+    } catch { /* already closed */ }
+
+    try {
+        await downloader.downloadToPath(tmp);
+
+        const ff = openSync(tmp, 'r');
+        try {
+            fsyncSync(ff);
+        } finally {
+            closeSync(ff);
+        }
+
+        const file = Bun.file(tmp);
+        const size = (await file.stat()).size;
+        if (size === 0) {
+            throw new Error('downloaded video is empty');
+        }
+
+        // Parse a single `Range: bytes=start-end | start- | -suffix` header so
+        // the browser can seek. Unsupported forms fall back to serving the full
+        // body (200), matching common static-server behavior.
+        let start = 0;
+        let end = size - 1;
+        let status = 200;
+        const rangeHeader = request.headers.get('range');
+        if (rangeHeader) {
+            const m = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+            if (m && (m[1] || m[2])) {
+                if (m[1]) {
+                    start = parseInt(m[1], 10);
+                    if (m[2]) end = parseInt(m[2], 10);
+                } else {
+                    start = Math.max(0, size - parseInt(m[2], 10));
+                }
+                if (start >= size) {
+                    await file.unlink();
+                    return new Response(null, {
+                        status: 416,
+                        headers: { 'Content-Range': `bytes */${size}` },
+                    });
+                }
+                end = Math.min(end, size - 1);
+                status = 206;
+            }
+        }
+
+        const length = end - start + 1;
+        const headers: Record<string, string> = {
+            'Cache-Control': 'no-store',
+            'X-Photo-Uid': uid,
+            'Content-Type': contentType,
+            'Content-Length': String(length),
+            'Accept-Ranges': 'bytes',
+        };
+        if (status === 206) headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+
+        if (request.method === 'HEAD') {
+            await file.unlink();
+            return new Response(null, { status, headers });
+        }
+
+        const body = new ReadableStream<Uint8Array>({
+            async start(controller) {
+                const reader = file.slice(start, end + 1).stream().getReader();
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        controller.enqueue(value);
+                    }
+                    controller.close();
+                } catch (err) {
+                    controller.error(err);
+                } finally {
+                    await file.unlink().catch(() => {});
+                }
+            },
+        });
+
+        return new Response(body, { status, headers });
+    } catch (err) {
+        await Bun.file(tmp).unlink().catch(() => {});
+        return Response.json({ ok: false, error: String(err) }, { status: 502 });
+    }
 }
 
 async function main(): Promise<void> {
@@ -268,7 +394,7 @@ async function main(): Promise<void> {
                     return await fetchThumbnails(ctx, await request.json());
                 }
                 if (url.pathname.startsWith('/photo/') && url.pathname.endsWith('/full')) {
-                    return await streamFullPhoto(ctx, url);
+                    return await streamFullPhoto(ctx, url, request);
                 }
                 return Response.json({ ok: false, error: 'Not found' }, { status: 404 });
             } catch (error) {
