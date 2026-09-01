@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 40" fill="none">
+  <g transform="translate(4 4)">
+    <circle cx="16" cy="16" r="15" stroke="#F59E0B" stroke-width="3"/>
+    <circle cx="16" cy="16" r="7" fill="#F59E0B"/>
+    <circle cx="16" cy="16" r="3" fill="#0F1419"/>
+  </g>
+  <text x="44" y="27" font-family="Inter, system-ui, sans-serif" font-weight="700" font-size="20" fill="currentColor" letter-spacing="-0.5">
+    Proton Faces
+  </text>
+</svg>
