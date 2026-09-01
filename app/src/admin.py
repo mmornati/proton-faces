@@ -338,8 +338,68 @@ def _bridge_reachability() -> dict:
                 "detail": str(exc)}
 
 
-def run_checks() -> dict:
-    """Run every server check; return the report."""
+def _bridge_cache_health(recent_full_res_failures: int = 0) -> dict:
+    """Inspect the on-disk SDK cache via the bridge's GET /cache endpoint.
+
+    Flags `stale` when:
+      - the bridge is reachable,
+      - the newest cache file is older than `settings.bridge_cache_stale_sec`,
+      - AND the `/api/photos/{uid}/full` endpoint has been failing recently
+        (the getFileDownloader-waitForCondition2 hang signature).
+
+    Cache age alone is NOT actionable — an idle bridge may not touch its
+    caches for hours. Combining with the full-res failure count avoids
+    false positives while still catching the real "stale cache after a
+    Proton incident" condition.
+
+    On any bridge/cache lookup error we return `ok=False` with the error
+    in `detail` so the admin UI surfaces the failure rather than silently
+    skipping the check.
+    """
+    from bridge_client import BridgeClient  # type: ignore
+    name = "Bridge cache"
+    try:
+        bc = BridgeClient(settings.bridge_url)
+        status = bc.cache_status()
+    except Exception as exc:
+        return {"name": name, "ok": False, "status": "down",
+                "detail": f"cache lookup failed: {exc}"}
+
+    files = status.get("files") or []
+    if not files:
+        return {"name": name, "ok": True, "status": "empty",
+                "detail": "no SDK cache files reported by bridge"}
+
+    try:
+        now = time.time()
+        newest_mtime = max(f.get("mtime") or 0 for f in files)
+        age = int(now - newest_mtime)
+        ages_str = ", ".join(
+            f"{f['name']}={int(now - (f.get('mtime') or 0))}s"
+            for f in files
+        )
+    except Exception as exc:
+        return {"name": name, "ok": False, "status": "error",
+                "detail": f"malformed cache report: {exc}"}
+
+    stale = age > settings.bridge_cache_stale_sec and recent_full_res_failures > 0
+    detail = f"newest {age}s old; recent /full failures={recent_full_res_failures}; {ages_str}"
+    return {
+        "name": name,
+        "ok": not stale,
+        "status": "stale" if stale else "ok",
+        "detail": detail,
+    }
+
+
+def run_checks(recent_full_res_failures: int = 0) -> dict:
+    """Run every server check; return the report.
+
+    `recent_full_res_failures` is supplied by the API layer (count of /full
+    proxy failures in the last 15 minutes). It feeds the bridge-cache
+    staleness check so an idle bridge isn't flagged just because its
+    caches happen to be old.
+    """
     checks = [
         _db_integrity(),
         _disk_space(),
@@ -348,6 +408,7 @@ def run_checks() -> dict:
         _data_writable(),
         _indexer_liveness(),
         _bridge_reachability(),
+        _bridge_cache_health(recent_full_res_failures=recent_full_res_failures),
     ]
     passed = sum(1 for c in checks if c["ok"])
     return {"checks": checks, "passed": passed, "total": len(checks), "ts": time.time()}

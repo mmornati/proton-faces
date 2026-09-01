@@ -409,6 +409,7 @@ Environment variables (see `.env.example`):
 | `GPS_INTERVAL`        | `21600`                    | Seconds between GPS/place enrichment runs   |
 | `FACE_SIM_THRESHOLD`  | `0.45`                     | Cosine similarity for auto-tagging faces    |
 | `MIN_CLUSTER_SIZE`    | `2`                        | Minimum faces to form a person cluster      |
+| `BRIDGE_CACHE_STALE_SEC` | `21600` (6 h)          | Age (seconds) at which the on-disk Proton SDK cache is flagged "stale" by the admin Server-checks panel. Only fires when full-res downloads are also failing (the getFileDownloader hang signature). |
 | `BRIDGE_URL`          | `http://proton-bridge:8090`| Bridge container address                    |
 | `MODELS_DIR`          | `DATA_DIR/models`          | Where ML models are stored                  |
 | `LOG_LEVEL`           | `INFO`                     | Logging verbosity                           |

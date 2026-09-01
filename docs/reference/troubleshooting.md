@@ -48,6 +48,58 @@ scripts/export-session.sh
 docker compose restart proton-bridge
 ```
 
+### Full-resolution downloads hang (stale Proton SDK cache)
+
+**Symptom:** `/api/photos/{uid}/full` requests take ~30 seconds and return
+HTTP 504. Other bridge endpoints (`/health`, `/timeline`, `/thumbnails`)
+keep working, and `Bridge reachable` stays `ok` in the admin checks. The
+indexer's full-res loop spins on the same uids forever; videos pile up in
+`status='full'`. `docker compose logs proton-bridge` shows
+`AbortError` or `waitForCondition2` from `getFileDownloader`.
+
+**Root cause:** The Proton SDK persists an entity cache
+(`cache-entities.sqlite`) and a crypto cache (`cache-crypto.sqlite`)
+under `DATA_DIR` (mounted from `${DATA_MOUNT}` on the host). After a
+Proton-side incident that reshuffles node keys — e.g. the 2026-08-27
+Frankfurt cooling failure or the 2026-09-01 partial outage — those
+caches can go stale. The caches survive container restarts (they live on
+the mounted volume), so the hang returns on every bridge boot until the
+caches are cleared and the SDK fetches fresh state. Nothing in the SDK
+auto-invalidates this scenario, so a manual clear is required.
+
+**One-click fix (admin UI):**
+
+1. Open the admin modal → **Server checks**.
+2. Look at the **Bridge cache** row. If it's `stale`, click
+   **Clear bridge cache**. The bridge unlinks its cache files and exits;
+   compose's `restart: unless-stopped` policy respawns it ~5-10 seconds
+   later with a fresh cache. Auth-session state is preserved.
+3. Click **Run checks now** to confirm `Bridge cache` is back to `ok`
+   and that `/api/photos/{uid}/full` returns 200 again.
+
+**Manual fix (SSH):**
+
+```bash
+cd /home/mmornati/proton-faces
+docker compose stop proton-bridge
+docker compose rm -f proton-bridge
+# Move aside (safer than delete — you can inspect if needed)
+mv "${DATA_MOUNT:-data}/cache-crypto.sqlite"* "${DATA_MOUNT:-data}/" 2>/dev/null || true
+# Or delete outright (the SDK recreates them on startup):
+#   rm -f "${DATA_MOUNT:-data}/cache-crypto.sqlite"*
+#   rm -f "${DATA_MOUNT:-data}/cache-entities.sqlite"*
+docker compose up -d proton-bridge
+```
+
+The session file (`auth-session.json`) lives in the same directory but is
+NOT named `cache-*`, so it survives both the one-click and manual fixes
+— no re-authentication needed.
+
+**Tuning:** the staleness threshold in the admin check is
+`BRIDGE_CACHE_STALE_SEC` (default `21600` = 6 h). Lower it to surface
+stale caches earlier; raise it if your bridge is legitimately idle for
+longer than 6 h between requests.
+
 ### Demo mode won't start: "fixture.json missing"
 
 You deleted or moved `app/src/demo_assets/`. Re-fetch:

@@ -207,6 +207,18 @@ class DemoBridge:
     def close(self) -> None:
         pass  # stateless
 
+    # ----- bridge SDK cache management (admin tooling) -----
+    #
+    # DemoBridge is stateless so it has no SDK caches to report on or
+    # clear. Mirror the surface so the admin check + clear button work in
+    # demo mode without branching everywhere.
+
+    def cache_status(self) -> dict:
+        return {"ok": True, "files": [], "uptimeSec": 0, "demo": True}
+
+    def clear_cache(self) -> dict:
+        return {"ok": True, "removed": [], "demo": True}
+
 
 # --- Auto-create a default admin on first start ----------------------------
 

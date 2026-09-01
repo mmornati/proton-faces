@@ -32,7 +32,7 @@ from auth import (
      demo_disable_backups,
 )
 from auth import access_ttl as auth_access_ttl
-from bridge_client import get_bridge
+from bridge_client import get_bridge, BridgeTransientError
 from clip import embed_text
 from config import settings
 from faces import embed_query_face
@@ -137,6 +137,33 @@ _FULL_TIMEOUT_SEC = 30.0
 _full_executor = ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="full-photo"
 )
+
+# Rolling log of /full proxy failures (504 timeouts + 502 bridge errors +
+# BridgeTransientErrors). The admin "Bridge cache" check consults this so
+# that an idle bridge isn't flagged just because its SDK caches happen to
+# be old — we only flag stale when full-res is also failing, which is the
+# signature of the getFileDownloader-waitForCondition2 hang.
+_FULL_RES_FAILURE_WINDOW_SEC = 15 * 60
+_full_res_failure_ts: list[float] = []
+_FULL_RES_FAILURE_LOG_LOCK = threading.Lock()
+
+
+def _record_full_res_failure() -> None:
+    cutoff = time.time() - _FULL_RES_FAILURE_WINDOW_SEC
+    with _FULL_RES_FAILURE_LOG_LOCK:
+        _full_res_failure_ts.append(time.time())
+        # prune in place — cheap because the list stays tiny
+        if _full_res_failure_ts and _full_res_failure_ts[0] < cutoff:
+            _full_res_failure_ts[:] = [t for t in _full_res_failure_ts if t >= cutoff]
+
+
+def _recent_full_res_failures() -> int:
+    cutoff = time.time() - _FULL_RES_FAILURE_WINDOW_SEC
+    with _FULL_RES_FAILURE_LOG_LOCK:
+        # prune as we read so memory stays bounded
+        while _full_res_failure_ts and _full_res_failure_ts[0] < cutoff:
+            _full_res_failure_ts.pop(0)
+        return len(_full_res_failure_ts)
 
 # In-memory CLIP matrix cache: avoids rebuilding an 88 MB numpy stack on
 # every text-search request. Rebuilds only when the clip row count changes
@@ -959,12 +986,32 @@ def api_full(uid: str, request: Request,
             "full photo timed out after %.1fs for %s; returning 504",
             _FULL_TIMEOUT_SEC, uid,
         )
+        _record_full_res_failure()
         raise HTTPException(504, "full photo fetch timed out — try again later")
+    except BridgeTransientError as exc:
+        # 429/502/503 from the bridge — transient. Record for the admin
+        # cache check but don't count this against the photo's status (the
+        # indexer's fullres loop already handles its own retries).
+        log.warning(
+            "full photo bridge transient for %s: %s", uid, exc,
+        )
+        _record_full_res_failure()
+        # `exc.args[0]` carries the "{status} {message} (retry_after=Ns)"
+        # string from BridgeTransientError.__init__; use it as the detail
+        # so the client sees something more informative than a bare code.
+        detail = exc.args[0] if exc.args else "bridge transient error"
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=detail,
+            headers={"Retry-After": str(int(exc.retry_after_sec or 1))},
+        )
     except Exception as exc:
         log.warning("full photo fetch failed for %s: %s", uid, exc)
+        _record_full_res_failure()
         raise HTTPException(502, "bridge fetch failed")
     if resp.status_code not in (200, 206):
         log.warning("full photo bridge error for %s: status %s", uid, resp.status_code)
+        _record_full_res_failure()
         resp.close()
         raise HTTPException(resp.status_code, "bridge error")
     content_type = resp.headers.get("content-type", "application/octet-stream")
@@ -1732,7 +1779,37 @@ def api_admin_set_schedule(body: dict = Body(...),
 
 @app.post("/api/admin/checks")
 def api_admin_checks(_: CurrentUser = Depends(require_role("admin"))):
-    return admin.run_checks()
+    return admin.run_checks(recent_full_res_failures=_recent_full_res_failures())
+
+
+# --- admin: bridge SDK cache management -----------------------------------
+#
+# These let an admin recover from a stale Proton SDK cache without SSH.
+# The bridge unlinks its on-disk cache files and exits with code 1; compose
+# `restart: unless-stopped` then respawns the bridge with a fresh cache.
+# See docs/reference/troubleshooting.md for the full story.
+
+@app.get("/api/admin/bridge/cache")
+def api_admin_bridge_cache_status(_: CurrentUser = Depends(require_role("admin"))):
+    try:
+        return get_bridge().cache_status()
+    except Exception as exc:
+        raise HTTPException(502, f"bridge cache lookup failed: {exc}")
+
+
+@app.post("/api/admin/bridge/cache/clear")
+def api_admin_bridge_cache_clear(_: CurrentUser = Depends(require_role("admin"))):
+    """Tell the bridge to clear its SDK cache and restart itself.
+
+    Returns immediately with the list of files removed (or the error from
+    the bridge). The bridge exits ~500 ms after responding, so a follow-up
+    GET /api/admin/bridge/cache will fail until compose has restarted the
+    container (~5-10 s). That's the expected signal of a successful clear.
+    """
+    try:
+        return get_bridge().clear_cache()
+    except Exception as exc:
+        raise HTTPException(502, f"bridge cache clear failed: {exc}")
 
 
 # --- static UI -------------------------------------------------------------
