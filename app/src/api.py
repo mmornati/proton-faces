@@ -21,10 +21,14 @@ from auth import (
     CurrentUser,
     hash_password,
     login,
-    refresh as refresh_tokens,
-    require_role,
-    require_user,
-    ROLE_RANK,
+     refresh as refresh_tokens,
+     require_role,
+     require_user,
+     ROLE_RANK,
+     signed_or_token,
+     make_signed_token,
+     allow_public_thumbs,
+     demo_disable_backups,
 )
 from auth import access_ttl as auth_access_ttl
 from bridge_client import get_bridge
@@ -124,6 +128,20 @@ _crop_lock = threading.Lock()
 _IMMUTABLE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
 
 
+def _extract_bearer(request: Request) -> str | None:
+    """Pull the bearer token out of the Authorization header, if present.
+
+    Used by endpoints that need to know "is there any auth here?" without
+    going through FastAPI's dependency machinery (e.g. `/api/status` to
+    decide whether to include the config block).
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None
+    token = auth.split(None, 1)[1].strip()
+    return token or None
+
+
 def _invalidate_dups_cache() -> None:
     global _dups_cache
     _dups_cache = None
@@ -180,11 +198,25 @@ def _drop_person_crops(person_id: int) -> None:
 
 # --- helpers ---------------------------------------------------------------
 
+def _sign_if_needed(url: str | None) -> str | None:
+    """Append ?sig=&exp= to a binary endpoint URL when prod-mode is on.
+
+    Returns the URL unchanged when DEMO_ALLOW_PUBLIC_THUMBS=1 (or when the
+    URL is None). Used by every endpoint that hands a /thumb /full /cover
+    /crop URL back to the front-end so <img src=...> just works.
+    """
+    if not url or allow_public_thumbs():
+        return url
+    sig, exp = make_signed_token(url, ttl_seconds=300)
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}sig={sig}&exp={exp}"
+
+
 def _row_to_dict(row) -> dict:
     d = dict(row)
     d.pop("embedding", None)
     if d.get("thumb_path"):
-        d["thumb_url"] = f"/api/photos/{d['uid']}/thumb"
+        d["thumb_url"] = _sign_if_needed(f"/api/photos/{d['uid']}/thumb")
     else:
         d["thumb_url"] = None
     mt = d.get("media_type") or ""
@@ -309,6 +341,42 @@ def api_me(user: CurrentUser = Depends(require_user)):
 def api_limits():
     """Public — UI uses this to render the login screen with the right labels."""
     return {"min_username": 2, "min_password": 8}
+
+
+@app.post("/api/sign")
+def api_sign(request: Request,
+              body: dict = Body(...),
+              user: CurrentUser = Depends(require_user)):
+    """Issue short-lived signed URLs for binary endpoints (/thumb /full /cover /crop).
+
+    Body: {"paths": ["/api/photos/<uid>/thumb", "/api/photos/<uid>/full", ...]}
+    Returns: {"urls": [{"path": "...", "sig": "...", "exp": 1234567890}, ...]}
+
+    The signed URL is world-readable for ~5 minutes (configurable). This lets
+    the front-end embed <img src="/api/photos/{uid}/thumb?sig=...&exp=...">
+    without ever needing to attach an Authorization header to a static tag.
+
+    In DEMO_ALLOW_PUBLIC_THUMBS=1 mode, signing is optional; the binary
+    endpoints stay world-readable even without a signature. In prod mode
+    (DEMO_ALLOW_PUBLIC_THUMBS=0), signing is the only way to embed <img>
+    assets without a same-origin fetch first.
+    """
+    paths = body.get("paths")
+    if not isinstance(paths, list) or not paths:
+        raise HTTPException(400, "paths must be a non-empty list")
+    ttl = 300
+    if isinstance(body.get("ttl"), int):
+        ttl = max(30, min(3600, body["ttl"]))
+    out = []
+    for p in paths:
+        if not isinstance(p, str) or not p.startswith("/api/"):
+            raise HTTPException(400, f"invalid path: {p!r}")
+        # Whitelist the binary endpoint suffixes.
+        if not any(p.endswith(s) for s in ("/thumb", "/full", "/cover", "/crop")):
+            raise HTTPException(400, f"path not signable: {p!r}")
+        sig, exp = make_signed_token(p, ttl_seconds=ttl)
+        out.append({"path": p, "sig": sig, "exp": exp})
+    return {"urls": out, "ttl": ttl}
 
 
 # --- public status (so the login screen can show "bridge online" before auth) ---
@@ -478,12 +546,16 @@ def _merged_indexer_state() -> dict:
 
 
 @app.get("/api/status", dependencies=[])
-def api_status() -> dict:
+def api_status(request: Request) -> dict:
     """Aggregated status snapshot for the bottom status bar / details overlay.
 
     Combines bridge health, indexer stats, runtime state (thread liveness,
     last-sync timestamps, pending queue), and data-dir disk usage. Designed
     to be cheap to poll every few seconds.
+
+    The `config` block leaks operational details (sync_interval, workers,
+    face_sim_threshold, photos_dir) useful for follow-on recon. Hide it
+    behind auth: anonymous callers get everything except `config`.
     """
     try:
         b = get_bridge().health()
@@ -497,7 +569,7 @@ def api_status() -> dict:
     rt = _merged_indexer_state()
     thumbs_bytes = _cached_dir_size(settings.thumb_dir)
     db_bytes = settings.db_path.stat().st_size if settings.db_path.exists() else 0
-    return {
+    out = {
         "now": time.time(),
         "bridge": {"reachable": bridge_ok, "loggedIn": bridge_logged_in},
         "stats": s,
@@ -506,16 +578,22 @@ def api_status() -> dict:
             "thumb_dir_bytes": thumbs_bytes,
             "db_bytes": db_bytes,
         },
-        "config": {
-            "sync_interval": settings.sync_interval,
-            "cluster_interval": settings.cluster_interval,
-            "gps_interval": settings.gps_interval,
-            "workers": settings.workers,
-            "face_sim_threshold": settings.face_sim_threshold,
-            "min_cluster_size": settings.min_cluster_size,
-            "photos_dir": settings.photos_dir or None,
-        },
     }
+    # Only authenticated callers see the operational config block.
+    try:
+        if _extract_bearer(request):
+            out["config"] = {
+                "sync_interval": settings.sync_interval,
+                "cluster_interval": settings.cluster_interval,
+                "gps_interval": settings.gps_interval,
+                "workers": settings.workers,
+                "face_sim_threshold": settings.face_sim_threshold,
+                "min_cluster_size": settings.min_cluster_size,
+                "photos_dir": settings.photos_dir or None,
+            }
+    except Exception:
+        pass
+    return out
 
 
 # --- photos ----------------------------------------------------------------
@@ -668,7 +746,7 @@ def api_albums():
                 "photo_count": r["photo_count"] or 0,
                 "start_ts": r["start_ts"],
                 "end_ts": r["end_ts"],
-                "cover_url": (
+                "cover_url": _sign_if_needed(
                     f"/api/photos/{r['cover_uid']}/thumb" if r["cover_uid"] else None
                 ),
             }
@@ -706,7 +784,9 @@ def api_map(limit: int = 1000):
                 "count": r["photo_count"],
                 "lat": r["lat"],
                 "lng": r["lng"],
-                "thumb_url": f"/api/photos/{r['cover_uid']}/thumb" if r["cover_uid"] else None,
+                "thumb_url": _sign_if_needed(
+                    f"/api/photos/{r['cover_uid']}/thumb" if r["cover_uid"] else None
+                ),
             }
         )
     return {"markers": markers}
@@ -784,7 +864,8 @@ def api_photo_meta(uid: str, user: CurrentUser = Depends(require_user)):
 
 
 @app.get("/api/photos/{uid}/thumb")
-def api_thumb(uid: str):
+def api_thumb(uid: str, request: Request,
+               _: object = Depends(signed_or_token)):
     row = get_photo(uid)
     if row is None or not row["thumb_path"]:
         raise HTTPException(404, "no thumbnail")
@@ -813,7 +894,8 @@ def _sniff_image_type(data: bytes) -> str | None:
 
 
 @app.get("/api/photos/{uid}/full")
-def api_full(uid: str, request: Request):
+def api_full(uid: str, request: Request,
+              _: object = Depends(signed_or_token)):
     """Stream the full-resolution photo from Proton (on demand, read-only)."""
     row = get_photo(uid)
     if row is None:
@@ -890,7 +972,7 @@ def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
             "cover_face_id": r["cover_face_id"],
             "face_count": r["face_count"],
             "photo_count": r["photo_count"],
-            "cover_url": (
+            "cover_url": _sign_if_needed(
                 f"/api/people/{r['id']}/cover" if r["cover_face_id"] else None
             ),
         }
@@ -902,7 +984,8 @@ def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
 
 
 @app.get("/api/people/{person_id}/cover")
-def api_person_cover(person_id: int):
+def api_person_cover(person_id: int,
+                      _: object = Depends(signed_or_token)):
     person = get_person(person_id)
     if person is None:
         raise HTTPException(404, "person not found")
@@ -1015,8 +1098,8 @@ def api_unassigned_faces(limit: int = 500):
             "id": r["id"],
             "photo_uid": r["photo_uid"],
             "confidence": r["confidence"],
-            "thumb_url": f"/api/photos/{r['photo_uid']}/thumb",
-            "crop_url": f"/api/faces/{r['id']}/crop",
+            "thumb_url": _sign_if_needed(f"/api/photos/{r['photo_uid']}/thumb"),
+            "crop_url": _sign_if_needed(f"/api/faces/{r['id']}/crop"),
         }
         for r in rows
     ]
@@ -1024,7 +1107,8 @@ def api_unassigned_faces(limit: int = 500):
 
 
 @app.get("/api/faces/{face_id}/crop")
-def api_face_crop(face_id: int):
+def api_face_crop(face_id: int,
+                   _: object = Depends(signed_or_token)):
     cache_path = _crop_cache_path(face_id)
     if not cache_path.exists():
         crop = _face_crop_bytes(face_id)
@@ -1221,32 +1305,32 @@ def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
     hits = np.argsort(-sims[mask])[:limit]
     dups = []
     for k in hits:
-        i = idx[iu[0][mask][k]]
-        j = idx[iu[1][mask][k]]
-        a, b = people[i], people[j]
-        dups.append(
-            {
-                "similarity": round(float(sims[mask][k]), 4),
-                "a": {
-                    "id": a["id"],
-                    "name": a["name"],
-                    "photo_count": a["photo_count"],
-                    "face_count": a["face_count"],
-                    "cover_url": (
-                        f"/api/people/{a['id']}/cover" if a["cover_face_id"] else None
-                    ),
-                },
-                "b": {
-                    "id": b["id"],
-                    "name": b["name"],
-                    "photo_count": b["photo_count"],
-                    "face_count": b["face_count"],
-                    "cover_url": (
-                        f"/api/people/{b['id']}/cover" if b["cover_face_id"] else None
-                    ),
-                },
-            }
-        )
+            i = idx[iu[0][mask][k]]
+            j = idx[iu[1][mask][k]]
+            a, b = people[i], people[j]
+            dups.append(
+                {
+                    "similarity": round(float(sims[mask][k]), 4),
+                    "a": {
+                        "id": a["id"],
+                        "name": a["name"],
+                        "photo_count": a["photo_count"],
+                        "face_count": a["face_count"],
+                        "cover_url": _sign_if_needed(
+                            f"/api/people/{a['id']}/cover" if a["cover_face_id"] else None
+                        ),
+                    },
+                    "b": {
+                        "id": b["id"],
+                        "name": b["name"],
+                        "photo_count": b["photo_count"],
+                        "face_count": b["face_count"],
+                        "cover_url": _sign_if_needed(
+                            f"/api/people/{b['id']}/cover" if b["cover_face_id"] else None
+                        ),
+                    },
+                }
+            )
     resp = {"duplicates": dups}
     _dups_cache = (now, resp)
     return resp
@@ -1276,7 +1360,9 @@ def api_person_map(person_id: int, limit: int = 500):
             "count": r["photo_count"],
             "lat": r["lat"],
             "lng": r["lng"],
-            "thumb_url": f"/api/photos/{r['cover_uid']}/thumb" if r["cover_uid"] else None,
+            "thumb_url": _sign_if_needed(
+                f"/api/photos/{r['cover_uid']}/thumb" if r["cover_uid"] else None
+            ),
         })
     return {"markers": markers}
 
@@ -1481,6 +1567,8 @@ def api_admin_overview(_: CurrentUser = Depends(require_role("admin"))):
 @app.post("/api/admin/backup")
 def api_admin_backup(_: CurrentUser = Depends(require_role("admin"))):
     """Trigger a manual snapshot now."""
+    if demo_disable_backups():
+        raise HTTPException(404, "not found")
     try:
         res = admin.snapshot_backup()
     except FileNotFoundError as exc:
@@ -1490,11 +1578,15 @@ def api_admin_backup(_: CurrentUser = Depends(require_role("admin"))):
 
 @app.get("/api/admin/backups")
 def api_admin_list_backups(_: CurrentUser = Depends(require_role("admin"))):
+    if demo_disable_backups():
+        raise HTTPException(404, "not found")
     return admin.list_backups()
 
 
 @app.delete("/api/admin/backups/{name}")
 def api_admin_delete_backup(name: str, _: CurrentUser = Depends(require_role("admin"))):
+    if demo_disable_backups():
+        raise HTTPException(404, "not found")
     try:
         return admin.delete_backup(name)
     except (ValueError, FileNotFoundError) as exc:
@@ -1504,6 +1596,8 @@ def api_admin_delete_backup(name: str, _: CurrentUser = Depends(require_role("ad
 @app.post("/api/admin/backups/prune")
 def api_admin_prune_backups(body: dict = Body(default={}),
                             _: CurrentUser = Depends(require_role("admin"))):
+    if demo_disable_backups():
+        raise HTTPException(404, "not found")
     try:
         res = admin.prune_backups(body.get("keep"))
     except (TypeError, ValueError) as exc:
