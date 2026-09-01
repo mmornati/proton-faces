@@ -68,6 +68,14 @@ section "Reachability"
 HEALTH=$(curl $CURL_OPTS -sS -o /dev/null -w "%{http_code}" "$BASE/api/health")
 check "GET /api/health" "$HEALTH" "200"
 
+section "API docs hidden (P-01)"
+# /docs, /redoc, /openapi.json should be 404 in production with
+# EXPOSE_API_DOCS unset (default in DEMO_HARDENING_MODE).
+for ep in /docs /redoc /openapi.json; do
+  CODE=$(curl $CURL_OPTS -sS -o /dev/null -w "%{http_code}" "$BASE$ep")
+  check "GET $ep hidden" "$CODE" "404"
+done
+
 section "Traefik security headers (Route A middleware)"
 HEADERS=$(curl $CURL_OPTS -sSI "$BASE/")
 STS=$(echo "$HEADERS" | grep -i "^strict-transport-security:" | tr -d '\r' | head -1)
@@ -139,6 +147,61 @@ if [[ "$N429" -gt 0 ]]; then
   PASSES=$((PASSES + 1))
 else
   printf "  INFO  no 429s observed in burst of 12 — Traefik middleware not attached to this route\n"
+fi
+
+section "P-04 password change revokes other tokens"
+# Create a victim user, log in as them, change their password as admin,
+# then verify their old tokens are rejected.
+VICTIM_USER="pentest-victim-$(date +%s)"
+VICTIM_PW="victimpass123"
+VICTIM_NEW_PW="newvictimpass456"
+CREATED=$(curl $CURL_OPTS -sS -X POST -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d "{\"username\":\"$VICTIM_USER\",\"password\":\"$VICTIM_PW\",\"role\":\"read\"}" \
+  "$BASE/api/admin/users")
+VICTIM_ID=$(echo "$CREATED" | python3 -c "import json,sys;print(json.load(sys.stdin).get('user',{}).get('id',''))" 2>/dev/null || echo "")
+if [[ -z "$VICTIM_ID" ]]; then
+  echo "  SKIP  could not create victim user (admin endpoint returned: $CREATED)"
+else
+  VICTIM_LOGIN=$(curl $CURL_OPTS -sS -X POST -H "content-type: application/json" \
+    -d "{\"username\":\"$VICTIM_USER\",\"password\":\"$VICTIM_PW\"}" "$BASE/api/auth/login")
+  VICTIM_TOKEN=$(echo "$VICTIM_LOGIN" | python3 -c "import json,sys;print(json.load(sys.stdin).get('access_token',''))")
+  VICTIM_RT=$(echo "$VICTIM_LOGIN" | python3 -c "import json,sys;print(json.load(sys.stdin).get('refresh_token',''))")
+  # Verify victim works BEFORE password change.
+  VICTIM_BEFORE=$(curl $CURL_OPTS -sS -H "Authorization: Bearer $VICTIM_TOKEN" "$BASE/api/auth/me" -o /dev/null -w "%{http_code}")
+  check "victim token works pre-change" "$VICTIM_BEFORE" "200"
+  # Admin changes victim's password.
+  PATCH_RESP=$(curl $CURL_OPTS -sS -X PATCH -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+    -d "{\"password\":\"$VICTIM_NEW_PW\"}" "$BASE/api/admin/users/$VICTIM_ID")
+  REVOKED=$(echo "$PATCH_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('tokens_revoked',0))" 2>/dev/null || echo "0")
+  if [[ "$REVOKED" -gt 0 ]]; then
+    echo "  PASS  password change revoked $REVOKED tokens"
+    PASSES=$((PASSES + 1))
+  else
+    echo "  FAIL  password change did not revoke any tokens (got $REVOKED)"
+    FAILS=$((FAILS + 1))
+  fi
+  # Victim's OLD access token must now be invalid.
+  VICTIM_AFTER=$(curl $CURL_OPTS -sS -H "Authorization: Bearer $VICTIM_TOKEN" "$BASE/api/auth/me" -o /dev/null -w "%{http_code}")
+  check "victim's old access token rejected" "$VICTIM_AFTER" "401"
+  # Victim's OLD refresh token must now be invalid.
+  VICTIM_RT_RESP=$(curl $CURL_OPTS -sS -X POST -H "content-type: application/json" \
+    -d "{\"refresh_token\":\"$VICTIM_RT\"}" "$BASE/api/auth/refresh" -o /dev/null -w "%{http_code}")
+  check "victim's old refresh token rejected" "$VICTIM_RT_RESP" "401"
+  # Cleanup.
+  curl $CURL_OPTS -sS -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/users/$VICTIM_ID" -o /dev/null
+fi
+
+section "P-05 /api/admin/overview redacts operational details"
+OVERVIEW=$(curl $CURL_OPTS -sS -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/overview")
+HOSTNAME=$(echo "$OVERVIEW" | python3 -c "import json,sys;print(json.load(sys.stdin).get('server',{}).get('hostname'))" 2>/dev/null || echo "")
+PLATFORM=$(echo "$OVERVIEW" | python3 -c "import json,sys;print(json.load(sys.stdin).get('server',{}).get('platform'))" 2>/dev/null || echo "")
+DISK_PATH=$(echo "$OVERVIEW" | python3 -c "import json,sys;print(json.load(sys.stdin).get('disk',{}).get('path'))" 2>/dev/null || echo "")
+if [[ "$HOSTNAME" == "None" && "$PLATFORM" == "None" && "$DISK_PATH" == "None" ]]; then
+  echo "  PASS  hostname / platform / disk-path redacted"
+  PASSES=$((PASSES + 1))
+else
+  echo "  FAIL  hostname=$HOSTNAME platform=$PLATFORM disk.path=$DISK_PATH (expected all None)"
+  FAILS=$((FAILS + 1))
 fi
 
 section "Summary"
