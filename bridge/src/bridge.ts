@@ -18,7 +18,8 @@ import { init } from './init';
 import type { PhotoNode } from '@protontech/drive-sdk';
 import { ThumbnailType } from '@protontech/drive-sdk';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { mkstemp, openSync, fsyncSync, closeSync } from 'node:fs';
+import { openSync, fsyncSync, closeSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 const PORT = Number(process.env.PORT ?? 8090);
@@ -257,16 +258,13 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, url: URL, 
     // buffer the decrypted bytes to a per-request temp file and stream it back,
     // honoring `Range` so the player only pulls the bytes it needs.
     //
-    // The path is unique per request (mkstemp) so concurrent opens of the same
+    // The path is unique per request (randomUUID) so concurrent opens of the same
     // uid never clobber each other. We fsync + size-check before serving so a
     // partially-written file (client abort) is never handed out, and we unlink
     // the temp file once the response body finishes (or the client disconnects).
     const workDir = path.join(DATA_DIR, 'work');
     await mkdir(workDir, { recursive: true });
-    const [mkfd, tmp] = mkstemp(path.join(workDir, `${uid}-XXXXXX.full`));
-    try {
-        closeSync(mkfd); // mkstemp created the file; downloadToPath writes it via its own fd
-    } catch { /* already closed */ }
+    const tmp = path.join(workDir, `${uid}-${randomUUID()}.full`);
 
     try {
         await downloader.downloadToPath(tmp);
