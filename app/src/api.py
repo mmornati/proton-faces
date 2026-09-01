@@ -298,14 +298,20 @@ def api_login(request: Request, body: dict = Body(...)):
 
 @app.post("/api/auth/refresh", dependencies=[])
 def api_refresh(request: Request, body: dict = Body(...)):
+    """Issue a new (access, refresh) pair. The refresh token is **rotated**
+    on every successful call (P-02 from the 2026-09-01 pen test):
+    the old refresh token is revoked and a new one is minted. The front-end
+    MUST overwrite its stored refresh token with the new one.
+    """
     rt = (body.get("refresh_token") or "").strip()
     if not rt:
         raise HTTPException(400, "refresh_token required")
     ua = request.headers.get("user-agent")
     ip = request.client.host if request.client else None
-    access, user = refresh_tokens(rt, user_agent=ua, ip=ip)
+    access, new_refresh, user = refresh_tokens(rt, user_agent=ua, ip=ip)
     return {
         "access_token": access,
+        "refresh_token": new_refresh,
         "token_type": "Bearer",
         "expires_in": auth_access_ttl(),
         "user": {
@@ -1383,17 +1389,63 @@ def api_search(q: str, limit: int = 100, user: CurrentUser = Depends(require_use
     return _semantic_search(vec, limit, user.id)
 
 
+# Max bytes for `/api/search/face` uploads (P-03 from the 2026-09-01 pen
+# test). Without a cap, an attacker can stream a 50 MB blob to the API
+# and force Python to allocate ~50 MB per request — 20 parallel requests
+# spike to 1 GB resident. 8 MB is plenty for a face photo and well
+# within the limits InsightFace accepts.
+FACE_SEARCH_MAX_UPLOAD_BYTES = int(
+    os.environ.get("FACE_SEARCH_MAX_UPLOAD_BYTES", str(8 * 1024 * 1024))
+)
+
+# Max decoded pixel count for an image. Without this, a 1.6 MB JPEG can
+# decompress to 300 MB of pixel data (decompression bomb) and OOM the
+# process. 50 megapixels ≈ 7000×7000 px, enough for any sensible face
+# photo and well below the (no)default limit.
+FACE_SEARCH_MAX_IMAGE_PIXELS = int(
+    os.environ.get("FACE_SEARCH_MAX_IMAGE_PIXELS", str(50_000_000))
+)
+
+
 @app.post("/api/search/face")
 async def api_face_search(file: UploadFile = File(...), limit: int = 50,
                            user: CurrentUser = Depends(require_user)):
-    """Upload a face photo, find matching people/photos."""
-    data = await file.read()
+    """Upload a face photo, find matching people/photos.
+
+    Hardening (P-03):
+    - `FACE_SEARCH_MAX_UPLOAD_BYTES` cap on the raw upload. 413 if
+      exceeded — we never even allocate the buffer.
+    - `FACE_SEARCH_MAX_IMAGE_PIXELS` cap on decoded pixels (PIL).
+      Defense against decompression bombs.
+    """
+    # Read with a hard cap so a 50 MB blob doesn't get fully buffered.
+    data = await file.read(FACE_SEARCH_MAX_UPLOAD_BYTES + 1)
+    if len(data) > FACE_SEARCH_MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            413,
+            f"file too large (max {FACE_SEARCH_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)",
+        )
     try:
         from PIL import Image
 
-        img = Image.open(io.BytesIO(data))
-        arr = np.asarray(img.convert("RGB"))
-        bgr = arr[:, :, ::-1].copy()
+        # Pre-check the declared image dimensions before we decode.
+        # PIL reads the header cheaply and tells us the width/height;
+        # rejecting here blocks decompression bombs without paying for
+        # the (potentially huge) decode.
+        Image.MAX_IMAGE_PIXELS = FACE_SEARCH_MAX_IMAGE_PIXELS
+        with Image.open(io.BytesIO(data)) as img:
+            w, h = img.size
+            if w * h > FACE_SEARCH_MAX_IMAGE_PIXELS:
+                raise HTTPException(
+                    413,
+                    f"image too large ({w}×{h} = {w * h:,} pixels, "
+                    f"max {FACE_SEARCH_MAX_IMAGE_PIXELS:,})",
+                )
+            img.load()  # force full decode so any further limits take effect
+            arr = np.asarray(img.convert("RGB"))
+            bgr = arr[:, :, ::-1].copy()
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(400, f"could not read image: {exc}")
     emb = embed_query_face(bgr)
