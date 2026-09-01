@@ -110,6 +110,36 @@ thumbnail exists. Because everything except the 512px thumbnail is fetched on de
 slow Proton connection or a dead bridge degrades only the "View full resolution" experience —
 thumbing, search, faces, places, and memories all keep working from the local cache.
 
+### Network safety — rate limits, timeouts, capabilities
+
+Proton Drive uses a public HTTPS API. A fresh library sync can produce many
+short-lived HTTPS connections per minute from the bridge container. On a
+home router or CPE with a small NAT table this can saturate the table and
+take other devices on the LAN offline. To make that impossible by default
+and tunable when it happens:
+
+- **Outbound rate limit** — `PROTON_BRIDGE_RATE_LIMIT` (default `0`, i.e. **disabled**).
+  Set to a positive number of requests-per-second (e.g. `5`) to bound the
+  bridge's outbound HTTPS to Proton. `PROTON_BRIDGE_RATE_BURST` (default `2× rate`)
+  controls the burst allowance. Honors `Retry-After` on 429 responses.
+- **Hard ceiling per full-res download** — `PROTON_BRIDGE_FULL_RES_TIMEOUT_MS`
+  (default `300000` = 5 min). Aborts the download and returns 502 if Proton
+  hangs (e.g. on an upstream crypto bug). The browser shows a toast instead
+  of spinning forever.
+- **Manifest verification bypass** — `PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=1`
+  is enabled in the published image because migrated Proton accounts often
+  omit the deprecated `AddressKey.PublicKey` field; without this flag the
+  SDK hangs on the key-token decrypt (Bun 1.2 WASM OpenPGP issue). Block-level
+  SHA256 integrity still applies where available.
+- **Container hardening** — `compose.yml` drops all Linux capabilities and sets
+  `no-new-privileges` on every service. No container runs with `--network host`
+  or `--privileged`; everything goes through the internal `internal` compose
+  network and the host's bridge.
+
+If your home router still drops under load, start with `PROTON_BRIDGE_RATE_LIMIT=5`
+in `compose.yml` (under `proton-bridge.environment`) and confirm the LAN stays up
+while a sync runs.
+
 ## Why three containers?
 
 Since [issue #4](https://github.com/mmornati/proton-faces/pull/7) the indexing
