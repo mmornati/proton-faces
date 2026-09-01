@@ -118,8 +118,11 @@ main { padding: 18px; }
 .person .name { font-size: 14px; font-weight: 600; }
 .person .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
 .person input { width: 100%; margin-top: 6px; padding: 5px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); }
-.person .merge-btn { margin-top: 6px; width: 100%; background: var(--panel2); color: var(--muted); border: 1px solid var(--border); }
-.person .merge-btn:hover { color: var(--text); border-color: var(--accent); }
+.person .merge-btn, .person .person-map-btn {
+  margin-top: 6px; flex: 1; min-width: 0; white-space: nowrap;
+  background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+}
+.person .merge-btn:hover, .person .person-map-btn:hover { color: var(--text); border-color: var(--accent); }
 .dups { margin-bottom: 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .duphead {
   width: 100%; display: flex; align-items: center; gap: 8px;
@@ -181,7 +184,11 @@ main { padding: 18px; }
 }
 #detail.open { display: block; }
 #detailbar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
-#detailbar .name { color: var(--muted); font-size: 14px; }
+#detailbar .name {
+  color: var(--muted); font-size: 14px; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#detailbar .name[title] { cursor: help; }
 #detailimgwrap {
   position: relative; display: inline-block; max-width: 100%;
   border-radius: 8px; overflow: hidden; background: var(--panel);
@@ -217,14 +224,44 @@ main { padding: 18px; }
 /* popover */
 #popover {
   display: none; position: fixed; z-index: 200; background: var(--panel);
-  border: 1px solid var(--border); border-radius: 12px; padding: 12px; min-width: 230px;
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px; min-width: 270px;
   box-shadow: 0 8px 30px rgba(0,0,0,.5);
 }
 #popover.open { display: block; }
 #popover h3 { margin: 0 0 8px; font-size: 14px; }
-#popover .faces { display: flex; gap: 6px; flex-wrap: wrap; max-height: 160px; overflow: auto; }
-#popover .faces button { flex: 1 1 45%; }
-#popover input { width: 100%; padding: 7px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); margin: 8px 0; }
+#popover .sugg { display: flex; flex-direction: column; gap: 4px; max-height: 190px; overflow: auto; margin-bottom: 4px; }
+#popover .sugg-title { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+#popover .sugg-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 8px; color: var(--text); cursor: pointer; font-size: 13px;
+}
+#popover .sugg-item:hover { border-color: var(--accent); }
+#popover .sugg-item img { width: 26px; height: 26px; border-radius: 6px; object-fit: cover; background: var(--bg); flex: none; }
+#popover .sugg-item .sugg-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#popover .sugg-item .sugg-sim { color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; }
+#popover .cb { position: relative; }
+#popover .cbrow { display: flex; gap: 6px; align-items: center; }
+#popover input {
+  flex: 1; min-width: 0; width: auto; padding: 7px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--panel2); color: var(--text); margin: 8px 0 0;
+}
+#popover input:focus { outline: none; border-color: var(--accent); }
+#popover .cbrow button { margin-top: 8px; white-space: nowrap; }
+#popover .ac {
+  position: absolute; left: 0; right: 0; top: calc(100% - 2px); z-index: 5;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  overflow: auto; max-height: 170px; box-shadow: 0 8px 24px rgba(0,0,0,.45);
+}
+#popover .cb.up .ac { top: auto; bottom: calc(100% - 2px); }
+#popover .ac-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: none; border: 0; color: var(--text); padding: 6px 8px; font-size: 13px; cursor: pointer;
+}
+#popover .ac-item:hover, #popover .ac-item.hl { background: var(--panel2); }
+#popover .ac-item .ac-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#popover .ac-item .ac-meta { color: var(--muted); font-size: 11px; }
+#popover .ac-item.create { color: var(--accent); border-top: 1px solid var(--border); }
 #popover .row { display: flex; gap: 6px; margin-top: 4px; }
 #popover .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
 /* unassigned queue */
@@ -1007,12 +1044,18 @@ async function openLightbox(uid, kindHint) {
 
 async function openDetail(uid) {
   $("#detail").classList.add("open");
-  $("#dname").textContent = uid;
+  $("#dname").textContent = "Loading…";
   $("#dfull").onclick = () => openLightbox(uid, meta?.kind);
   let meta;
   try {
     meta = await api(`/api/photos/${uid}/meta`);
   } catch (e) { meta = null; }
+  // Prefer the human-friendly Proton name (usually a short filename) over the
+  // long base64 UID; fall back to a truncated UID so the bar never overflows.
+  const label = (meta?.name || uid).trim();
+  const dn = $("#dname");
+  dn.textContent = label.length > 80 ? label.slice(0, 80) + "…" : label;
+  dn.title = label;
   $("#dfav").textContent = meta?.favorited_by_me ? "★" : "☆";
   $("#dfav").onclick = async () => {
     try {
@@ -1183,23 +1226,34 @@ async function loadFaceBoxes(uid) {
 async function openFacePopover(face, x, y) {
   popoverFace = face;
   const pv = $("#popover");
-  // Only fetch the top 12 people for quick-pick (was previously the full
-  // 23k-row people list — ~7 MB / 1.5 s per click). Server-side pagination.
-  let people = [];
-  try { people = (await api("/api/people?limit=12")).people || []; } catch (e) {}
   const nameHtml = face.person_name ? `<h3>${esc(face.person_name)} <span style="color:var(--muted);font-weight:400">(face #${face.id})</span></h3>` : `<h3>Unassigned face #${face.id}</h3>`;
   pv.innerHTML = `${nameHtml}
-    <input id="popname" placeholder="Type a name and press Enter" value="${esc(face.person_name || "")}">
-    <div class="faces">${people.map((p) => `<button class="small" data-pid="${p.id}">${esc(p.name || "person " + p.id)}</button>`).join("") || '<span style="color:var(--muted);font-size:12px">No people yet</span>'}</div>
+    <div class="sugg" id="popsugg">
+      <div class="sugg-title">Top matches</div>
+      <div class="sugg-empty" style="color:var(--muted);font-size:12px">Loading…</div>
+    </div>
+    <div class="cb" id="popcb">
+      <div class="cbrow">
+        <input id="popname" placeholder="Search a name or type to create…" value="${esc(face.person_name || "")}" autocomplete="off">
+        <button class="secondary small" id="popcreate" title="Assign this face to a new person with the typed name" disabled>＋ New</button>
+      </div>
+      <div class="ac" id="popac" style="display:none"></div>
+    </div>
     <div class="row">
       <button class="secondary small" id="pop-unassign" style="margin-left:auto">Unassign</button>
     </div>
     <div class="hint">Naming a face auto-tags similar unassigned faces.</div>`;
   pv.classList.add("open");
-  pv.style.left = Math.min(x, window.innerWidth - 260) + "px";
-  pv.style.top = Math.min(y, window.innerHeight - 300) + "px";
+  pv.style.left = Math.min(x, window.innerWidth - 280) + "px";
+  pv.style.top = Math.min(y, window.innerHeight - 320) + "px";
+  // Open the autocomplete dropdown upward when the popover sits low on screen.
+  if (y > window.innerHeight * 0.6) $("#popcb").classList.add("up");
+
   const name = $("#popname");
+  const ac = $("#popac");
+  const createBtn = $("#popcreate");
   name.focus();
+
   const commit = async (body) => {
     try {
       const r = await api(`/api/faces/${face.id}/person`, {
@@ -1212,10 +1266,97 @@ async function openFacePopover(face, x, y) {
       else if (state.view === "unassigned") loadUnassigned();
     } catch (e) { toast("Error: " + e.message); }
   };
-  name.addEventListener("keydown", async (e) => {
-    if (e.key === "Enter" && name.value.trim()) await commit({ name: name.value.trim() });
+  const pick = (el) => {
+    if (el.dataset.pid) commit({ person_id: +el.dataset.pid });
+    else if (el.dataset.create || el.dataset.name) commit({ name: el.dataset.name });
+  };
+
+  // Top-5 most similar people, ranked by face→person-mean-embedding similarity.
+  try {
+    const data = await api(`/api/faces/${face.id}/suggest?limit=5`);
+    const sugg = data.suggestions || [];
+    const box = $("#popsugg");
+    if (!sugg.length) {
+      box.innerHTML = '<div class="sugg-title">Top matches</div><div class="sugg-empty" style="color:var(--muted);font-size:12px">No people yet — create a name below.</div>';
+    } else {
+      box.innerHTML = `<div class="sugg-title">Top matches</div>` + sugg.map((s) => `
+        <button class="sugg-item" data-pid="${s.person_id}" data-name="${esc(s.name)}">
+          ${s.cover_url ? `<img loading="lazy" src="${s.cover_url}" alt="">` : '<div style="width:26px;height:26px;border-radius:6px;background:var(--bg);flex:none"></div>'}
+          <span class="sugg-name">${esc(s.name)}</span>
+          <span class="sugg-sim">${Math.round(Math.max(0, Math.min(1, s.similarity)) * 100)}%</span>
+        </button>`).join("");
+      box.querySelectorAll(".sugg-item").forEach((b) => b.addEventListener("click", () => pick(b)));
+    }
+  } catch (e) {
+    const box = $("#popsugg");
+    if (box) box.innerHTML = '<div class="sugg-title">Top matches</div><div class="sugg-empty" style="color:var(--muted);font-size:12px">Suggestions unavailable.</div>';
+  }
+
+  // Typeahead over existing people, plus a "create new" entry when the typed
+  // name doesn't exactly match an existing person.
+  let acTimer = null;
+  let acItems = [];
+  const renderAc = () => {
+    if (!acItems.length) { ac.style.display = "none"; return; }
+    ac.style.display = "";
+    ac.innerHTML = acItems.map((it) => it.create
+      ? `<button class="ac-item create" data-create="1" data-name="${esc(it.name)}">＋ Create new person “${esc(it.name)}”</button>`
+      : `<button class="ac-item" data-pid="${it.pid}" data-name="${esc(it.name)}">
+           <span class="ac-name">${esc(it.name)}</span>
+           <span class="ac-meta">${it.meta}</span>
+         </button>`).join("");
+    ac.querySelectorAll(".ac-item").forEach((el) => el.addEventListener("click", () => pick(el)));
+  };
+  const searchAc = (q) => {
+    acItems = [];
+    const trimmed = q.trim();
+    if (!trimmed) { ac.style.display = "none"; return; }
+    api(`/api/people?q=${encodeURIComponent(trimmed)}&limit=8`)
+      .then((data) => {
+        const people = data.people || [];
+        const exact = people.find((p) => (p.name || "").toLowerCase() === trimmed.toLowerCase());
+        acItems = people
+          .filter((p) => p.id !== face.person_id)
+          .map((p) => ({ pid: p.id, name: p.name || "person " + p.id, meta: `${p.photo_count} photos`, create: false }));
+        if (!exact) acItems.push({ name: trimmed, create: true });
+        renderAc();
+      })
+      .catch(() => { acItems = []; renderAc(); });
+  };
+  name.addEventListener("input", () => {
+    createBtn.disabled = !name.value.trim();
+    clearTimeout(acTimer);
+    acTimer = setTimeout(() => searchAc(name.value), 180);
   });
-  pv.querySelectorAll("button[data-pid]").forEach((b) => b.addEventListener("click", () => commit({ person_id: +b.dataset.pid })));
+  name.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const items = ac.querySelectorAll(".ac-item");
+      if (!items.length) return;
+      const cur = ac.querySelector(".ac-item.hl");
+      let idx = cur ? Array.from(items).indexOf(cur) : -1;
+      idx = e.key === "ArrowDown" ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length;
+      items.forEach((el) => el.classList.remove("hl"));
+      items[idx].classList.add("hl");
+      items[idx].scrollIntoView({ block: "nearest" });
+      return;
+    }
+    if (e.key === "Escape") { ac.style.display = "none"; return; }
+    if (e.key === "Enter" && name.value.trim()) {
+      e.preventDefault();
+      const hl = ac.querySelector(".ac-item.hl");
+      if (hl) { pick(hl); return; }
+      const q = name.value.trim();
+      const exact = acItems.find((it) => !it.create && (it.name || "").toLowerCase() === q.toLowerCase());
+      if (exact) commit({ person_id: exact.pid });
+      else commit({ name: q });
+    }
+  });
+  createBtn.addEventListener("click", () => {
+    const q = name.value.trim();
+    if (q) commit({ name: q });
+  });
+  name.addEventListener("focus", () => { if (name.value) searchAc(name.value); });
   $("#pop-unassign").addEventListener("click", async () => {
     try {
       await api(`/api/faces/${face.id}/unassign`, { method: "POST" });

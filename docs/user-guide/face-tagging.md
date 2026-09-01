@@ -11,14 +11,21 @@ Open any photo that has detected faces. The detail panel highlights each face wi
 - The face box is positioned from the normalized bbox written at detection time.
 - Hover over a face → the box highlights.
 - Click a face → a popover appears with:
-  - A name input
-  - A **Recent people** dropdown of clusters you've named recently
-  - **Save** + **Cancel** buttons
+  - **Top matches**: the 5 existing people whose face is most similar to this one (with match %), for one-click assignment
+  - A search box with **typeahead** over existing people
+  - A **＋ New** button to create a fresh named person on the spot
+  - **Unassign** (only meaningful for already-tagged faces)
 - If the face is already assigned, the box shows the person's name as a label.
 
 ## Naming a face
 
-Type a name in the popover and click **Save**. Three things happen:
+There are three ways to name a face in the popover:
+
+1. **Click a top match** — assigns the face to that person immediately.
+2. **Pick from the typeahead** — start typing; matching people appear below the box, select one to assign.
+3. **Create a new person** — type a brand-new name and press **Enter** or click **＋ New**. If a person with that exact name already exists, the face is merged into them instead.
+
+Either way, three things happen:
 
 1. The face is assigned to a cluster with that name. If a cluster with that name already exists, the face is **merged into it**. Otherwise a new cluster is created.
 2. The cluster's cover face is updated to the highest-confidence face in the cluster.
@@ -82,6 +89,7 @@ When you rename or assign, the modal that appears lets you search your existing 
 |----------|---------|
 | `GET /api/photos/{uid}/faces` | All face rows for a photo (bbox, person_id, person_name) |
 | `GET /api/faces/{id}/crop` | The face-crop JPEG |
+| `GET /api/faces/{id}/suggest` | Ranked "who might this be" people (top matches in the popover) |
 | `POST /api/faces/{id}/person` | Assign (body: `{"name":"Alice"}` or `{"person_id":7}`) |
 | `POST /api/faces/{id}/unassign` | Unassign |
 | `POST /api/people/{id}/name` | Rename a cluster |

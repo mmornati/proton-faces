@@ -1221,6 +1221,44 @@ def api_face_crop(face_id: int,
     return FileResponse(cache_path, media_type="image/jpeg", headers=_IMMUTABLE_HEADERS)
 
 
+@app.get("/api/faces/{face_id}/suggest")
+def api_face_suggest(face_id: int, limit: int = 5):
+    """Rank existing people by how likely they are to be this face.
+
+    Compares the face's own embedding against every person's mean embedding
+    (cosine similarity). Drives the "top similar names" quick-pick in the
+    unassigned-face popover. Read-only.
+    """
+    emb = face_embedding(face_id)
+    if emb is None:
+        return {"suggestions": []}
+    fe = np.frombuffer(emb, dtype=np.float32)
+    means = person_mean_embeddings()
+    if not means:
+        return {"suggestions": []}
+    by_id = {p["id"]: p for p in all_people()}
+    scored = []
+    for pid, mean in means.items():
+        s = float(fe @ mean)
+        p = by_id.get(pid)
+        scored.append(
+            {
+                "person_id": pid,
+                "name": (p["name"] if p else None) or f"person {pid}",
+                "similarity": s,
+                "photo_count": p["photo_count"] if p else 0,
+                "face_count": p["face_count"] if p else 0,
+                "cover_url": (
+                    _sign_if_needed(f"/api/people/{pid}/cover")
+                    if p and p["cover_face_id"]
+                    else None
+                ),
+            }
+        )
+    scored.sort(key=lambda s: s["similarity"], reverse=True)
+    return {"suggestions": scored[: max(1, min(limit, 50))]}
+
+
 @app.get("/api/photos/{uid}/faces")
 def api_photo_faces(uid: str):
     rows = faces_for_photo(uid)
