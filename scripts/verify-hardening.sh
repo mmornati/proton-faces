@@ -149,6 +149,10 @@ else
   printf "  INFO  no 429s observed in burst of 12 — Traefik middleware not attached to this route\n"
 fi
 
+# Wait for the rate-limit bucket to refill (5 rpm) before the next
+# section's login burst — otherwise the P-04 victim login may be 429.
+sleep 65
+
 section "P-04 password change revokes other tokens"
 # Create a victim user, log in as them, change their password as admin,
 # then verify their old tokens are rejected.

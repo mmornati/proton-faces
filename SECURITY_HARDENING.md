@@ -555,15 +555,15 @@ DOM). All hardening checks still pass after the run.
 
 | ID | Severity | Title | Recommendation | Status |
 |---|---|---|---|---|
-| **P-01** | ⚠️ Medium | OpenAPI schema + interactive Swagger UI + ReDoc are publicly accessible | Disable `/docs` and `/redoc` in production via `docs_url=None`, `redoc_url=None` when constructing FastAPI. Optionally hide `/openapi.json` too. | Open (informational) |
+| **P-01** | ⚠️ Medium | OpenAPI schema + interactive Swagger UI + ReDoc are publicly accessible | Disable `/docs` and `/redoc` in production via `docs_url=None`, `redoc_url=None` when constructing FastAPI. Optionally hide `/openapi.json` too. | **Fixed** by PR (env-gated) |
 | **P-02** | 🚨 High | Refresh token is NOT rotated on use — same token mints new access tokens indefinitely until expiry | Rotate on every `/api/auth/refresh`: revoke the old refresh, mint a new one, return both. Front-end must overwrite `pf.auth.refresh_token`. | **Fixed** by PR (see below) |
 | **P-03** | 🚨 High | `/api/search/face` has no UploadFile size cap — memory DoS | `await file.read(8 * 1024 * 1024 + 1)` then `413` if over. Also set `Image.MAX_IMAGE_PIXELS = 50_000_000` to block decompression bombs. | **Fixed** by PR (see below) |
-| **P-04** | ⚠️ Medium | Password change does not revoke existing tokens | In `api_admin_update_user()`, when `password_hash` is set, call `store.revoke_all_tokens(user_id)` (except the actor's own session). | Open |
-| **P-05** | ℹ️ Low | `/api/admin/overview` leaks Docker container hostname (`b19b897e565a`) + exact disk usage | Add an admin-only flag to redact these, or accept it as operational visibility. | Open (informational) |
+| **P-04** | ⚠️ Medium | Password change does not revoke existing tokens | In `api_admin_update_user()`, when `password_hash` is set, call `store.revoke_all_tokens(user_id)` (except the actor's own session). | **Fixed** by PR (with self-edit exception) |
+| **P-05** | ℹ️ Low | `/api/admin/overview` leaks Docker container hostname (`b19b897e565a`) + exact disk usage | Add an admin-only flag to redact these, or accept it as operational visibility. | **Fixed** by PR (env-gated) |
 
 ### Verdict
 
-**Safe for public internet exposure at this threat level** (demo with public creds). P-02 and P-03 are now fixed; the demo is hardened enough for production-with-private-credentials. P-04 (password-change token revocation) is the only remaining MEDIUM and is a defense-in-depth item, not a break-in.
+**Safe for public internet exposure at this threat level** (demo with public creds). All five pen-test findings (P-01..P-05) are now fixed. The demo is hardened enough for production-with-private-credentials.
 
 ### Verifications after the pen test
 
@@ -612,4 +612,62 @@ Valid 5 KB face                → HTTP 200 with results  ✅
 
 `scripts/verify-hardening.sh` still passes **13/13** against the live
 public URL. Server uptime preserved through every test.
+
+### P-01 / P-04 / P-05 fix (live on https://protonface.mornati.ovh)
+
+The follow-up PR also closes the three remaining findings.
+
+**P-01 — Hide `/docs`, `/redoc`, `/openapi.json` in production**
+(`app/src/api.py`):
+
+- The `FastAPI(...)` constructor now accepts `docs_url`, `redoc_url`, and
+  `openapi_url`. All three are set to `None` (returns 404) by default.
+- Opt back in with `EXPOSE_API_DOCS=1` if you want to share the schema
+  with your own front-end team behind a separate auth gate.
+
+**P-04 — Password change revokes existing tokens**
+(`app/src/api.py:api_admin_update_user`):
+
+- When `body.password` is set, the route now calls `revoke_all_tokens(user_id)`
+  and returns the count in the response (`tokens_revoked: N`).
+- Self-edit exception: if the actor is editing themselves
+  (`user_id == actor.id`), the revoke is skipped so the admin's own
+  session continues to work. The bearer token doesn't re-validate the
+  password, so the new password takes effect on the next login.
+
+**P-05 — Redact Docker hostname + exact disk bytes in
+`/api/admin/overview`** (`app/src/admin.py`):
+
+- `hostname`, `platform`, and `disk.path` are replaced with `None` by
+  default. Admins still see `python`, `app_version`, `uptime_sec`,
+  `free_frac`, and `data_bytes` (the on-host data size is useful for
+  capacity planning).
+- Opt back in with `EXPOSE_OPERATIONAL_DETAILS=1` for self-hosted
+  deployments where the admin UI runs on the same machine and the
+  hostname is useful.
+
+**Verified on production:**
+
+```
+GET /docs          → 404  ✅
+GET /redoc         → 404  ✅
+GET /openapi.json  → 404  ✅
+
+admin changes victim's password
+  response: tokens_revoked: 2
+  victim's old access token  → 401 "invalid token"       ✅
+  victim's old refresh token → 401 "invalid refresh"     ✅
+  admin changing OWN password → tokens_revoked: 0 (self-edit exception)  ✅
+
+/api/admin/overview:
+  server.hostname = None  ✅
+  server.platform = None   ✅
+  disk.path      = None    ✅
+  disk.free_frac  = 0.57   (kept)
+  disk.data_bytes = 2.4MB  (kept)
+```
+
+`scripts/verify-hardening.sh` now passes **21/21** against the live public
+URL (added 3 checks for `/docs`/`/redoc`/`/openapi.json`, 4 checks for
+P-04, 1 check for P-05). Server uptime preserved through every test.
 
