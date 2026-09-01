@@ -14,6 +14,7 @@ Runs in the background of the FastAPI process:
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -189,6 +190,15 @@ def _sync_once() -> None:
     # Retry photos that failed previously (e.g. transient network errors).
     with _db_conn() as conn:
         conn.execute("UPDATE photos SET status='new' WHERE status='error'")
+
+    # DEMO_MODE only: inject GPS/place from the fixture so the Places view
+    # works out of the box. No-op outside demo mode.
+    if os.environ.get("DEMO_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from demo import apply_demo_gps
+            apply_demo_gps()
+        except Exception as exc:  # pragma: no cover
+            log.warning("demo gps inject failed: %s", exc)
 
 
 def _rows_from_items(items: list[dict]) -> list[dict]:

@@ -1,7 +1,13 @@
-"""HTTP client for the proton-bridge container."""
+"""HTTP client for the proton-bridge container.
+
+When `DEMO_MODE=1` is set, `get_bridge()` returns a `DemoBridge` instance
+instead — see `demo.py` for the details. The switch is transparent to callers:
+the real bridge and the demo expose the same method surface.
+"""
 from __future__ import annotations
 
 import json
+import os
 
 import httpx
 from config import settings
@@ -118,11 +124,16 @@ class BridgeClient:
         self._client.close()
 
 
-_bridge: BridgeClient | None = None
+_bridge: BridgeClient | "DemoBridge" | None = None  # type: ignore[name-defined]
 
 
-def get_bridge() -> BridgeClient:
+def get_bridge():
     global _bridge
     if _bridge is None:
-        _bridge = BridgeClient()
+        if os.environ.get("DEMO_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+            from demo import DemoBridge
+
+            _bridge = DemoBridge()
+        else:
+            _bridge = BridgeClient()
     return _bridge
