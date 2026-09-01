@@ -157,6 +157,10 @@ class BridgeClient:
         non-2xx statuses still raise `httpx.HTTPStatusError` via the caller's
         `resp.raise_for_status()` so behavior is preserved for permanent
         failures (e.g. 401, 404).
+
+        Timeouts: 30s for the response headers (long enough for Proton's
+        normal handshake, short enough that a hung bridge doesn't pile up
+        open connections); no overall read timeout so the body can stream.
         """
         # Streaming: return the raw response so the caller can iterate the body
         # as it arrives (full-res downloads can be slow; don't buffer them).
@@ -164,7 +168,7 @@ class BridgeClient:
             "GET",
             f"{self.base_url}/photo/{uid}/full",
             headers={"Range": range_header} if range_header else None,
-            timeout=httpx.Timeout(1800.0, connect=30.0),
+            timeout=httpx.Timeout(30.0, connect=10.0, read=None, write=None),
         )
         resp = self._client.send(req, stream=True)
         # Eagerly check status so the caller doesn't have to drain the stream

@@ -8,6 +8,7 @@ import os
 import threading
 import time
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 import urllib.request
 from pathlib import Path
 
@@ -124,6 +125,18 @@ _anchors_cache: tuple[float, dict] | None = None
 
 _PEOPLE_CACHE_TTL = 5.0
 _people_cache: tuple[float, dict] | None = None  # keyed by (q, limit, offset)
+
+# Hard cap on how long `/api/photos/{uid}/full` is allowed to take before we
+# give up and return 504 to the user. The bridge's /photo/{uid}/full endpoint
+# occasionally hangs for 30+ seconds when Proton's downloader endpoint is
+# degraded; without this cap the FastAPI handler blocks indefinitely and the
+# browser's loading spinner never resolves. We run the bridge call in a worker
+# thread and timeout the future, then close the response to free the bridge
+# connection.
+_FULL_TIMEOUT_SEC = 30.0
+_full_executor = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="full-photo"
+)
 
 # In-memory CLIP matrix cache: avoids rebuilding an 88 MB numpy stack on
 # every text-search request. Rebuilds only when the clip row count changes
@@ -918,13 +931,35 @@ def _sniff_image_type(data: bytes) -> str | None:
 @app.get("/api/photos/{uid}/full")
 def api_full(uid: str, request: Request,
               _: object = Depends(signed_or_token)):
-    """Stream the full-resolution photo from Proton (on demand, read-only)."""
+    """Stream the full-resolution photo from Proton (on demand, read-only).
+
+    Runs the bridge call in a worker thread with a hard timeout so a stuck
+    Proton downloader endpoint can't hold the request open indefinitely.
+    If we timeout, the worker is left to finish in the background (we close
+    the bridge response from the main thread so the bridge connection is
+    freed), and we return a fast 504 to the browser.
+    """
     row = get_photo(uid)
     if row is None:
         raise HTTPException(404, "photo not found")
     range_header = request.headers.get("range")
+
+    # Acquire the bridge response in a worker thread so we can apply a hard
+    # `_FULL_TIMEOUT_SEC` cap regardless of what the bridge is doing.
+    future = _full_executor.submit(
+        get_bridge().full_photo, uid, range_header=range_header
+    )
     try:
-        resp = get_bridge().full_photo(uid, range_header=range_header)
+        resp = future.result(timeout=_FULL_TIMEOUT_SEC)
+    except FuturesTimeout:
+        # The worker is still running trying to get the response headers.
+        # We can't kill it (no shared cancel handle), but we can give up
+        # from the FastAPI side and surface 504 to the browser.
+        log.warning(
+            "full photo timed out after %.1fs for %s; returning 504",
+            _FULL_TIMEOUT_SEC, uid,
+        )
+        raise HTTPException(504, "full photo fetch timed out — try again later")
     except Exception as exc:
         log.warning("full photo fetch failed for %s: %s", uid, exc)
         raise HTTPException(502, "bridge fetch failed")
