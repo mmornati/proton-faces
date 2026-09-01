@@ -2019,8 +2019,9 @@ async function loadUnassigned() {
     <div class="faceitem" data-id="${f.id}">
       <img loading="lazy" src="${f.crop_url}" alt="">
     </div>`).join("")}</div>`;
-  el.querySelectorAll(".faceitem").forEach((item) => item.addEventListener("click", () => {
-    openFacePopover({ id: +item.dataset.id, person_id: null, person_name: null }, event.clientX, event.clientY);
+  el.querySelectorAll(".faceitem").forEach((item) => item.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openFacePopover({ id: +item.dataset.id, person_id: null, person_name: null }, e.clientX, e.clientY);
   }));
 }
 
