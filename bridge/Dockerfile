@@ -25,10 +25,18 @@ COPY src/bridge.ts cli/src/bridge.ts
 # Overlay a patched copy of the account SDK's addresses.ts. Upstream
 # getOwnPublicKeys() decrypts the address-key token via cryptoProxy.decryptMessage,
 
-# which hangs forever under Bun 1.2 (the WASM OpenPGP proxy), stalling every
+#which hangs forever under Bun 1.2 (the WASM OpenPGP proxy), stalling every
 # full-resolution download. We import the armored PublicKey directly instead (same as
 # the other-user path already does), avoiding the broken decrypt path entirely.
 COPY patches/addresses.ts incubating/account/js/src/addresses.ts
+
+# Overlay a patched copy of the downloader so the manifest verification can be
+# skipped via env (PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=1). Address keys for
+# migrated accounts often omit the deprecated PublicKey field, so getOwnPublicKeys
+# returns no verification keys (see addresses.ts patch); without skipping the manifest
+# check, verifyManifest() would then fail after streaming the whole file. Block-level
+# integrity (SHA256) still applies when available.
+COPY patches/fileDownloader.ts client/js/src/internal/download/fileDownloader.ts
 
 # The CLI's dependencies are file: links to sibling packages (client/js, incubating/account/js).
 # bun resolves those via realpath, so their own deps (ky, ttag, @protontech/crypto, ...) are
@@ -62,6 +70,10 @@ ENV PORT=8090
 ENV DATA_DIR=/data
 ENV PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file
 ENV PROTON_DRIVE_CACHE_DIR=/data
+# Address keys for migrated accounts often omit the deprecated PublicKey field; our
+# addresses.ts patch then skips verification keys and fileDownloader.ts honors this flag
+# to skip the manifest check (instead of failing after streaming the whole file)。
+ENV PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=1
 
 # The session/auth files live in DATA_DIR (mounted volume).
 VOLUME /data

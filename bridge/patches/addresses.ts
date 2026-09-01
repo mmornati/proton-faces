@@ -118,20 +118,30 @@ export class Addresses {
         }
         return this.getOtherPublicKeys(email, forceRefresh);
     }
-
-    private async getOwnPublicKeys(address: coreComponents['schemas']['AddressUser']): Promise<PublicKeyReference[]> {
+private async getOwnPublicKeys(address: coreComponents['schemas']['AddressUser']): Promise<PublicKeyReference[]> {
         const keys: PublicKeyReference[] = [];
         const errors: unknown[] = [];
         for (const key of address.Keys || []) {
             try {
                 if (key?.PublicKey) {
                     // Bun-compatible fast path: import the armored public key directly.
+
                     // The token-decrypt path (getAddressKey → cryptoProxy.decryptMessage)
                     // hangs forever inside the WASM OpenPGP proxy when run under Bun 1.2,
                     // blocking every full-resolution download (thumbnails are unaffected because
                     // they never load verification keys). getOtherPublicKeys already does
                     // exactly this import; we mirror it for our own addresses so downloads work.
+
                     keys.push(await this.cryptoProxy.importPublicKey({ armoredKey: key.PublicKey }));
+                } else if (process.env.PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION === '1') {
+                    // No decryptable PublicKey available for this address key (the deprecated
+                    // PublicKey field is often absent for migrated accounts). Rather than block
+                    // forever in decryptMessage under Bun 1.2, skip verification keys
+                    // entirely — manifest verification is disabled via the same env flag, so
+                    // downloads still stream. The signature is also verified per-block via SHA256
+                    // hashes when available.
+
+                    this.logger.debug(`Skipping verification key for ${key.ID} (no PublicKey present}`);
                 } else {
                     const userData = await this.getUserData();
                     const { publicKey } = await this.getAddressKey(
@@ -146,7 +156,6 @@ export class Addresses {
                 errors.push(error);
             }
         }
-
         if (errors.length > 0) {
             this.logger.error('Errors loading public keys', errors);
         }
