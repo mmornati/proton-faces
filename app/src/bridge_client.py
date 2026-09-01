@@ -185,6 +185,41 @@ class BridgeClient:
     def close(self) -> None:
         self._client.close()
 
+    # ----- bridge SDK cache management (admin tooling) -----
+
+    def cache_status(self) -> dict:
+        """Ask the bridge for the on-disk SDK cache state.
+
+        Returns `{"ok": True, "files": [{"name": "cache-crypto.sqlite", "size": N, "mtime": ts}, ...],
+                   "uptimeSec": N}` so the admin "stale cache" check can flag
+        a hung getFileDownloader without scraping bridge logs.
+
+        Short timeout (5s) — this is called from the admin checks UI; we
+        don't want it to hang the whole checks panel if the bridge is wedged.
+        """
+        r = self._client.get(f"{self.base_url}/cache", timeout=httpx.Timeout(5.0, connect=5.0))
+        r.raise_for_status()
+        return r.json()
+
+    def clear_cache(self) -> dict:
+        """Tell the bridge to unlink its SDK caches and exit.
+
+        compose's `restart: unless-stopped` policy respawns the bridge with
+        a fresh cache, fixing the "stale cache after a Proton incident"
+        hang (see docs/reference/troubleshooting.md).
+
+        The response should arrive before the bridge exits, but we use a
+        short read timeout in case the bridge is wedged at the moment of
+        the call — we still want a clean error rather than an indefinite
+        hang on the admin click.
+        """
+        r = self._client.post(
+            f"{self.base_url}/cache/clear",
+            timeout=httpx.Timeout(5.0, connect=5.0),
+        )
+        r.raise_for_status()
+        return r.json()
+
 
 _bridge: BridgeClient | "DemoBridge" | None = None  # type: ignore[name-defined]
 

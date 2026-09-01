@@ -63,6 +63,14 @@ class Settings:
         # full-res download. Helps unstuck videos left stranded by a bridge
         # outage (e.g. the 2,286 videos left in `full` on Sep 1).
         self.fullres_retry_after_sec = int(os.environ.get("FULLRES_RETRY_AFTER_SEC", "600"))
+        # Age (seconds) at which the on-disk Proton SDK cache is considered
+        # "stale" by the admin check. Stale alone isn't actionable — a busy
+        # bridge may not touch its caches for a while. The check only
+        # flags when cache age > this AND /full is also failing, which
+        # matches the getFileDownloader-waitForCondition2 hang signature
+        # seen after the Aug 27 Frankfurt outage + Sep 1 partial outage.
+        # Default 6h.
+        self.bridge_cache_stale_sec = int(os.environ.get("BRIDGE_CACHE_STALE_SEC", "21600"))
 
         # Internal-only endpoint that the `indexer` container exposes on
         # 127.0.0.1 so the `app` container can read its live runtime state

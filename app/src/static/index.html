@@ -2262,9 +2262,15 @@ function renderAdminChecksSection() {
   const items = adminChecks || null;
   const running = !items;
   let rows = "";
+  let bridgeCacheRow = null;
   if (items) {
     for (const c of items.checks) {
       const klass = c.ok ? "ok" : "bad";
+      // Cache row gets a button — the other checks are read-only.
+      if (c.name === "Bridge cache") {
+        bridgeCacheRow = { row: c, klass };
+        continue;
+      }
       rows += `<tr>
         <td class="k">${esc(c.name)}</td>
         <td class="v"><span class="pill ${klass}">${esc(c.status)}</span></td>
@@ -2272,13 +2278,29 @@ function renderAdminChecksSection() {
       </tr>`;
     }
   }
+  let bridgeBlock = "";
+  if (bridgeCacheRow) {
+    const c = bridgeCacheRow.row;
+    bridgeBlock = `
+    <tr>
+      <td class="k">${esc(c.name)}</td>
+      <td class="v"><span class="pill ${bridgeCacheRow.klass}">${esc(c.status)}</span></td>
+      <td class="v">
+        <div>${esc(c.detail || "")}</div>
+        <div class="adminactions" style="margin-top:.4rem">
+          <button class="small admin-clear-bridge-cache">Clear bridge cache</button>
+          <span class="hint">Unlinks the SDK caches and restarts the bridge.</span>
+        </div>
+      </td>
+    </tr>`;
+  }
   return `
     <h4>Server checks</h4>
     <div class="adminactions">
       <button id="admin-run-checks" class="small">${running ? "Running…" : "Run checks now"}</button>
       <span class="hint">${items ? `last run ${fmtRelative((Date.now() - items.ts) / 1000)} ago` : ""}</span>
     </div>
-    ${items ? `<table>${rows}</table>` : `<div class="empty">Click "Run checks now" to evaluate.</div>`}`;
+    ${items ? `<table>${rows}${bridgeBlock}</table>` : `<div class="empty">Click "Run checks now" to evaluate.</div>`}`;
 }
 
 function renderAdminBackupSection() {
@@ -2382,6 +2404,47 @@ function wireAdminHandlers() {
     } catch (e) { toast("Checks failed: " + (e.message || e)); }
     finally { adminBusy = false; }
   });
+
+  const clearBtn = $(".admin-clear-bridge-cache");
+  if (clearBtn) {
+    clearBtn.addEventListener("click", async () => {
+      if (adminBusy) return;
+      if (!confirm(
+        "Clear the bridge SDK cache and restart the proton-bridge container?\n\n" +
+        "Use this when the admin check shows Bridge cache = stale AND /full " +
+        "downloads are hanging. The bridge will be unavailable for ~5-10 " +
+        "seconds while compose restarts it."
+      )) return;
+      adminBusy = true;
+      clearBtn.disabled = true;
+      toast("Clearing bridge cache…");
+      try {
+        const r = await api("/api/admin/bridge/cache/clear", { method: "POST" });
+        toast(`Bridge cache cleared (${(r.removed || []).length} files); restarting…`);
+      } catch (e) {
+        toast("Bridge cache clear failed: " + (e.message || e));
+        adminBusy = false;
+        clearBtn.disabled = false;
+        return;
+      }
+      // Wait a moment for compose to respawn the bridge, then refresh
+      // the checks panel — the bridge-cache row will go healthy and the
+      // new mtimes will be visible.
+      setTimeout(async () => {
+        try {
+          adminChecks = await api("/api/admin/checks", { method: "POST" });
+        } catch { /* bridge may still be restarting — show stale row */ }
+        $("#adminmodalbody").innerHTML =
+          renderAdminOverviewSection() +
+          renderAdminChecksSection() +
+          renderAdminBackupSection() +
+          renderAdminScheduleSection() +
+          renderAdminUsersSection();
+        wireAdminHandlers();
+        adminBusy = false;
+      }, 8000);
+    });
+  }
 
   $("#admin-trigger-backup").addEventListener("click", async () => {
     if (adminBusy) return;
