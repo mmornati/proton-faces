@@ -553,17 +553,17 @@ DOM). All hardening checks still pass after the run.
 
 ### Findings (pen-test specific, on top of F-01..F-14)
 
-| ID | Severity | Title | Recommendation |
-|---|---|---|---|
-| **P-01** | ⚠️ Medium | OpenAPI schema + interactive Swagger UI + ReDoc are publicly accessible | Disable `/docs` and `/redoc` in production via `docs_url=None`, `redoc_url=None` when constructing FastAPI. Optionally hide `/openapi.json` too. |
-| **P-02** | 🚨 High | Refresh token is NOT rotated on use — same token mints new access tokens indefinitely until expiry | Rotate on every `/api/auth/refresh`: revoke the old refresh, mint a new one, return both. Front-end must overwrite `pf.auth.refresh_token`. |
-| **P-03** | 🚨 High | `/api/search/face` has no UploadFile size cap — memory DoS | `await file.read(8 * 1024 * 1024 + 1)` then `413` if over. Also set `Image.MAX_IMAGE_PIXELS = 50_000_000` to block decompression bombs. |
-| **P-04** | ⚠️ Medium | Password change does not revoke existing tokens | In `api_admin_update_user()`, when `password_hash` is set, call `store.revoke_all_tokens(user_id)` (except the actor's own session). |
-| **P-05** | ℹ️ Low | `/api/admin/overview` leaks Docker container hostname (`b19b897e565a`) + exact disk usage | Add an admin-only flag to redact these, or accept it as operational visibility. |
+| ID | Severity | Title | Recommendation | Status |
+|---|---|---|---|---|
+| **P-01** | ⚠️ Medium | OpenAPI schema + interactive Swagger UI + ReDoc are publicly accessible | Disable `/docs` and `/redoc` in production via `docs_url=None`, `redoc_url=None` when constructing FastAPI. Optionally hide `/openapi.json` too. | **Fixed** by PR (env-gated) |
+| **P-02** | 🚨 High | Refresh token is NOT rotated on use — same token mints new access tokens indefinitely until expiry | Rotate on every `/api/auth/refresh`: revoke the old refresh, mint a new one, return both. Front-end must overwrite `pf.auth.refresh_token`. | **Fixed** by PR (see below) |
+| **P-03** | 🚨 High | `/api/search/face` has no UploadFile size cap — memory DoS | `await file.read(8 * 1024 * 1024 + 1)` then `413` if over. Also set `Image.MAX_IMAGE_PIXELS = 50_000_000` to block decompression bombs. | **Fixed** by PR (see below) |
+| **P-04** | ⚠️ Medium | Password change does not revoke existing tokens | In `api_admin_update_user()`, when `password_hash` is set, call `store.revoke_all_tokens(user_id)` (except the actor's own session). | **Fixed** by PR (with self-edit exception) |
+| **P-05** | ℹ️ Low | `/api/admin/overview` leaks Docker container hostname (`b19b897e565a`) + exact disk usage | Add an admin-only flag to redact these, or accept it as operational visibility. | **Fixed** by PR (env-gated) |
 
 ### Verdict
 
-**Safe for public internet exposure at this threat level** (demo with public creds). The two HIGH findings (P-02 refresh rotation, P-03 upload size cap) require either stealing a refresh token (separate compromise like XSS or session hijack) or pushing arbitrary traffic (rate-limited at the CDN for large uploads). For a public demo they are acceptable; for a production deployment with private credentials they should be closed in a follow-up PR.
+**Safe for public internet exposure at this threat level** (demo with public creds). All five pen-test findings (P-01..P-05) are now fixed. The demo is hardened enough for production-with-private-credentials.
 
 ### Verifications after the pen test
 
@@ -574,4 +574,100 @@ DOM). All hardening checks still pass after the run.
 ```
 
 Server uptime preserved through every test. No crash, no corruption.
+
+### P-02 / P-03 fix (live on https://protonface.mornati.ovh)
+
+After the pen test I shipped a follow-up that closes the two HIGH findings.
+
+**P-02 — Refresh-token rotation** (`app/src/auth.py:refresh`, `app/src/api.py:api_refresh`, `app/src/static/index.html:_refreshAccess`):
+
+- `auth.refresh()` now revokes the old refresh token and mints a new
+  (access, refresh) pair on every successful call.
+- `api_refresh()` returns `refresh_token` in the response body.
+- The SPA's `_refreshAccess` overwrites `pf.auth.refresh_token` with the
+  new value.
+
+**P-03 — `/api/search/face` upload cap + decompression-bomb defense** (`app/src/api.py:api_face_search`):
+
+- `FACE_SEARCH_MAX_UPLOAD_BYTES` (default 8 MB) — `await file.read(cap+1)`
+  and 413 if exceeded. The buffer is never allocated for oversized uploads.
+- `FACE_SEARCH_MAX_IMAGE_PIXELS` (default 50M) — pre-check the declared
+  width×height from the image header BEFORE decoding. PIL's
+  `MAX_IMAGE_PIXELS` is set as a belt-and-braces backup.
+- Both env-tunable.
+
+**Verified on production (post-deploy):**
+
+```
+=== P-02 ===
+first refresh   → HTTP 200, new access + new refresh
+second refresh (old RT) → HTTP 401 "invalid refresh token"  ✅ rotated
+
+=== P-03 ===
+12 MB upload                  → HTTP 413 "file too large (max 8 MB)"  ✅
+10000×10000 bomb (100M pixels) → HTTP 413 "image too large"  ✅
+15000×15000 bomb (225M pixels) → HTTP 400 (PIL DecompressionBombError caught)  ✅
+Valid 5 KB face                → HTTP 200 with results  ✅
+```
+
+`scripts/verify-hardening.sh` still passes **13/13** against the live
+public URL. Server uptime preserved through every test.
+
+### P-01 / P-04 / P-05 fix (live on https://protonface.mornati.ovh)
+
+The follow-up PR also closes the three remaining findings.
+
+**P-01 — Hide `/docs`, `/redoc`, `/openapi.json` in production**
+(`app/src/api.py`):
+
+- The `FastAPI(...)` constructor now accepts `docs_url`, `redoc_url`, and
+  `openapi_url`. All three are set to `None` (returns 404) by default.
+- Opt back in with `EXPOSE_API_DOCS=1` if you want to share the schema
+  with your own front-end team behind a separate auth gate.
+
+**P-04 — Password change revokes existing tokens**
+(`app/src/api.py:api_admin_update_user`):
+
+- When `body.password` is set, the route now calls `revoke_all_tokens(user_id)`
+  and returns the count in the response (`tokens_revoked: N`).
+- Self-edit exception: if the actor is editing themselves
+  (`user_id == actor.id`), the revoke is skipped so the admin's own
+  session continues to work. The bearer token doesn't re-validate the
+  password, so the new password takes effect on the next login.
+
+**P-05 — Redact Docker hostname + exact disk bytes in
+`/api/admin/overview`** (`app/src/admin.py`):
+
+- `hostname`, `platform`, and `disk.path` are replaced with `None` by
+  default. Admins still see `python`, `app_version`, `uptime_sec`,
+  `free_frac`, and `data_bytes` (the on-host data size is useful for
+  capacity planning).
+- Opt back in with `EXPOSE_OPERATIONAL_DETAILS=1` for self-hosted
+  deployments where the admin UI runs on the same machine and the
+  hostname is useful.
+
+**Verified on production:**
+
+```
+GET /docs          → 404  ✅
+GET /redoc         → 404  ✅
+GET /openapi.json  → 404  ✅
+
+admin changes victim's password
+  response: tokens_revoked: 2
+  victim's old access token  → 401 "invalid token"       ✅
+  victim's old refresh token → 401 "invalid refresh"     ✅
+  admin changing OWN password → tokens_revoked: 0 (self-edit exception)  ✅
+
+/api/admin/overview:
+  server.hostname = None  ✅
+  server.platform = None   ✅
+  disk.path      = None    ✅
+  disk.free_frac  = 0.57   (kept)
+  disk.data_bytes = 2.4MB  (kept)
+```
+
+`scripts/verify-hardening.sh` now passes **21/21** against the live public
+URL (added 3 checks for `/docs`/`/redoc`/`/openapi.json`, 4 checks for
+P-04, 1 check for P-05). Server uptime preserved through every test.
 

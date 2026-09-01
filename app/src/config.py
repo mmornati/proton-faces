@@ -46,8 +46,23 @@ class Settings:
         self.cluster_interval = int(os.environ.get("CLUSTER_INTERVAL", "1800"))
         self.gps_interval = int(os.environ.get("GPS_INTERVAL", "21600"))  # 6h
         self.face_sim_threshold = float(os.environ.get("FACE_SIM_THRESHOLD", "0.45"))
-        self.min_cluster_size = int(os.environ.get("MIN_CLUSTER_SIZE", "2"))
+        self.min_cluster_size = int(os.environ.get("MIN_CLUSTER_SIZE", "3"))
         self.log_level = os.environ.get("LOG_LEVEL", "INFO")
+        # HDBSCAN min_samples. Default 1 makes every face a cluster core and
+        # produces many spurious 2-face "people"; 2 suppresses the worst noise
+        # while still clustering every distinct person. Affects only NEW
+        # clusters; existing people rows are untouched.
+        self.min_samples = int(os.environ.get("MIN_SAMPLES", "2"))
+        # Grace cycles for the pending_removal → deleted promotion. A uid must
+        # be missing from `timeline_ids()` for this many consecutive sync polls
+        # before being marked deleted. Prevents false deletions when Proton
+        # returns a stale/partial listing during an incident (e.g. the Aug 27
+        # Frankfurt cooling failure + Sep 1 partial outage).
+        self.grace_cycles = int(os.environ.get("PROTON_SYNC_GRACE_CYCLES", "2"))
+        # How long a `status='full'` row can sit before being re-queued for
+        # full-res download. Helps unstuck videos left stranded by a bridge
+        # outage (e.g. the 2,286 videos left in `full` on Sep 1).
+        self.fullres_retry_after_sec = int(os.environ.get("FULLRES_RETRY_AFTER_SEC", "600"))
 
         # Internal-only endpoint that the `indexer` container exposes on
         # 127.0.0.1 so the `app` container can read its live runtime state

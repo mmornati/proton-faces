@@ -368,16 +368,31 @@ def login(username: str, password: str, *, user_agent: str | None = None,
 
 
 def refresh(refresh_token: str, *, user_agent: str | None = None,
-            ip: str | None = None) -> tuple[str, CurrentUser]:
+            ip: str | None = None) -> tuple[str, str, CurrentUser]:
+    """Mint a new (access, refresh) pair, **rotating** the refresh token.
+
+    Security rationale (P-02 from the live pen test, 2026-09-01):
+    the previous implementation let the same refresh token mint new
+    access tokens indefinitely until expiry. That meant a stolen
+    refresh token worked for the full 30-day TTL. With rotation, every
+    successful /api/auth/refresh call revokes the old refresh token and
+    mints a new one. If a stolen refresh token is used by the attacker,
+    the legitimate user's next refresh call sees "invalid refresh token"
+    and is forced to re-login — surfacing the theft.
+    """
     row = store.lookup_token(refresh_token)
     if row is None or row["kind"] != "refresh" or row["disabled"]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid refresh token")
     if row["expires_at"] < __import__("time").time():
         store.revoke_token(refresh_token)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="refresh expired")
+    # ROTATE: revoke the old refresh token before minting a new pair.
+    store.revoke_token(refresh_token)
     access = store.issue_token(row["user_id"], "access", access_ttl(),
                                 user_agent=user_agent, ip=ip)
+    new_refresh = store.issue_token(row["user_id"], "refresh", refresh_ttl(),
+                                     user_agent=user_agent, ip=ip)
     user = CurrentUser(id=row["user_id"], username=row["username"],
                        display_name=row["display_name"] or row["username"],
                        role=row["role"])
-    return access, user
+    return access, new_refresh, user

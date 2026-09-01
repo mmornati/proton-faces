@@ -36,7 +36,12 @@ def cluster_once(max_faces: int = 5000) -> int:
     X = np.stack([_decode(r) for r in rows]).astype(np.float32)
     labels = HDBSCAN(
         min_cluster_size=settings.min_cluster_size,
-        min_samples=1,
+        # min_samples > 1 suppresses singleton/pair clusters that HDBSCAN
+        # would otherwise emit as noise-or-cluster when every point is a
+        # cluster core (the min_samples=1 default). Defaults to 2.
+        # Existing people rows are never re-clustered (we only cluster
+        # faces_without_person), so this only affects new clusters.
+        min_samples=settings.min_samples,
         metric="cosine",
     ).fit_predict(X)
 

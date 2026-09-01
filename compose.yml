@@ -46,6 +46,12 @@ services:
       - PROTON_DRIVE_CACHE_DIR=/data
       # Optional: point at a custom Proton API environment.
       # - PROTON_DRIVE_BASE_URL=drive-api.proton.me
+      # Outbound rate limit to Proton API. 3 req/s burst 2 keeps us inside
+      # Proton's comfort zone and avoids the 429 "Server errors limit reached"
+      # cascade that triggered false-deletions when the timeline listing
+      # dropped rows mid-shard during the Aug 27 / Sep 1 Proton incidents.
+      - PROTON_BRIDGE_RATE_LIMIT=${PROTON_BRIDGE_RATE_LIMIT:-3}
+      - PROTON_BRIDGE_RATE_BURST=${PROTON_BRIDGE_RATE_BURST:-2}
     networks:
       - internal
 
@@ -66,18 +72,32 @@ services:
       - ${DATA_MOUNT:-data}:/data
       # Optional Google Takeout export for GPS backfill (read-only).
       - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
+      # Local source mount (dev override). When set, /app/src inside the
+      # container is replaced with the contents of LOCAL_SRC on the host so
+      # edited source files take effect without rebuilding the image. Use an
+      # empty string (the default) in production.
+      - ${LOCAL_SRC:-/dev/null}:/app/src
     environment:
       - DATA_DIR=/data
       - MODELS_DIR=/models
       - PHOTOS_DIR=/takeout
       - BRIDGE_URL=http://proton-bridge:8090
-      - SYNC_INTERVAL=${SYNC_INTERVAL:-300}
+      # Bumped 300s → 600s while Proton Drive recovers from the Sep 1 partial
+      # outage. Revert to 300 once stable if you want faster sync.
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-600}
       - SYNC_LIMIT=${SYNC_LIMIT:-0}
       - WORKERS=${WORKERS:-3}
       - CLUSTER_INTERVAL=${CLUSTER_INTERVAL:-1800}
       - GPS_INTERVAL=${GPS_INTERVAL:-21600}
       - FACE_SIM_THRESHOLD=${FACE_SIM_THRESHOLD:-0.45}
-      - MIN_CLUSTER_SIZE=${MIN_CLUSTER_SIZE:-2}
+      - MIN_CLUSTER_SIZE=${MIN_CLUSTER_SIZE:-3}
+      - MIN_SAMPLES=${MIN_SAMPLES:-2}
+      # Grace cycles for pending_removal — only mark 'deleted' after this
+      # many consecutive missing polls. Prevents false deletions.
+      - PROTON_SYNC_GRACE_CYCLES=${PROTON_SYNC_GRACE_CYCLES:-2}
+      # How long a `status='full'` row can sit before being re-queued for
+      # full-res download. Unsticks videos left stranded by bridge outages.
+      - FULLRES_RETRY_AFTER_SEC=${FULLRES_RETRY_AFTER_SEC:-600}
       # Internal-only port for the live status endpoint. Not published to
       # the host; reachable from the `app` service over the compose
       # network via the `indexer` hostname.
@@ -100,6 +120,8 @@ services:
       - ${DATA_MOUNT:-data}:/data
       # Optional Google Takeout export for GPS backfill (read-only).
       - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
+      # Local source mount (dev override). See indexer service above.
+      - ${LOCAL_SRC:-/dev/null}:/app/src
     environment:
       - DATA_DIR=/data
       - MODELS_DIR=/models
@@ -136,13 +158,14 @@ services:
       - DATA_DIR=/data
       - MODELS_DIR=/models
       - PHOTOS_DIR=/takeout
-      - SYNC_INTERVAL=${SYNC_INTERVAL:-300}
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-600}
       - SYNC_LIMIT=${SYNC_LIMIT:-0}
       - WORKERS=${WORKERS:-3}
       - CLUSTER_INTERVAL=${CLUSTER_INTERVAL:-1800}
       - GPS_INTERVAL=${GPS_INTERVAL:-21600}
       - FACE_SIM_THRESHOLD=${FACE_SIM_THRESHOLD:-0.45}
-      - MIN_CLUSTER_SIZE=${MIN_CLUSTER_SIZE:-2}
+      - MIN_CLUSTER_SIZE=${MIN_CLUSTER_SIZE:-3}
+      - MIN_SAMPLES=${MIN_SAMPLES:-2}
       - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEMO_ADMIN_PASSWORD=${DEMO_ADMIN_PASSWORD:-proton-faces}

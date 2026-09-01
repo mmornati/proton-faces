@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from bridge_client import get_bridge
+from bridge_client import BridgeTransientError, get_bridge
 from clip import embed_pil
 from cluster import cluster_once
 from config import settings
@@ -34,11 +34,14 @@ from store import (
     claim_photo_for_download,
     claim_photo_for_full,
     claim_photo_for_processing,
+    confirm_deletions,
     get_photos,
     init_db,
     insert_clip,
     insert_face,
     mark_deleted,
+    mark_pending_removal,
+    reset_stuck_fullres,
     set_photo_done,
     set_photo_duration,
     set_photo_error,
@@ -176,8 +179,24 @@ def _sync_once() -> None:
 
     new_uids = sorted(remote - stored)
     gone = sorted(stored - remote)
+
+    # Two-phase deletion with grace period (issue from Sep 1 Proton outage):
+    # stale timeline listings can briefly drop uids, which would otherwise
+    # cascade into a mass false-deletion. Stage them as pending_removal first;
+    # confirm_deletions() promotes them to 'deleted' only after
+    # grace_cycles * SYNC_INTERVAL seconds have elapsed without the uid
+    # coming back. If the uid reappears in `remote` before then, the
+    # upsert_photos reclaim path resets it to 'new' (and clears was_deleted_at).
     if gone:
-        mark_deleted(gone)
+        staged = mark_pending_removal(gone)
+        grace_seconds = max(1, settings.grace_cycles) * max(1, settings.sync_interval)
+        confirmed = confirm_deletions(grace_seconds=grace_seconds)
+        log.info(
+            "sync: %d missing → %d newly pending_removal, %d confirmed deleted "
+            "(grace=%ds, %d still in grace)",
+            len(gone), staged, confirmed, grace_seconds,
+            len(gone) - staged - confirmed,
+        )
 
     if new_uids:
         items = bridge.nodes(new_uids)
@@ -437,6 +456,25 @@ def _fullres_loop() -> None:
                             "UPDATE photos SET status='downloading' WHERE uid=?", (uid,)
                         )
                     _pending.put(uid)
+            except BridgeTransientError as exc:
+                # Bridge returned 429/502/503 — back off rather than failing
+                # the row. Release the claim (set status back to 'full' so
+                # other rows can be tried in the meantime; the startup reset
+                # hook + periodic resets will retry). Sleep at least the
+                # upstream's Retry-After hint, otherwise a sensible default.
+                log.warning(
+                    "fullres transient %s for %s; sleeping %.0fs before retry",
+                    exc.status_code, uid, exc.retry_after_sec,
+                )
+                tmp.unlink(missing_ok=True)
+                with _db_conn() as conn:
+                    conn.execute(
+                        "UPDATE photos SET status='full', processed_at=?, error=NULL WHERE uid=?",
+                        (int(time.time()), uid),
+                    )
+                # Default to 30s when no Retry-After is supplied; clamp to the
+                # same 600s ceiling we use in the bridge parser.
+                time.sleep(min(600.0, max(exc.retry_after_sec, 30.0)))
             except Exception as exc:
                 log.warning("fullres failed for %s: %s", uid, exc)
                 tmp.unlink(missing_ok=True)
@@ -576,6 +614,19 @@ def start() -> list[threading.Thread]:
             log.info("backfilled %d image photos for local thumbnail generation", n)
     except Exception as exc:  # pragma: no cover
         log.warning("fullres backfill failed: %s", exc)
+    # Unstick videos (and any other media) that have been parked in
+    # status='full' for too long. Triggered on every startup so a bridge
+    # outage (e.g. the Sep 1 partial outage that left 2,286 videos stuck)
+    # drains automatically when the bridge recovers.
+    try:
+        requeued, parked = reset_stuck_fullres(retry_after_sec=settings.fullres_retry_after_sec)
+        if requeued or parked:
+            log.info(
+                "stuck full-res recovery: %d re-queued, %d parked as error",
+                requeued, parked,
+            )
+    except Exception as exc:  # pragma: no cover
+        log.warning("stuck fullres recovery failed: %s", exc)
     _rebuild_pending()
     try:
         _sync_albums_once()

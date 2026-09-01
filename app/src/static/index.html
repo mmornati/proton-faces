@@ -697,11 +697,17 @@ async function authFetch(path, opts = {}) {
     if (r.status === 204) return null;
     return r.json();
   }
-  // 401: try refreshing once.
+  // 401: try refreshing once. The server ROTATES the refresh token
+  // (P-02 fix) so we MUST overwrite the stored refresh token with the
+  // new one — otherwise the next refresh will fail with 401.
   if (a && a.refresh_token) {
     try {
       const refreshed = await _refreshAccess(a.refresh_token);
-      _saveAuth({ ...a, access_token: refreshed.access_token });
+      const next = { ...a, access_token: refreshed.access_token };
+      if (refreshed.refresh_token) {
+        next.refresh_token = refreshed.refresh_token;
+      }
+      _saveAuth(next);
       opts.headers["Authorization"] = `Bearer ${refreshed.access_token}`;
       r = await fetch(path, opts);
     } catch (e) {
@@ -2094,7 +2100,7 @@ function renderStatusBar(s) {
   const p = st.photos || {};
   const pendingTxt = p.pending ? ` · ${p.pending} pending` : "";
   $("#sb-progress-text").textContent =
-    `${p.done || 0}/${p.total || 0} photos indexed${pendingTxt}`;
+    `${p.done || 0}/${p.active_total || p.total || 0} photos indexed${pendingTxt}`;
 
   $("#sb-counts-text").textContent =
     `${st.faces || 0} faces · ${st.people || 0} people`;
@@ -2124,9 +2130,11 @@ function renderStatusModal(s) {
     </table>
     <h4>Indexing</h4>
     <table>
-      <tr><td class="k">Photos total / done</td><td class="v">${p.total || 0} / ${p.done || 0}</td></tr>
+      <tr><td class="k">Photos indexed</td><td class="v">${p.done || 0} / ${p.active_total || p.total || 0}${p.orphan ? ` <span title="Photos marked 'deleted' — kept as historical record">(+${p.orphan} orphan)</span>` : ""}</td></tr>
       <tr><td class="k">Displayable</td><td class="v">${p.done_with_thumb || 0}</td></tr>
-      <tr><td class="k">Without preview (videos)</td><td class="v">${p.done_without_thumb || 0}</td></tr>
+      <tr><td class="k">Without preview (videos)</td><td class="v">${p.done_without_thumb_videos || 0}</td></tr>
+      ${p.done_without_thumb_other ? `<tr><td class="k">Without preview (other)</td><td class="v">${p.done_without_thumb_other}</td></tr>` : ""}
+      <tr><td class="k">Stuck in full-res (videos)</td><td class="v">${p.stuck_fullres || 0}</td></tr>
       <tr><td class="k">Pending</td><td class="v">${p.pending || 0}</td></tr>
       <tr><td class="k">By status</td><td class="v">${esc(JSON.stringify(p.by_status || {}))}</td></tr>
       <tr><td class="k">Faces</td><td class="v">${(s.stats || {}).faces || 0}</td></tr>
@@ -2541,9 +2549,22 @@ async function refresh() {
     const s = await api("/api/status");
     lastStatus = s;
     const p = s.stats.photos;
-    $("#counts").textContent =
-      `${p.done}/${p.total} photos indexed · ${p.done_with_thumb} displayable · ` +
-      `${p.done_without_thumb} without preview (videos) · ${s.stats.people} people · ${s.stats.faces} faces`;
+    $("#counts").textContent = (() => {
+      const parts = [
+        `${p.done}/${p.active_total || p.total} photos indexed`,
+        `${p.done_with_thumb} displayable`,
+      ];
+      // 'Without preview' should be split: videos that completed (real
+      // poster extraction failed) vs other media. Hide either when 0 to
+      // avoid noise. Same for stuck_fullres and orphan so the footer
+      // stays scannable.
+      if (p.done_without_thumb_videos) parts.push(`${p.done_without_thumb_videos} without preview (videos)`);
+      else if (p.done_without_thumb_other) parts.push(`${p.done_without_thumb_other} without preview`);
+      if (p.stuck_fullres) parts.push(`${p.stuck_fullres} stuck in full-res (videos)`);
+      if (p.orphan) parts.push(`${p.orphan} orphan`);
+      parts.push(`${s.stats.people} people`, `${s.stats.faces} faces`);
+      return parts.join(" · ");
+    })();
     renderStatusBar(s);
     if ($("#statusmodal").classList.contains("open")) renderStatusModal(s);
   } catch (e) {
