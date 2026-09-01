@@ -2091,6 +2091,7 @@ function renderStatusModal(s) {
       <tr><td class="k">Last GPS enrichment</td><td class="v">${fmtAbs(idx.last_gps)} <span style="color:var(--muted)">(${fmtRelative(idx.last_gps)})</span></td></tr>
       <tr><td class="k">Pending queue</td><td class="v">live: ${idx.pending_in_queue || 0} <span style="color:var(--muted)">· db: ${idx.pending_db ?? p.pending ?? 0}</span></td></tr>
       ${threadRows}
+      ${idx.proxy_ok === false ? `<tr><td class="k">Indexer status proxy</td><td class="v"><span style="color:var(--bad)">unreachable</span> <span style="color:var(--muted)">(${esc(idx.proxy_error || "error")} — indexer container may be down or not listening on the compose network)</span></td></tr>` : ""}
     </table>
     <h4>Storage</h4>
     <table>

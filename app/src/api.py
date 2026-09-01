@@ -388,6 +388,11 @@ def _cached_stats() -> dict:
 _INDEXER_PROXY_CACHE_TTL = 2.0
 _INDEXER_PROXY_TIMEOUT = 0.25  # seconds; the endpoint is local to compose
 _indexer_proxy_cache: tuple[float, dict] | None = None
+# Once the indexer proxy starts failing, suppress repeat warning logs
+# for this many seconds. The frontend still renders the empty stub
+# either way, and the cache TTL keeps the failure state sticky.
+_INDEXER_PROXY_LOG_THROTTLE = 30.0
+_indexer_proxy_last_warn: float = 0.0
 
 
 def _indexer_is_local() -> bool:
@@ -422,9 +427,11 @@ def _fetch_remote_indexer_state() -> dict:
 
     On any failure (DNS, refused, timeout, non-2xx, bad JSON) returns the
     empty stub augmented with `pending_db` from local SQLite so the
-    durable count is still surfaced.
+    durable count is still surfaced, and tags the payload with
+    `proxy_ok=False` so the UI can surface the failure instead of
+    showing a silent "—".
     """
-    global _indexer_proxy_cache
+    global _indexer_proxy_cache, _indexer_proxy_last_warn
     now = time.time()
     if _indexer_proxy_cache is not None and now - _indexer_proxy_cache[0] < _INDEXER_PROXY_CACHE_TTL:
         return _indexer_proxy_cache[1]
@@ -433,6 +440,7 @@ def _fetch_remote_indexer_state() -> dict:
     except Exception:
         pending_db = None
     url = settings.indexer_status_url.rstrip("/") + "/status"
+    payload: dict | None = None
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=_INDEXER_PROXY_TIMEOUT) as resp:
@@ -440,8 +448,12 @@ def _fetch_remote_indexer_state() -> dict:
                 raise RuntimeError(f"indexer status {resp.status}")
             payload = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as exc:
-        log.warning("indexer status proxy failed (%s): %s", url, exc)
+        if now - _indexer_proxy_last_warn >= _INDEXER_PROXY_LOG_THROTTLE:
+            log.warning("indexer status proxy failed (%s): %s", url, exc)
+            _indexer_proxy_last_warn = now
         payload = _empty_indexer_state(pending_db=pending_db)
+        payload["proxy_ok"] = False
+        payload["proxy_error"] = type(exc).__name__
     # Always surface the DB count even when the proxy succeeded, so both
     # metrics are visible on the success path too (the proxy already
     # includes pending_db, but local stats is fresher and never wrong).
@@ -449,6 +461,7 @@ def _fetch_remote_indexer_state() -> dict:
         payload["pending_db"] = int(pending_db)
     payload.setdefault("pending_db", 0)
     payload.setdefault("pending_in_queue", 0)
+    payload.setdefault("proxy_ok", True)
     _indexer_proxy_cache = (now, payload)
     return payload
 
