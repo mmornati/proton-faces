@@ -386,7 +386,7 @@ def _cached_stats() -> dict:
 # exposes on its internal network. 2 s TTL caps the cost of the frontend
 # 30 s poll to one round-trip every ~2 s of modal activity.
 _INDEXER_PROXY_CACHE_TTL = 2.0
-_INDEXER_PROXY_TIMEOUT = 0.25  # seconds; the endpoint is local to compose
+_INDEXER_PROXY_TIMEOUT = 2.0  # seconds; the endpoint computes store.stats() and can be slow under load
 _indexer_proxy_cache: tuple[float, dict] | None = None
 # Once the indexer proxy starts failing, suppress repeat warning logs
 # for this many seconds. The frontend still renders the empty stub
