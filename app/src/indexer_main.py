@@ -56,15 +56,17 @@ def main() -> None:
 
     # Tiny internal-only HTTP server that exposes the indexer's live
     # state to the `app` container (see indexer_status.py). Bound to
-    # 127.0.0.1, no host port mapping — only the `app` service on the
-    # compose network can reach it. Daemon thread so it never blocks
+    # 0.0.0.0 so the `app` service on the compose `internal` network can
+    # reach it at http://indexer:8091/status. There is no host port
+    # mapping for 8091 in compose.yml, so this is still not reachable
+    # from outside the compose network. Daemon thread so it never blocks
     # shutdown.
     status_port = settings.indexer_status_port
 
     def _run_status_server() -> None:
         cfg = uvicorn.Config(
             status_app,
-            host="127.0.0.1",
+            host="0.0.0.0",
             port=status_port,
             log_level=settings.log_level.lower(),
             access_log=False,
@@ -75,7 +77,7 @@ def main() -> None:
         target=_run_status_server, name="indexer-status", daemon=True
     )
     status_thread.start()
-    log.info("indexer status endpoint listening on 127.0.0.1:%d", status_port)
+    log.info("indexer status endpoint listening on 0.0.0.0:%d", status_port)
 
     # Park the main thread on a sleep loop until SIGTERM/SIGINT. uvicorn-style
     # signal handling isn't needed here because we never bind a port.
