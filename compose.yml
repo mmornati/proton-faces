@@ -117,6 +117,64 @@ services:
     networks:
       - internal
 
+  # --- demo profile ---------------------------------------------------------
+  # `docker compose --profile demo up -d` brings up only the demo services:
+  # the proton-bridge service is skipped entirely and replaced by a local
+  # fixture (see app/src/demo.py). Use this to explore the UI without a real
+  # Proton account. Default credentials: demo / proton-faces.
+  indexer-demo:
+    profiles: ["demo"]
+    image: ghcr.io/mmornati/proton-faces-app:latest
+    restart: unless-stopped
+    command: ["python", "indexer_main.py"]
+    volumes:
+      - ${DATA_MOUNT:-data}:/data
+      - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
+    environment:
+      - DEMO_MODE=1
+      - BRIDGE_URL=http://127.0.0.1:1  # unused in demo mode; set so config.py never resolves it
+      - DATA_DIR=/data
+      - MODELS_DIR=/models
+      - PHOTOS_DIR=/takeout
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-300}
+      - SYNC_LIMIT=${SYNC_LIMIT:-0}
+      - WORKERS=${WORKERS:-3}
+      - CLUSTER_INTERVAL=${CLUSTER_INTERVAL:-1800}
+      - GPS_INTERVAL=${GPS_INTERVAL:-21600}
+      - FACE_SIM_THRESHOLD=${FACE_SIM_THRESHOLD:-0.45}
+      - MIN_CLUSTER_SIZE=${MIN_CLUSTER_SIZE:-2}
+      - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEMO_ADMIN_PASSWORD=${DEMO_ADMIN_PASSWORD:-proton-faces}
+    networks:
+      - internal
+
+  app-demo:
+    profiles: ["demo"]
+    image: ghcr.io/mmornati/proton-faces-app:latest
+    restart: unless-stopped
+    depends_on:
+      - indexer-demo
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ${DATA_MOUNT:-data}:/data
+      - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
+    environment:
+      - DEMO_MODE=1
+      - BRIDGE_URL=http://127.0.0.1:1
+      - DATA_DIR=/data
+      - MODELS_DIR=/models
+      - PHOTOS_DIR=/takeout
+      - PORT=8080
+      - RUN_INDEXER=0
+      - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
+      - INDEXER_STATUS_URL=http://indexer-demo:8091
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEMO_ADMIN_PASSWORD=${DEMO_ADMIN_PASSWORD:-proton-faces}
+    networks:
+      - internal
+
 volumes:
   data:
 

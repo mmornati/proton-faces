@@ -9,6 +9,11 @@ def _env_bool(key: str, default: bool) -> bool:
     return os.environ.get(key, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
 
+def is_demo_mode() -> bool:
+    """True when DEMO_MODE is enabled — see demo.py."""
+    return _env_bool("DEMO_MODE", False)
+
+
 class Settings:
     def __init__(self) -> None:
         self.data_dir = Path(os.environ.get("DATA_DIR", "./data")).resolve()

@@ -1,0 +1,15 @@
+# Local-only override: bring up the demo with the live source tree on this Mac.
+# Usage:
+#   docker compose -f compose.yml -f compose.demo-local.yml --profile demo up -d
+#
+# Bind-mounts ./app/src over the published image's source so DEMO_MODE code
+# edits take effect without rebuilding the image. The base image still ships
+# the ML models, system libs, and Python deps.
+
+services:
+  indexer-demo:
+    volumes:
+      - ./app/src:/app/src:ro
+  app-demo:
+    volumes:
+      - ./app/src:/app/src:ro

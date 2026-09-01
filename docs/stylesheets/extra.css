@@ -1,0 +1,345 @@
+/* Proton Faces docs — Immich-inspired dark slate + amber */
+
+:root {
+  --pf-amber: #f59e0b;
+  --pf-amber-light: #fbbf24;
+  --pf-amber-dim: #b45309;
+  --pf-slate-950: #0a0e13;
+  --pf-slate-900: #0f1419;
+  --pf-slate-800: #151a21;
+  --pf-slate-700: #1a1f26;
+  --pf-slate-600: #20262e;
+  --pf-slate-500: #2a323c;
+  --pf-slate-400: #3b4452;
+  --pf-slate-300: #5a6573;
+  --pf-slate-200: #8a96a8;
+  --pf-slate-100: #c3cbd6;
+  --pf-text: #e6e6e6;
+  --pf-text-muted: #a0a8b4;
+}
+
+/* Light-mode overrides */
+[data-md-color-scheme="default"] {
+  --pf-text: #1a1f26;
+  --pf-text-muted: #4a5260;
+  --pf-slate-700: #f4f5f7;
+  --pf-slate-600: #ebecf0;
+  --pf-slate-500: #dde0e6;
+}
+
+/* Force a denser, more app-like UI */
+.md-grid {
+  max-width: 1280px;
+}
+
+/* Typography */
+.md-typeset {
+  font-size: 0.92rem;
+  line-height: 1.65;
+}
+
+.md-typeset h1 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.md-typeset h2 {
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin-top: 2.4rem;
+}
+
+.md-typeset h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Hero on the index page */
+.pf-hero {
+  position: relative;
+  margin: -1.5rem -1.5rem 2rem;
+  padding: 4rem 1.5rem 3rem;
+  background:
+    radial-gradient(ellipse at top right, rgba(245, 158, 11, 0.18), transparent 60%),
+    radial-gradient(ellipse at bottom left, rgba(245, 158, 11, 0.08), transparent 50%),
+    linear-gradient(135deg, var(--pf-slate-900) 0%, var(--pf-slate-800) 50%, var(--pf-slate-700) 100%);
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(245, 158, 11, 0.18);
+}
+
+.pf-hero::after {
+  content: "";
+  position: absolute;
+  top: -50%;
+  right: -10%;
+  width: 60%;
+  height: 200%;
+  background: radial-gradient(ellipse at center, rgba(251, 191, 36, 0.18), transparent 60%);
+  filter: blur(40px);
+  pointer-events: none;
+}
+
+.pf-hero h1 {
+  font-size: 3rem;
+  line-height: 1.05;
+  margin: 0 0 0.5rem;
+  background: linear-gradient(135deg, #ffffff 0%, #fbbf24 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.pf-hero .pf-tagline {
+  font-size: 1.25rem;
+  color: var(--pf-text);
+  opacity: 0.85;
+  margin: 0 0 1.5rem;
+  max-width: 720px;
+}
+
+.pf-hero .pf-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.pf-hero .pf-badges img {
+  height: 22px;
+}
+
+.pf-hero .pf-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.pf-hero .pf-cta a {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.65rem 1.2rem;
+  border-radius: 10px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.pf-hero .pf-cta a:hover {
+  transform: translateY(-1px);
+}
+
+.pf-hero .pf-cta-primary {
+  background: var(--pf-amber);
+  color: var(--pf-slate-950);
+  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.35);
+}
+
+.pf-hero .pf-cta-primary:hover {
+  box-shadow: 0 6px 20px rgba(245, 158, 11, 0.5);
+  color: var(--pf-slate-950);
+}
+
+.pf-hero .pf-cta-secondary {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--pf-text);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.pf-hero .pf-cta-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--pf-text);
+}
+
+/* Card grids */
+.pf-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0 2rem;
+}
+
+.pf-card {
+  background: var(--pf-slate-700);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 1.1rem 1.2rem;
+  transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.pf-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(245, 158, 11, 0.4);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.pf-card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1.05rem;
+}
+
+.pf-card h3 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.pf-card h3 a::before {
+  content: none;
+}
+
+.pf-card p {
+  margin: 0;
+  color: var(--pf-text-muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.pf-card .pf-icon {
+  display: inline-block;
+  width: 1.6rem;
+  height: 1.6rem;
+  line-height: 1.6rem;
+  text-align: center;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.05));
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+}
+
+/* Screenshot frames */
+.pf-shot {
+  margin: 1.5rem 0;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  background: var(--pf-slate-800);
+}
+
+.pf-shot img,
+.pf-shot video {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.pf-shot-caption {
+  padding: 0.6rem 1rem;
+  font-size: 0.85rem;
+  color: var(--pf-text-muted);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* Screenshot gallery (auto-fit 2-up) */
+.pf-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.pf-gallery .pf-shot {
+  margin: 0;
+}
+
+/* Screencast embed */
+.pf-video {
+  margin: 1.5rem 0;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+.pf-video video {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Inline amber pills */
+.pf-pill {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--pf-amber-light);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* Banner / callout */
+.pf-banner {
+  margin: 1.5rem 0;
+  padding: 1rem 1.2rem;
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.04));
+  border-left: 4px solid var(--pf-amber);
+  border-radius: 0 8px 8px 0;
+  font-size: 0.92rem;
+}
+
+/* Better tables */
+.md-typeset table:not([class]) {
+  font-size: 0.88rem;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--pf-slate-700);
+  font-weight: 600;
+  color: var(--pf-amber-light);
+}
+
+.md-typeset table:not([class]) tr:nth-child(2n) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Admonition tweaks */
+.md-typeset .admonition {
+  border-radius: 10px;
+  border-width: 1px;
+}
+
+/* Navigation: amber accent */
+.md-tabs__link--active {
+  color: var(--pf-amber-light) !important;
+}
+
+.md-nav__link--active {
+  color: var(--pf-amber-light) !important;
+}
+
+.md-nav__link:hover {
+  color: var(--pf-amber-light);
+}
+
+/* Code blocks */
+.md-typeset code {
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.85em;
+}
+
+.md-typeset pre > code {
+  border-radius: 10px;
+}
+
+/* Footer */
+.md-footer {
+  background: var(--pf-slate-950);
+}
+
+.md-footer-meta {
+  background: var(--pf-slate-950);
+}
+
+/* Hide repo-edit on certain pages */
+.md-typeset .pf-no-edit {
+  display: none;
+}

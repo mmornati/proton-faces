@@ -1,0 +1,137 @@
+# MkDocs configuration for Proton Faces documentation
+
+site_name: Proton Faces
+site_description: "Private, self-hosted face · object · location search for your Proton Drive Photos."
+site_author: "Massimo Mornati"
+site_url: https://mmornati.github.io/proton-faces
+
+# Repository
+repo_name: mmornati/proton-faces
+repo_url: https://github.com/mmornati/proton-faces
+edit_uri: https://github.com/mmornati/proton-faces/edit/main/docs/
+
+copyright: "Copyright &copy; 2026 Massimo Mornati. Photos in screenshots: see docs/assets/CREDITS.md."
+
+theme:
+  name: material
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: amber
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: amber
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+    logo: material/camera-iris
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.tabs.link
+    - content.action.edit
+    - content.tooltips
+  favicon: assets/favicon.svg
+  logo: assets/logo.svg
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/mmornati/proton-faces
+    - icon: fontawesome/brands/docker
+      link: https://github.com/mmornati/proton-faces/pkgs/container/proton-faces-app
+  generator: false
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - abbr
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      title: On this page
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.caret
+  - pymdownx.mark
+  - pymdownx.progressbar
+
+plugins:
+  - search:
+      separator: '[\s\-\.]+'
+  - mermaid2
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - getting-started/index.md
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - Demo mode: getting-started/demo-mode.md
+      - Session file: getting-started/session-export.md
+  - User guide:
+      - user-guide/index.md
+      - Photos: user-guide/photos.md
+      - Search: user-guide/search.md
+      - People: user-guide/people.md
+      - Face tagging: user-guide/face-tagging.md
+      - Places: user-guide/places.md
+      - Albums & tags: user-guide/albums-tags.md
+      - Favorites & archive: user-guide/favorites-archive.md
+      - Admin area: user-guide/admin.md
+      - Status & diagnostics: user-guide/status.md
+  - Reference:
+      - reference/index.md
+      - Architecture: reference/architecture.md
+      - Configuration: reference/configuration.md
+      - REST API: reference/api.md
+      - Security & privacy: reference/security-privacy.md
+      - FAQ: reference/faq.md
+      - Troubleshooting: reference/troubleshooting.md
+  - Changelog: changelog.md

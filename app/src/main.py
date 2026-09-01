@@ -126,6 +126,16 @@ def main() -> None:
         logging.getLogger(__name__).info("GPS place enrichment done: %d photos", enriched)
         return
 
+    # DEMO_MODE: auto-create a default `demo` admin on first run so the login
+    # screen is reachable without any one-shot script.
+    if _env_bool("DEMO_MODE", False):
+        try:
+            from demo import ensure_default_admin
+
+            ensure_default_admin()
+        except Exception as exc:  # pragma: no cover
+            logging.getLogger(__name__).warning("DEMO_MODE admin bootstrap failed: %s", exc)
+
     if _env_bool("RUN_INDEXER", False):
         logging.getLogger(__name__).info(
             "RUN_INDEXER=1: starting in-process indexer alongside uvicorn"

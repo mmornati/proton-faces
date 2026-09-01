@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
@@ -50,6 +51,16 @@ def main() -> None:
         enriched = enrich_places()
         log.info("GPS place enrichment done: %d photos", enriched)
         return
+
+    # DEMO_MODE: bootstrap the default admin user before starting the pipeline
+    # so the web UI's login screen is reachable without manual setup.
+    if os.environ.get("DEMO_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from demo import ensure_default_admin
+
+            ensure_default_admin()
+        except Exception as exc:  # pragma: no cover
+            log.warning("DEMO_MODE admin bootstrap failed: %s", exc)
 
     threads = start()
     log.info("indexer pipeline up (%d background threads)", len(threads))

@@ -63,6 +63,37 @@ opens the Cloudinary player (a direct MP4 is also committed at `docs/demo.mp4`).
 
 ---
 
+## 📚 Documentation
+
+The full user guide is published at **[mmornati.github.io/proton-faces](https://mmornati.github.io/proton-faces/)** — search, people, places, admin area, REST API, architecture, every env var.
+
+Highlights:
+
+- [Quickstart](https://mmornati.github.io/proton-faces/getting-started/quickstart/) — 5 minutes from `docker compose up` to your first search
+- [Demo mode](https://mmornati.github.io/proton-faces/getting-started/demo-mode/) — run the full app **with zero Proton credentials** (a curated fixture of CC0 photos)
+- [People & face tagging](https://mmornati.github.io/proton-faces/user-guide/face-tagging/) — name one face, auto-tag every look-alike
+- [REST API](https://mmornati.github.io/proton-faces/reference/api/) — every endpoint
+- [Security & privacy](https://mmornati.github.io/proton-faces/reference/security-privacy/) — what's on disk, what's not, how auth works
+
+The docs are rebuilt and published on every push to `main` by the [docs workflow](.github/workflows/docs.yml). To preview locally:
+
+```bash
+pip install -r requirements-docs.txt
+mkdocs serve         # http://127.0.0.1:8000
+```
+
+---
+
+## 🛝 Try the demo
+
+```bash
+docker compose --profile demo up -d
+```
+
+No Proton account, no session file, no setup. Sign in at http://localhost:8080 with `demo` / `proton-faces`. The app loads a fixture of 82 CC0 photos (32 face portraits + 50 picsum scenes) — every feature of the real app works against it, including face clustering, places, search-by-example, and the admin area. Override the password with `DEMO_ADMIN_PASSWORD=...`. See the [demo-mode guide](https://mmornati.github.io/proton-faces/getting-started/demo-mode/) for details.
+
+---
+
 ## 🏗️ How it works
 
 ```
