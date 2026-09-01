@@ -292,3 +292,119 @@ These are NOT in scope for this hardening pass but worth noting:
 | FP-5 | Admin audit log table | M |
 | FP-6 | Bridge `Range` parser 416 fallback | S |
 | FP-7 | Proton session file mount with chmod 600 | S |
+
+---
+
+## 8. Deployment notes (Coolify + Traefik + Cloudflare)
+
+### Multi-domain on a single Coolify / Traefik setup
+
+The VPS runs a single `coolify-proxy` container (Traefik v3.6) on ports
+80/443. Each service is a Docker container attached to the `coolify` network
+with its own `Host(\`...\`)` rule. There is **no domain limit**: every
+service just declares its hostname in a Traefik label and Traefik + ACME
+issue a per-hostname Let's Encrypt cert.
+
+Examples of hostnames already served by this proxy on the same VPS
+(verified live):
+
+- `coolify.pygame.ovh` — Coolify UI
+- `blog.mornati.net` — Firebase blog
+- `umami.mornati.net` — analytics
+- `ollama.pygame.ovh`, `api.pygame.ovh`, `play.pygame.ovh`, etc.
+- `protonface.mornati.ovh` — this app (newly added)
+
+Each is a separate Docker container with its own Traefik labels. They
+share the `coolify` Docker network but do **not** see each other's ports
+unless explicitly configured.
+
+### Cloudflare in front (Universal SSL)
+
+`mornati.ovh` is proxied through Cloudflare. Cloudflare handles the
+public TLS certificate (Universal SSL covers `mornati.ovh` and
+`*.mornati.ovh` via Google Trust Services). When Cloudflare forwards a
+request to the origin it expects a valid HTTPS response. If the origin
+cert is invalid, Cloudflare returns **HTTP 526 "Invalid SSL certificate"**.
+
+For Traefik + ACME to issue a valid cert for `protonface.mornati.ovh`:
+
+1. **DNS A record** must point `protonface.mornati.ovh → <VPS-IP>` and
+   resolve *before* Traefik attempts the ACME challenge.
+2. **Cloudflare proxy mode** must be **enabled** (orange cloud on) OR
+   **disabled** (grey cloud). Either works; what matters is that when
+   Cloudflare is enabled, the SSL/TLS mode determines how Cloudflare
+   treats the origin cert:
+   - **Full (Strict)** — Cloudflare rejects any origin cert that isn't
+     signed by a CA in its trust store. With Let's Encrypt on the origin
+     this works.
+   - **Full** — Cloudflare accepts any origin cert (including the
+     default Traefik self-signed cert).
+   - **Flexible** — Cloudflare uses plain HTTP to the origin (no TLS).
+     Not recommended; loses end-to-end confidentiality between
+     Cloudflare and the origin.
+3. **Traefik must retry ACME** — if Traefik attempted the challenge
+   before DNS was ready, the cert won't be issued until the next
+   renewal test (up to ~6 h). To force a fresh attempt:
+
+   ```bash
+   ssh ubuntu@vps-7c0ec501.vps.ovh.net
+   sudo docker restart coolify-proxy
+   sudo tail -f /data/coolify/proxy/traefik.log
+   # look for: INF Server responded with a certificate. domains=protonface.mornati.ovh
+   ```
+
+### Troubleshooting 526
+
+If `https://protonface.mornati.ovh` returns 526 even after DNS is set:
+
+```bash
+# 1. Confirm DNS resolves to your VPS
+dig +short protonface.mornati.ovh @8.8.8.8
+# 2. Force Traefik to retry ACME
+ssh ubuntu@vps-7c0ec501.vps.ovh.net 'sudo docker restart coolify-proxy && sleep 10 && sudo tail -20 /data/coolify/proxy/traefik.log'
+# 3. Verify the cert was issued
+ssh ubuntu@vps-7c0ec501.vps.ovh.net 'sudo cat /data/coolify/proxy/acme.json | python3 -c "import json,sys;d=json.loads(sys.stdin.read());[print(c[\"domain\"][\"main\"]) for c in d[\"letsencrypt\"][\"Certificates\"]]"'
+# Should list: protonface.mornati.ovh
+# 4. Verify the cert serves correctly
+echo | openssl s_client -servername protonface.mornati.ovh -connect protonface.mornati.ovh:443 2>/dev/null | openssl x509 -noout -subject -issuer
+# Should show: subject=CN=protonface.mornati.ovh, issuer=... Let's Encrypt ...
+```
+
+If the cert is issued but Cloudflare still 526s, the Cloudflare SSL
+mode is the issue. Switch from "Full (Strict)" to "Full" temporarily
+to confirm; once you have a valid Let's Encrypt cert, switch back.
+
+### Adding a second domain (e.g. another service)
+
+Same pattern as `protonface.mornati.ovh`:
+
+```bash
+# 1. Add DNS A record
+#    newservice.example.com → 51.77.144.149
+
+# 2. Run the container on the coolify network with the right labels
+sudo docker run -d --name newservice \
+  --network coolify \
+  -e PORT=8080 \
+  -l "traefik.enable=true" \
+  -l "traefik.docker.network=coolify" \
+  -l "traefik.http.services.newservice.loadbalancer.server.port=8080" \
+  -l "traefik.http.routers.newservice.entrypoints=https" \
+  -l "traefik.http.routers.newservice.rule=Host(\`newservice.example.com\`)" \
+  -l "traefik.http.routers.newservice.tls=true" \
+  -l "traefik.http.routers.newservice.tls.certresolver=letsencrypt" \
+  -l "traefik.http.routers.newservice.middlewares=pf-security@file" \
+  -l "traefik.http.routers.newservice-http.entrypoints=http" \
+  -l "traefik.http.routers.newservice-http.rule=Host(\`newservice.example.com\`)" \
+  -l "traefik.http.routers.newservice-http.middlewares=redirect-to-https@file" \
+  -l "traefik.http.routers.newservice-http.service=newservice" \
+  your-image:latest
+
+# 3. Force a fresh ACME attempt if Cloudflare 526s after DNS is set:
+sudo docker restart coolify-proxy
+```
+
+Each service gets its own LE cert. They share the same `pf-security`
+and `pf-ratelimit` middlewares (load them with `@file` suffix in the
+labels).
+
