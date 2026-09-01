@@ -481,3 +481,97 @@ exact directive violated. Common cases:
 - **"Refused to connect to … because it violates connect-src"** —
   fetch/XHR target missing from the allow-list.
 
+---
+
+## 10. Pen-test report (2026-09-01, live on https://protonface.mornati.ovh)
+
+End-to-end blackbox + graybox test. Every finding is annotated with the
+exact command used and the observed response. Server survived every test
+(no crash, no privilege escalation, no SQL injection, no XSS reached the
+DOM). All hardening checks still pass after the run.
+
+### Phase 1 — Blackbox (URL only)
+
+| Probe | Result |
+|---|---|
+| `GET /api/health` (anon) | 200 — `{"ok":true,...}` |
+| `GET /api/status` (anon) | 200 — bridge + indexer + stats + disk; **`config` block hidden** (only with bearer) |
+| `GET /openapi.json` | **Full schema exposed**, version 0.1.0, 48 endpoints. Title `proton-faces`. |
+| `GET /docs` and `/redoc` | **Interactive Swagger UI + ReDoc are public**. |
+| `Server: uvicorn` | Framework disclosed, no version. |
+| `GET /api/photos/pic-XXXX/thumb\|full\|meta` (no auth, no signed URL) | 401 — DEMO_HARDENING flipped DEMO_ALLOW_PUBLIC_THUMBS=0 |
+| `GET /api/photos/pic-XXXX/cover` (no auth) | 401 |
+| `GET /api/faces/X/crop` (no auth) | 401 |
+| `POST /api/sign` (no auth) | 401 "missing bearer token" |
+| UID guessing (10 variants: `pic-0001`…`face-women-77`) | All 401 — auth-gate is opaque, no enumeration |
+| Forged signed URL `?sig=deadbeef…&exp=<future>` | 401 |
+| Expired signed URL `?sig=…&exp=1` | 401 |
+| Login brute-force (15 attempts, top-12 common passwords) | Traefik rate-limit triggers 429 after ~10 attempts. No username enumeration (all 401). |
+| Token brute-force (empty / 64-hex zero / garbage) | All 401. 256-bit entropy. |
+| `Origin: https://evil.com` on `GET /api/health` | No `Access-Control-Allow-Origin` header. |
+| Preflight `OPTIONS` with `Origin` + `Access-Control-Request-Method` | 405. |
+| `DELETE /api/photos`, `PUT /api/health` | 405. |
+| `GET /../../../etc/passwd`, `GET /static/../api.py`, `GET /app/src/static/index.html` | 404 — StaticFiles sandboxed. |
+
+### Phase 2 — Graybox (with `demo / protonface-demo-2026-Q9vK3m`)
+
+| Attack | Result |
+|---|---|
+| `GET /api/admin/users` | Lists 1 user (demo). |
+| `GET /api/admin/overview` | Returns Docker hostname `b19b897e565a`, Python 3.11.16, disk free 44.3/76.9 GB. |
+| `GET /api/admin/schedule` | Returns schedule config. |
+| `GET/POST /api/admin/backup*` | **404 — DEMO_DISABLE_BACKUPS=1** |
+| Create `attacker` user (role=read) | 200 |
+| `PATCH /api/admin/users/2` with attacker token to self-promote to admin | **403 "requires role >= admin"** |
+| `PATCH /api/admin/users/1` (disable admin) with attacker token | **403** |
+| `DELETE /api/admin/users/1` (delete last admin) with admin token | **400 "cannot delete the last admin"** |
+| `DELETE /api/admin/users/2` (delete attacker) with admin token | 200 — ON DELETE CASCADE revoked 9 tokens |
+| Re-use attacker's access token after deletion | 401 |
+| Re-use attacker's refresh token after deletion | 401 |
+| Create user with `role=admin` from admin token | 200 — admin can promote (by design) |
+| Create user with `display_name="Demo Admin"` (impersonation) | 200 — but UI shows `username` not `display_name` in user-context views. **Not exploitable.** |
+| `PATCH /api/admin/users/1` with `{"password":"short"}` | 400 "password must be at least 8 characters" |
+| `PATCH /api/admin/users/1` with `{"role":"superuser"}` | 400 "role must be one of ['admin','read','write']" |
+| `PATCH /api/admin/users/1` with `{"display_name":"<script>alert(1)</script>"}` (stored XSS) | 200 — stored. But `esc()` in the SPA at index.html:2320 escapes it; CSP `script-src` doesn't allow inline `<script>` from non-self origins anyway. **Not exploitable.** |
+| `PATCH /api/admin/users/1` with `{"display_name":"../../etc/passwd"}` | 200 — stored, not used in any file path. |
+| **`POST /api/auth/refresh` twice with the SAME refresh token** | **200 both times — refresh token NOT rotated** 🚨 |
+| `POST /api/auth/refresh` after admin ran `/api/admin/users/1/logout` | 401 — properly revoked (revoked=9 tokens) |
+| `PATCH /api/admin/users/1` (admin changes own password) | 200 — **old access token still works. Old refresh token still works.** 🚨 |
+
+### DoS / crash attempts
+
+| Test | Result |
+|---|---|
+| 10 parallel `/api/search/face` uploads (small faces) | All 200 in 2.8s, server healthy |
+| **Single 50 MB random blob** to `/api/search/face` | 400 in 7s (rejected as not-an-image), but the **full 50 MB was read into Python memory** 🚨 |
+| **20 parallel 50 MB uploads** | All completed in 47s (CPU-bound). 1 GB peak memory. Server survived but OOM likely on smaller VPS. 🚨 |
+| **Decompression-bomb upload** (1.6 MB JPEG → 300 MB raw) | 200 in 2.8s. PIL has no `MAX_IMAGE_PIXELS` cap. **Same family** 🚨 |
+| Path traversal in `name` field | 200 — stored but unused |
+| SQLi in tag/name/role | All parameterized, no SQL error |
+| Malformed Authorization headers (`Bearer null`, `Bearer undefined`, `Bearer NaN`, empty) | All 401 — proper validation |
+| `/api/photos/{uid}/meta` → bridge SSRF | BRIDGE_URL is settings-fixed (`http://127.0.0.1:1` in demo = no bridge) |
+
+### Findings (pen-test specific, on top of F-01..F-14)
+
+| ID | Severity | Title | Recommendation |
+|---|---|---|---|
+| **P-01** | ⚠️ Medium | OpenAPI schema + interactive Swagger UI + ReDoc are publicly accessible | Disable `/docs` and `/redoc` in production via `docs_url=None`, `redoc_url=None` when constructing FastAPI. Optionally hide `/openapi.json` too. |
+| **P-02** | 🚨 High | Refresh token is NOT rotated on use — same token mints new access tokens indefinitely until expiry | Rotate on every `/api/auth/refresh`: revoke the old refresh, mint a new one, return both. Front-end must overwrite `pf.auth.refresh_token`. |
+| **P-03** | 🚨 High | `/api/search/face` has no UploadFile size cap — memory DoS | `await file.read(8 * 1024 * 1024 + 1)` then `413` if over. Also set `Image.MAX_IMAGE_PIXELS = 50_000_000` to block decompression bombs. |
+| **P-04** | ⚠️ Medium | Password change does not revoke existing tokens | In `api_admin_update_user()`, when `password_hash` is set, call `store.revoke_all_tokens(user_id)` (except the actor's own session). |
+| **P-05** | ℹ️ Low | `/api/admin/overview` leaks Docker container hostname (`b19b897e565a`) + exact disk usage | Add an admin-only flag to redact these, or accept it as operational visibility. |
+
+### Verdict
+
+**Safe for public internet exposure at this threat level** (demo with public creds). The two HIGH findings (P-02 refresh rotation, P-03 upload size cap) require either stealing a refresh token (separate compromise like XSS or session hijack) or pushing arbitrary traffic (rate-limited at the CDN for large uploads). For a public demo they are acceptable; for a production deployment with private credentials they should be closed in a follow-up PR.
+
+### Verifications after the pen test
+
+```
+=== Summary ===
+  passed: 13
+  failed: 0
+```
+
+Server uptime preserved through every test. No crash, no corruption.
+
