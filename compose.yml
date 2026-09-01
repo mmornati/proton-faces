@@ -72,13 +72,13 @@ services:
       - ${DATA_MOUNT:-data}:/data
       # Optional Google Takeout export for GPS backfill (read-only).
       - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
-      # DEV-ONLY: local source override. When LOCAL_SRC points at a host
-      # directory containing an edited src/ tree, /app/src inside the
-      # container is replaced with that tree so code changes take effect
-      # without rebuilding the image. Leave unset (default) in prod —
-      # the image's baked-in source is used and `docker compose pull
-      # && docker compose up -d` is enough.
-      - ${LOCAL_SRC:-}:/app/src
+      # DEV-ONLY: local source override. Uncomment the next line and set
+      # LOCAL_SRC in .env to a host directory containing an edited src/
+      # tree; /app/src inside the container will be replaced with that
+      # tree so code changes take effect without rebuilding the image.
+      # Leave commented in prod — the image's baked-in source is used
+      # and `docker compose pull && docker compose up -d` is enough.
+      # - ${LOCAL_SRC}:/app/src
     environment:
       - DATA_DIR=/data
       - MODELS_DIR=/models
@@ -123,10 +123,8 @@ services:
       # Optional Google Takeout export for GPS backfill (read-only).
       - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
       # DEV-ONLY: local source override. See indexer service above for the
-      # full note. Leave LOCAL_SRC unset in prod — the image's baked-in
-      # source is used and `docker compose pull && docker compose up -d`
-      # is enough.
-      - ${LOCAL_SRC:-}:/app/src
+      # full note. Leave commented in prod.
+      # - ${LOCAL_SRC}:/app/src
     environment:
       - DATA_DIR=/data
       - MODELS_DIR=/models
