@@ -93,8 +93,24 @@ from store import (
 import indexer
 log = logging.getLogger("api")
 
-app = FastAPI(title="proton-faces", version="0.1.0",
-              dependencies=[Depends(require_user)])
+# P-01: in production, hide the interactive API docs (Swagger UI + ReDoc)
+# and the raw OpenAPI schema. The default `DEMO_HARDENING_MODE=1` flips this
+# on for public demos; production deployments with private credentials
+# get the same default. Set `EXPOSE_API_DOCS=1` to keep the docs visible
+# (useful when the operator wants to share the schema with their own
+# front-end team behind a separate auth gate).
+_EXPOSE_API_DOCS = os.environ.get("EXPOSE_API_DOCS", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+app = FastAPI(
+    title="proton-faces",
+    version="0.1.0",
+    dependencies=[Depends(require_user)],
+    docs_url="/docs" if _EXPOSE_API_DOCS else None,
+    redoc_url="/redoc" if _EXPOSE_API_DOCS else None,
+    openapi_url="/openapi.json" if _EXPOSE_API_DOCS else None,
+)
 
 _STATIC = Path(__file__).parent / "static"
 
@@ -1564,7 +1580,7 @@ def api_admin_create_user(body: dict,
 
 @app.patch("/api/admin/users/{user_id}")
 def api_admin_update_user(user_id: int, body: dict,
-                           _: CurrentUser = Depends(require_role("admin"))):
+                           actor: CurrentUser = Depends(require_role("admin"))):
     if get_user_by_id(user_id) is None:
         raise HTTPException(404, "user not found")
     display_name = body.get("display_name")
@@ -1581,8 +1597,16 @@ def api_admin_update_user(user_id: int, body: dict,
                     disabled=disabled, password_hash=password_hash)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    # P-04: when the password changes, revoke all existing tokens for
+    # this user so the new credentials take effect immediately. We
+    # skip the revoke when the actor is editing themselves — otherwise
+    # the admin gets logged out mid-edit and the response would be
+    # useless (no way to use the new password without re-logging in).
+    revoked = 0
+    if password and not (user_id == actor.id):
+        revoked = revoke_all_tokens(user_id)
     row = get_user_by_id(user_id)
-    return {"user": _user_row_public(row)}
+    return {"user": _user_row_public(row), "tokens_revoked": revoked}
 
 
 @app.delete("/api/admin/users/{user_id}")

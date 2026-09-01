@@ -28,6 +28,13 @@ from config import settings
 
 log = logging.getLogger("admin")
 
+
+def _env_bool(key: str, default: bool = False) -> bool:
+    return os.environ.get(key, str(default)).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 _SCHEDULE_FILE = "admin_config.json"
 
 # Defaults when admin_config.json is missing or incomplete.
@@ -353,19 +360,42 @@ def overview() -> dict:
     disk: dict = {}
     try:
         total, used, free = shutil.disk_usage(settings.data_dir)
-        disk = {"path": str(settings.data_dir), "total": total, "used": used,
-                "free": free, "free_frac": free / total if total else 0,
-                "data_bytes": _dir_size_bytes(settings.data_dir)}
+        # P-05: when EXPOSE_OPERATIONAL_DETAILS=0 (the safe default in
+        # public deployments), redact the exact byte counts and the
+        # on-host data path. We keep the free_frac ratio because admins
+        # need it to know if the disk is full.
+        if _env_bool("EXPOSE_OPERATIONAL_DETAILS", False):
+            disk = {
+                "path": str(settings.data_dir),
+                "total": total,
+                "used": used,
+                "free": free,
+                "free_frac": free / total if total else 0,
+                "data_bytes": _dir_size_bytes(settings.data_dir),
+            }
+        else:
+            disk = {"path": None, "free_frac": free / total if total else 0,
+                    "data_bytes": _dir_size_bytes(settings.data_dir)}
     except OSError:
-        disk = {"path": str(settings.data_dir), "total": 0, "used": 0,
-                "free": 0, "free_frac": 0, "data_bytes": 0}
-    server = {
-        "hostname": platform.node(),
-        "app_version": os.environ.get("APP_VERSION", "dev"),
-        "python": platform.python_version(),
-        "platform": platform.platform(),
-        "uptime_sec": _uptime_seconds(),
-    }
+        disk = {"path": None, "free_frac": 0, "data_bytes": 0}
+    # P-05: redact hostname + full platform string when not in
+    # operational-details mode. Admins still see Python version + uptime.
+    if _env_bool("EXPOSE_OPERATIONAL_DETAILS", False):
+        server = {
+            "hostname": platform.node(),
+            "app_version": os.environ.get("APP_VERSION", "dev"),
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "uptime_sec": _uptime_seconds(),
+        }
+    else:
+        server = {
+            "hostname": None,
+            "app_version": os.environ.get("APP_VERSION", "dev"),
+            "python": platform.python_version(),
+            "platform": None,
+            "uptime_sec": _uptime_seconds(),
+        }
     backup = {
         "last_name": rows[0]["name"] if rows else None,
         "last_ts": rows[0]["ts"] if rows else None,
