@@ -1235,7 +1235,8 @@ def start_crop_prewarm_worker() -> None:
                 log.info("crop prewarm: %d cover crops missing, generating", len(missing))
                 done = 0
                 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-                    for _ in pool.imap_unordered(_face_crop_bytes, missing):
+                    futs = [pool.submit(_face_crop_bytes, fid) for fid in missing]
+                    for _ in concurrent.futures.as_completed(futs):
                         done += 1
                         if done % 500 == 0:
                             log.info(
