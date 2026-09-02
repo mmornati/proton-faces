@@ -145,11 +145,20 @@ class BridgeClient:
         r.raise_for_status()
         return r.json()
 
-    def full_photo(self, uid: str, range_header: str | None = None) -> httpx.Response:
+    def full_photo(self, uid: str, range_header: str | None = None,
+                   timeout_ms: int | None = None) -> httpx.Response:
         """Stream a full-resolution photo (read-only, on demand).
 
         ``range_header`` (e.g. ``bytes=0-``) is forwarded so HTTP Range
         seeking works end-to-end for videos.
+
+        ``timeout_ms`` bounds how long the bridge holds a download queue slot
+        for this request. When the caller has its own hard timeout (the API's
+        ``_FULL_TIMEOUT_SEC``), it should pass the same value so the bridge
+        aborts its SDK download shortly after the client gives up, instead of
+        pinning the slot until the bridge's own ceiling. ``None`` leaves the
+        bridge's FULL_RES_TIMEOUT_MS in place (used by the indexer, which
+        needs the whole file).
 
         For transient errors (429 / 502 / 503) we raise
         `BridgeTransientError` carrying the parsed Retry-After value so the
@@ -164,10 +173,13 @@ class BridgeClient:
         """
         # Streaming: return the raw response so the caller can iterate the body
         # as it arrives (full-res downloads can be slow; don't buffer them).
+        headers = {"Range": range_header} if range_header else {}
+        if timeout_ms:
+            headers["X-Timeout-Ms"] = str(timeout_ms)
         req = self._client.build_request(
             "GET",
             f"{self.base_url}/photo/{uid}/full",
-            headers={"Range": range_header} if range_header else None,
+            headers=headers,
             timeout=httpx.Timeout(30.0, connect=10.0, read=None, write=None),
         )
         resp = self._client.send(req, stream=True)

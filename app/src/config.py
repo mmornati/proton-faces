@@ -63,6 +63,11 @@ class Settings:
         # full-res download. Helps unstuck videos left stranded by a bridge
         # outage (e.g. the 2,286 videos left in `full` on Sep 1).
         self.fullres_retry_after_sec = int(os.environ.get("FULLRES_RETRY_AFTER_SEC", "600"))
+        # Per-uid backoff after a failed full-res attempt. The fullres loop
+        # skips a uid it tried recently instead of hammering the bridge with
+        # the same stuck video every few minutes (which saturates the SDK's
+        # download queue and starves interactive full-res requests).
+        self.fullres_backoff_sec = int(os.environ.get("FULLRES_BACKOFF_SEC", "900"))
         # Age (seconds) at which the on-disk Proton SDK cache is considered
         # "stale" by the admin check. Stale alone isn't actionable — a busy
         # bridge may not touch its caches for a while. The check only

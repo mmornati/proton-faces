@@ -193,7 +193,8 @@ class DemoBridge:
 
     # ----- full-resolution stream (for HEIC / video fallback) -----
 
-    def full_photo(self, uid: str, range_header: str | None = None) -> _BytesResponse:
+    def full_photo(self, uid: str, range_header: str | None = None,
+                   timeout_ms: int | None = None) -> _BytesResponse:
         """Return the raw JPEG bytes for a fixture photo.
 
         Used by the fullres fallback path (HEIC / video). Demo photos are all

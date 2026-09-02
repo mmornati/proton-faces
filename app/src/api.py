@@ -972,9 +972,13 @@ def api_full(uid: str, request: Request,
     range_header = request.headers.get("range")
 
     # Acquire the bridge response in a worker thread so we can apply a hard
-    # `_FULL_TIMEOUT_SEC` cap regardless of what the bridge is doing.
+    # `_FULL_TIMEOUT_SEC` cap regardless of what the bridge is doing. We also
+    # forward that cap to the bridge so it aborts its SDK download shortly
+    # after we time out, freeing the SDK's download-queue slot instead of
+    # letting the request pin it until the bridge's own (5 min) ceiling.
     future = _full_executor.submit(
-        get_bridge().full_photo, uid, range_header=range_header
+        get_bridge().full_photo, uid, range_header=range_header,
+        timeout_ms=int(_FULL_TIMEOUT_SEC * 1000),
     )
     try:
         resp = future.result(timeout=_FULL_TIMEOUT_SEC)
