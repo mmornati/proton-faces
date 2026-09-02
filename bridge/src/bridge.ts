@@ -289,7 +289,18 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     const isVideo = mediaType?.startsWith('video/') ?? false;
     const contentType = mediaType ?? (isVideo ? 'application/octet-stream' : 'image/jpeg');
 
-    const downloader = await ctx.photosSdk.getFileDownloader(uid, AbortSignal.timeout(FULL_RES_TIMEOUT_MS));
+    // The client can bound how long we hold a download queue slot for it via
+    // `X-Timeout-Ms`. When the browser/API gives up (e.g. the app's 30s hard
+    // timeout), a long-lived SDK download would otherwise keep its slot in the
+    // SDK's 5-slot DownloadQueue occupied for up to FULL_RES_TIMEOUT_MS,
+    // starving every other full-res request until the bridge is restarted.
+    // Clamping the AbortSignal to the client's patience frees the slot quickly.
+    const requestedTimeoutMs = Number(request.headers.get('x-timeout-ms'));
+    const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0
+        ? Math.min(FULL_RES_TIMEOUT_MS, requestedTimeoutMs)
+        : FULL_RES_TIMEOUT_MS;
+
+    const downloader = await ctx.photosSdk.getFileDownloader(uid, AbortSignal.timeout(timeoutMs));
 
     if (!isVideo) {
         // Images stream live straight from Proton — no temp file on disk. This

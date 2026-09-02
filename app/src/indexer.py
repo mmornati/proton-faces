@@ -55,6 +55,10 @@ log = logging.getLogger("indexer")
 
 _pending: queue.Queue[str] = queue.Queue()  # uids whose thumbnail is ready
 
+# Per-uid backoff for the fullres loop: uid -> epoch time before which we
+# must not retry it. Only the (single) fullres thread reads/writes this.
+_fullres_backoff: dict[str, float] = {}
+
 # Lightweight runtime state surfaced via the `/api/status` endpoint.
 # Plain int/float writes are GIL-atomic, so we don't need a lock.
 _runtime: dict = {
@@ -412,15 +416,26 @@ def _fullres_loop() -> None:
     """
     while True:
         try:
-            photos = get_photos("full", limit=1)
-            if not photos:
+            # Prune expired backoff entries and pick the next photo, skipping
+            # any uid we failed recently. Without this the loop retries the
+            # same stuck videos every few minutes, holding a bridge download
+            # queue slot each time and starving interactive full-res requests.
+            now = time.time()
+            for uid_ in [u for u, t in _fullres_backoff.items() if t <= now]:
+                del _fullres_backoff[uid_]
+            photos = get_photos("full", limit=50)
+            uid = None
+            for row in photos:
+                if _fullres_backoff.get(row["uid"], 0) <= now:
+                    uid = row["uid"]
+                    break
+            if uid is None:
                 # Crash recovery: any photo stuck in 'fullres' gets retried.
                 stuck = get_photos("fullres", limit=1)
                 if not stuck:
                     time.sleep(5)
                     continue
-                photos = stuck
-            uid = photos[0]["uid"]
+                uid = stuck[0]["uid"]
             if not claim_photo_for_full(uid):
                 continue
 
@@ -467,6 +482,7 @@ def _fullres_loop() -> None:
                     exc.status_code, uid, exc.retry_after_sec,
                 )
                 tmp.unlink(missing_ok=True)
+                _fullres_backoff[uid] = time.time() + settings.fullres_backoff_sec
                 with _db_conn() as conn:
                     conn.execute(
                         "UPDATE photos SET status='full', processed_at=?, error=NULL WHERE uid=?",
@@ -478,6 +494,7 @@ def _fullres_loop() -> None:
             except Exception as exc:
                 log.warning("fullres failed for %s: %s", uid, exc)
                 tmp.unlink(missing_ok=True)
+                _fullres_backoff[uid] = time.time() + settings.fullres_backoff_sec
                 set_photo_error(uid, str(exc)[:300])
         except Exception as exc:  # pragma: no cover
             log.exception("fullres loop error: %s", exc)

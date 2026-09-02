@@ -100,6 +100,11 @@ services:
       # How long a `status='full'` row can sit before being re-queued for
       # full-res download. Unsticks videos left stranded by bridge outages.
       - FULLRES_RETRY_AFTER_SEC=${FULLRES_RETRY_AFTER_SEC:-600}
+      # Per-uid backoff after a failed full-res attempt: the fullres loop skips
+      # a uid it tried recently instead of hammering the bridge with the same
+      # stuck video (which saturates the SDK download queue and starves
+      # interactive full-res requests).
+      - FULLRES_BACKOFF_SEC=${FULLRES_BACKOFF_SEC:-900}
       # Internal-only port for the live status endpoint. Not published to
       # the host; reachable from the `app` service over the compose
       # network via the `indexer` hostname.
