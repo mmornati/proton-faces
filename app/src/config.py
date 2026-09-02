@@ -68,6 +68,12 @@ class Settings:
         # the same stuck video every few minutes (which saturates the SDK's
         # download queue and starves interactive full-res requests).
         self.fullres_backoff_sec = int(os.environ.get("FULLRES_BACKOFF_SEC", "900"))
+        # Pause between successful full-res downloads. The full-res loop drains
+        # a backlog (e.g. videos stranded in `full`) by downloading each file in
+        # full, which saturates a home connection when run back-to-back (NAT-table
+        # exhaustion shows up as cloudflared QUIC timeouts). A fixed gap between
+        # items bounds sustained throughput while still making progress.
+        self.fullres_drain_interval_sec = int(os.environ.get("FULLRES_DRAIN_INTERVAL_SEC", "15"))
         # Age (seconds) at which the on-disk Proton SDK cache is considered
         # "stale" by the admin check. Stale alone isn't actionable — a busy
         # bridge may not touch its caches for a while. The check only

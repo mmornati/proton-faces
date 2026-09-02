@@ -405,6 +405,7 @@ Environment variables (see `.env.example`):
 | `SYNC_INTERVAL`       | `300`                      | Seconds between timeline diffs              |
 | `FULLRES_RETRY_AFTER_SEC` | `600`                  | How long a `status='full'` row can sit before the fullres loop re-queues it for full-res download (unsticks videos stranded by bridge outages) |
 | `FULLRES_BACKOFF_SEC` | `900`                      | Per-uid backoff after a failed full-res attempt: the fullres loop skips a uid it tried recently, so a stuck video doesn't hammer the bridge and saturate the SDK download queue (which starves interactive full-res requests) |
+| `FULLRES_DRAIN_INTERVAL_SEC` | `15`               | Pause between successful full-res downloads; bounds sustained bandwidth while draining a backlog (large videos downloaded in full can saturate a home connection) |
 | `SYNC_LIMIT`          | `0`                        | Only index the newest N photos (0 = all) — handy for testing |
 | `WORKERS`             | `2`                        | Parallel recognition workers                |
 | `CLUSTER_INTERVAL`    | `1800`                     | Seconds between people-clustering runs      |

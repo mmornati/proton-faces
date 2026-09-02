@@ -471,6 +471,13 @@ def _fullres_loop() -> None:
                             "UPDATE photos SET status='downloading' WHERE uid=?", (uid,)
                         )
                     _pending.put(uid)
+
+                # Pace the backlog drain. Full-res downloads (especially videos)
+                # are large and the SDK's internal block requests bypass the
+                # bridge's rate limiter, so back-to-back items saturate a home
+                # connection (NAT-table exhaustion shows up as cloudflared QUIC
+                # timeouts). Sleep between successful items to bound throughput.
+                time.sleep(settings.fullres_drain_interval_sec)
             except BridgeTransientError as exc:
                 # Bridge returned 429/502/503 — back off rather than failing
                 # the row. Release the claim (set status back to 'full' so

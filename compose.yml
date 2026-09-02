@@ -105,6 +105,10 @@ services:
       # stuck video (which saturates the SDK download queue and starves
       # interactive full-res requests).
       - FULLRES_BACKOFF_SEC=${FULLRES_BACKOFF_SEC:-900}
+      # Pause between successful full-res downloads. Bounds sustained bandwidth
+      # while the loop drains a backlog (videos are downloaded in full, which
+      # saturates a home connection and shows up as cloudflared QUIC timeouts).
+      - FULLRES_DRAIN_INTERVAL_SEC=${FULLRES_DRAIN_INTERVAL_SEC:-15}
       # Internal-only port for the live status endpoint. Not published to
       # the host; reachable from the `app` service over the compose
       # network via the `indexer` hostname.
