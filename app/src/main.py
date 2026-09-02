@@ -151,12 +151,26 @@ def main() -> None:
     # Start the admin's auto-backup daemon (schedule read from admin_config.json).
     from admin import start_backup_worker
     start_backup_worker()
+    # Pre-generate people cover crops so the People page serves plain files
+    # instead of on-demand PIL encodes (runs in the parent process only).
+    from api import start_crop_prewarm_worker
+    start_crop_prewarm_worker()
     # Janitor: purge expired auth tokens every hour so the SQLite index
     # doesn't bloat with stale rows. store.purge_expired_tokens exists but
     # was never called on a schedule (issue #N — pre-fix, revoked + expired
     # tokens accumulated forever).
     _start_token_janitor()
-    uvicorn.run(app, host="0.0.0.0", port=settings.port, log_level="info")
+    # Run several uvicorn workers so a slow request (e.g. similar_faces,
+    # cover-crop generation, /api/status) no longer blocks every other
+    # page navigation. The legacy in-process indexer mode stays single-
+    # process to keep its threads and the server in the same process.
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=settings.port,
+        log_level="info",
+        workers=1 if _env_bool("RUN_INDEXER", False) else 4,
+    )
 
 
 def _start_token_janitor() -> None:

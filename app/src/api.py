@@ -48,7 +48,6 @@ from store import (
     assign_face_person,
     clip_count,
     count_faces_for_person,
-    count_people,
     create_person,
     create_user,
     delete_user,
@@ -123,8 +122,8 @@ _dups_cache: tuple[float, dict] | None = None
 _ANCHORS_CACHE_TTL = 60.0
 _anchors_cache: tuple[float, dict] | None = None
 
-_PEOPLE_CACHE_TTL = 5.0
-_people_cache: tuple[float, dict] | None = None  # keyed by (q, limit, offset)
+_PEOPLE_CACHE_TTL = 10.0
+_people_cache: tuple[str | None, float, list] | None = None  # (q, ts, full list)
 
 # Hard cap on how long `/api/photos/{uid}/full` is allowed to take before we
 # give up and return 504 to the user. The bridge's /photo/{uid}/full endpoint
@@ -174,7 +173,7 @@ _CLIP_CACHE_TTL = 60.0
 # doesn't re-pay for 4× COUNT(*) + GROUP BY + a 44 k stat() walk every 15 s.
 _STATS_CACHE_TTL = 5.0
 _stats_cache: tuple[float, dict] | None = None
-_DIRSIZE_CACHE_TTL = 30.0
+_DIRSIZE_CACHE_TTL = 300.0
 _dirsize_cache: dict[str, tuple[float, int]] = {}
 _clip_cache: tuple[float, int, list[str], np.ndarray] | None = None
 
@@ -509,6 +508,28 @@ def _cached_stats() -> dict:
     return payload
 
 
+# Cached bridge health so the periodic /api/status poll doesn't pay a
+# bridge HTTP round-trip (measured ~100-300 ms) on every request.
+_BRIDGE_HEALTH_CACHE_TTL = 30.0
+_bridge_health_cache: tuple[float, tuple[bool, bool]] | None = None
+
+
+def _cached_bridge_health() -> tuple[bool, bool]:
+    """Cached (reachable, logged_in)."""
+    global _bridge_health_cache
+    now = time.time()
+    if _bridge_health_cache is not None and now - _bridge_health_cache[0] < _BRIDGE_HEALTH_CACHE_TTL:
+        return _bridge_health_cache[1]
+    try:
+        b = get_bridge().health()
+        state = (bool(b.get("ok")), bool(b.get("loggedIn")))
+    except Exception as exc:
+        log.warning("bridge health failed: %s", exc)
+        state = (False, False)
+    _bridge_health_cache = (now, state)
+    return state
+
+
 # Proxy cache for the indexer container's live runtime state. The API
 # process never runs the indexer itself (RUN_INDEXER=0 by default), so
 # `get_indexer_state()` would otherwise return an empty stub. Instead we
@@ -620,13 +641,10 @@ def api_status(request: Request) -> dict:
     behind auth: anonymous callers get everything except `config`.
     """
     try:
-        b = get_bridge().health()
-        bridge_ok = bool(b.get("ok"))
-        bridge_logged_in = bool(b.get("loggedIn"))
-    except Exception as exc:
+        bridge_ok, bridge_logged_in = _cached_bridge_health()
+    except Exception:
         bridge_ok = False
         bridge_logged_in = False
-        log.warning("bridge health failed: %s", exc)
     s = _cached_stats()
     rt = _merged_indexer_state()
     thumbs_bytes = _cached_dir_size(settings.thumb_dir)
@@ -1056,23 +1074,26 @@ def api_full(uid: str, request: Request,
 
 @app.get("/api/people")
 def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
-    """People ordered by photo_count DESC. Paginated, optionally filtered by name."""
+    """People ordered by photo_count DESC. Paginated, optionally filtered by name.
+
+    The expensive GROUP-BY-all-faces query is materialized once per `q` and
+    cached briefly, then each page just slices the list — so infinite scroll
+    (new offset per page) no longer re-runs the aggregation for every page.
+    """
     q = (q or "").strip() or None
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
     global _people_cache
     now = time.time()
-    key = (q, limit, offset)
-    if (
-        _people_cache is not None
-        and _people_cache[0] == key
-        and now - _people_cache[1] < _PEOPLE_CACHE_TTL
-    ):
-        return _people_cache[2]
+    if _people_cache is not None:
+        cached_q, ts, full = _people_cache
+        if cached_q == q and now - ts < _PEOPLE_CACHE_TTL:
+            page = full[offset : offset + limit]
+            return {"people": page, "total": len(full), "limit": limit, "offset": offset}
 
-    rows = all_people(q=q, limit=limit, offset=offset)
-    total = count_people(q=q)
-    people = [
+    rows = all_people(q=q)
+    total = len(rows)
+    full = [
         {
             "id": r["id"],
             "name": r["name"],
@@ -1086,9 +1107,9 @@ def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
         }
         for r in rows
     ]
-    payload = {"people": people, "total": total, "limit": limit, "offset": offset}
-    _people_cache = (key, now, payload)
-    return payload
+    _people_cache = (q, now, full)
+    page = full[offset : offset + limit]
+    return {"people": page, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/people/{person_id}/cover")
@@ -1176,6 +1197,59 @@ def _face_crop_bytes(face_id: int) -> bytes | None:
             except OSError:
                 pass
     return data
+
+
+def start_crop_prewarm_worker() -> None:
+    """Background thread that pre-generates every people cover crop once, so
+    the People page serves plain files instead of ~30 ms PIL encodes on a
+    ~97% cache-miss grid. Runs in the parent process only (with uvicorn
+    workers>1 the parent is the only place these daemon threads live).
+    Resumable: skips crops that already exist, and rescans periodically so
+    newly created people eventually get covered too."""
+    import concurrent.futures
+
+    def _loop() -> None:
+        import sqlite3
+
+        import time as _time
+
+        from config import settings as _s
+
+        log = logging.getLogger("crop-prewarm")
+        while True:
+            try:
+                conn = sqlite3.connect(_s.db_path, timeout=30)
+                try:
+                    rows = conn.execute(
+                        "SELECT cover_face_id FROM people "
+                        "WHERE cover_face_id IS NOT NULL ORDER BY id"
+                    ).fetchall()
+                finally:
+                    conn.close()
+                missing = [
+                    r[0] for r in rows if not _crop_cache_path(r[0]).exists()
+                ]
+                if not missing:
+                    _time.sleep(300.0)
+                    continue
+                log.info("crop prewarm: %d cover crops missing, generating", len(missing))
+                done = 0
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                    for _ in pool.imap_unordered(_face_crop_bytes, missing):
+                        done += 1
+                        if done % 500 == 0:
+                            log.info(
+                                "crop prewarm: %d/%d done", done, len(missing)
+                            )
+                log.info("crop prewarm: finished %d crops", done)
+                _time.sleep(300.0)
+            except Exception:
+                log.exception("crop prewarm iteration failed")
+                _time.sleep(300.0)
+
+    t = threading.Thread(target=_loop, name="crop-prewarm", daemon=True)
+    t.start()
+    log.info("crop prewarm worker started")
 
 
 def _face_row(face_id: int):

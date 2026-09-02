@@ -133,6 +133,14 @@ def get_conn() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # The index lives on a spinning HDD: synchronous=FULL makes every commit
+    # fsync the disk and the small default WAL checkpoint (4 MB) stalls
+    # readers while the indexer is draining. NORMAL keeps WAL durability for
+    # app crashes (only an OS power-loss can lose the last commits, which is
+    # acceptable for a rebuildable index) and a 64 MB checkpoint amortizes
+    # the checkpoint across many more writes.
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA wal_autocheckpoint=16000")
     return conn
 
 
@@ -642,18 +650,64 @@ def unassigned_faces(limit: int = 500) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+# Module-level cache of every face embedding as one (N,512) float32 matrix.
+# The indexer adds faces continuously, so the cache is short-lived (30 s).
+_EMBEDDING_CACHE_TTL = 30.0
+_embedding_cache: dict | None = None
+_embedding_cache_ts = 0.0
+_embedding_cache_lock = threading.Lock()
+
+
+def _embedding_cache_data() -> dict:
+    """Lazily load all face embeddings into a single matrix + aligned arrays."""
+    global _embedding_cache, _embedding_cache_ts
+    now = time.time()
+    if _embedding_cache is not None and now - _embedding_cache_ts < _EMBEDDING_CACHE_TTL:
+        return _embedding_cache
+    with _embedding_cache_lock:
+        now = time.time()
+        if _embedding_cache is not None and now - _embedding_cache_ts < _EMBEDDING_CACHE_TTL:
+            return _embedding_cache
+        ids: list[int] = []
+        photo_uids: list[str] = []
+        person_ids: list[int | None] = []
+        vecs: list[np.ndarray] = []
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, photo_uid, person_id, embedding FROM faces ORDER BY id"
+            ).fetchall()
+        for r in rows:
+            ids.append(r["id"])
+            photo_uids.append(r["photo_uid"])
+            person_ids.append(r["person_id"])
+            vecs.append(np.frombuffer(r["embedding"], dtype=np.float32))
+        mat = np.stack(vecs) if vecs else np.zeros((0, 512), dtype=np.float32)
+        _embedding_cache = {
+            "ids": np.asarray(ids, dtype=np.int64),
+            "photo_uids": photo_uids,
+            "person_ids": person_ids,
+            "mat": mat,
+        }
+        _embedding_cache_ts = now
+        return _embedding_cache
+
+
 def similar_faces(embedding: bytes, threshold: float, limit: int = 200) -> list[sqlite3.Row]:
     """Faces (id, photo_uid, person_id, sim) whose cosine similarity to `embedding` is >= threshold."""
-    rows = all_face_rows()
     emb = np.frombuffer(embedding, dtype=np.float32)
-    out = []
-    for r in rows:
-        fe = np.frombuffer(r["embedding"], dtype=np.float32)
-        s = float(fe @ emb)
-        if s >= threshold:
-            out.append((r["id"], r["photo_uid"], r["person_id"], s))
-    out.sort(key=lambda t: t[3], reverse=True)
-    return out[:limit]
+    data = _embedding_cache_data()
+    mat = data["mat"]
+    if mat.shape[0] == 0:
+        return []
+    scores = mat @ emb
+    idx = np.flatnonzero(scores >= threshold)
+    if idx.size == 0:
+        return []
+    top = idx[np.argsort(scores[idx])[::-1][:limit]]
+    ids = data["ids"]
+    uids = data["photo_uids"]
+    pids = data["person_ids"]
+    return [(int(ids[i]), uids[i], pids[i], float(scores[i])) for i in top]
 
 
 def rename_person(person_id: int, name: str) -> None:
