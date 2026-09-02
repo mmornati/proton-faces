@@ -359,7 +359,36 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     const tmp = path.join(workDir, `${uid}-${randomUUID()}.full`);
 
     try {
-        await downloader.downloadToPath(tmp);
+        // The SDK FileDownloader has no downloadToPath() method at this SDK pin
+        // (cli/v0.8.0). Mirror the CLI's own downloadToPath helper (see
+        // cli/src/commands/fileSystem/downloadOperations.ts): wrap Bun's file
+        // writer as a WritableStream and stream into it via downloadToStream().
+        // Beyond API compat this matters for queue health — the SDK
+        // DownloadQueue slot we hold is only released when a download settles,
+        // so actually starting the download (instead of throwing on a
+        // nonexistent method before any download begins) stops the 5-slot queue
+        // from leaking and starving every /photo/{uid}/full request.
+        const sink = Bun.file(tmp).writer();
+        const writable = {
+            getWriter: () => sink,
+            close: async () => {
+                await sink.end();
+            },
+            abort: async () => {
+                await sink.end();
+                await Bun.file(tmp).unlink().catch(() => {});
+            },
+            locked: false,
+        } as unknown as WritableStream;
+
+        try {
+            const dlController = downloader.downloadToStream(writable);
+            await dlController.completion();
+        } catch (err) {
+            await sink.end(err instanceof Error ? err : new Error(String(err))).catch(() => {});
+            throw err;
+        }
+        await sink.end();
 
         const ff = openSync(tmp, 'r');
         try {
