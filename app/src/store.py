@@ -618,6 +618,27 @@ def get_person(person_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
+def people_by_ids(person_ids: list[int]) -> list[sqlite3.Row]:
+    """Batch variant of `get_person`: people + face/photo counts for many ids.
+
+
+
+    Order is unspecified; callers should map by id. Returns [] when empty.
+
+
+    """
+    if not person_ids:
+        return []
+    qmarks = ",".join("?" * len(person_ids))
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT p.*, COUNT(f.id) AS face_count, COUNT(DISTINCT f.photo_uid) AS photo_count "
+            "FROM people p LEFT JOIN faces f ON f.person_id = p.id "
+            f"WHERE p.id IN ({qmarks}) GROUP BY p.id",
+            person_ids,
+        ).fetchall()
+
+
 def face_embedding(face_id: int) -> bytes | None:
     with get_conn() as conn:
         row = conn.execute("SELECT embedding FROM faces WHERE id=?", (face_id,)).fetchone()
@@ -811,6 +832,9 @@ def person_mean_embeddings() -> dict[int, np.ndarray]:
             out[pid] = (mean / norm).astype(np.float32)
     return out
 
+_person_means_cache: dict[int, np.ndarray] | None = None
+_person_means_cache_ts = 0.0
+
 
 def person_mean_embeddings_from_cache() -> dict[int, np.ndarray]:
     """Person-mean embeddings derived from the shared cached face matrix.
@@ -820,15 +844,28 @@ def person_mean_embeddings_from_cache() -> dict[int, np.ndarray]:
     expensive load is amortized across requests within the cache TTL. The
     means are computed vectorized via ``np.add.reduceat`` over the sorted
     person-id axis. Used by the interactive "top matches" suggest endpoint.
+
+
+    The computed means are themselves cached, keyed to the embedding-matrix
+    load timestamp: recomputed only when the underlying matrix reloads
+    (every ~120 s), NOT on every suggest request.
+
     """
+    global _person_means_cache, _person_means_cache_ts
     data = _embedding_cache_data()
     mat = data["mat"]
     person_ids = data["person_ids"]
+    if _person_means_cache is not None and _person_means_cache_ts == _embedding_cache_ts:
+        return _person_means_cache
     if mat.shape[0] == 0 or not person_ids:
-        return {}
+        _person_means_cache = {}
+        _person_means_cache_ts = _embedding_cache_ts
+        return _person_means_cache
     mask = np.array([p is not None for p in person_ids], dtype=bool)
     if not mask.any():
-        return {}
+        _person_means_cache = {}
+        _person_means_cache_ts = _embedding_cache_ts
+        return _person_means_cache
     sub = mat[mask]
     spids = np.array([p for p in person_ids if p is not None], dtype=np.int64)
     order = np.argsort(spids, kind="stable")
@@ -844,6 +881,8 @@ def person_mean_embeddings_from_cache() -> dict[int, np.ndarray]:
         n = norms[i, 0]
         if n != 0:
             out[int(u)] = (means[i] / n).astype(np.float32)
+    _person_means_cache = out
+    _person_means_cache_ts = _embedding_cache_ts
     return out
 
 

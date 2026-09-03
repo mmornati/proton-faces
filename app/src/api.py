@@ -89,6 +89,7 @@ from store import (
     unassigned_faces,
     unfavorite_photo,
     update_user,
+    people_by_ids,
     _embedding_cache_data,
 )
 import indexer
@@ -1353,14 +1354,19 @@ def api_face_suggest(face_id: int, limit: int = 5):
     means = person_mean_embeddings_from_cache()
     if not means:
         return {"suggestions": []}
-    # Vectorized: one (P,512) @ (512,) matmul over every person's mean.
+# Vectorized: one (P,512) @ (512,) matmul over every person's mean.
     pids = np.array(list(means.keys()), dtype=np.int64)
     M = np.stack([means[p] for p in pids]).astype(np.float32)
     sims = M @ fe
     order = np.argsort(-sims)
-    by_id = {p["id"]: p for p in _people_all_cached()}
+    top_n = max(1, min(limit, 50))
+    # Batch fetch ONLY the top-N people by PK (plus face/photo counts). Never
+    # the 37 s all-people aggregation: typeahead and grid already warm this via
+    # `_people_cache`, but a cold cache must not stall the popover.
+
+    by_id = {r["id"]: r for r in people_by_ids([int(pids[i]) for i in order[:top_n]])}
     scored = []
-    for i in order[: max(1, min(limit, 50))]:
+    for i in order[:top_n]:
         pid = int(pids[i])
         p = by_id.get(pid)
         scored.append(
@@ -1370,7 +1376,9 @@ def api_face_suggest(face_id: int, limit: int = 5):
                 "similarity": float(sims[i]),
                 "photo_count": p["photo_count"] if p else 0,
                 "face_count": p["face_count"] if p else 0,
-                "cover_url": p["cover_url"] if p else None,
+                "cover_url": _sign_if_needed(
+                    f"/api/people/{pid}/cover" if p and p["cover_face_id"] else None
+                ),
             }
         )
     return {"suggestions": scored}
