@@ -35,6 +35,8 @@ from store import (
     claim_photo_for_full,
     claim_photo_for_processing,
     confirm_deletions,
+    count_faces_for_photo,
+    clip_exists,
     get_photos,
     init_db,
     insert_clip,
@@ -345,8 +347,6 @@ def _process_one(uid: str) -> None:
         arr = np.asarray(rgb)
         bgr = arr[:, :, ::-1].copy()  # PIL -> OpenCV BGR
 
-    clip_vec = embed_pil(rgb)
-
     # GPS/place is enriched by the gps loop (subprocess) — never geocode from
     # a worker thread: reverse_geocoder forks a multiprocessing pool which
     # deadlocks inside the app's threaded process.
@@ -358,16 +358,33 @@ def _process_one(uid: str) -> None:
     )
     place = photo["place"] if photo else None
 
-    faces = detect_faces(bgr)
-    face_count = len(faces)
-    for f in faces:
-        insert_face(
-            photo_uid=uid,
-            person_id=None,
-            confidence=f["confidence"],
-            bbox=_norm_bbox(f["bbox"], w, h),
-            embedding=f["embedding"].tobytes(),
-        )
+    # Re-processing a photo (e.g. a reclaimed photo that was falsely marked
+    # deleted and is being restored) must not re-run the expensive face
+    # detector nor leave duplicate face rows behind. If this photo already
+    # has faces from a previous run, keep them — they are still valid, and
+    # skipping detection is exactly what makes reclaiming ~79 k photos fast
+    # (only the thumbnail is re-downloaded; embeddings and any person_id
+    # assignments are preserved). Clips are upserted in `insert_clip`, so a
+    # fresh detection is only ever needed when no prior result exists.
+    existing_faces = count_faces_for_photo(uid)
+    if existing_faces:
+        face_count = existing_faces
+    else:
+        faces = detect_faces(bgr)
+        face_count = len(faces)
+        for f in faces:
+            insert_face(
+                photo_uid=uid,
+                person_id=None,
+                confidence=f["confidence"],
+                bbox=_norm_bbox(f["bbox"], w, h),
+                embedding=f["embedding"].tobytes(),
+            )
+
+    # Clip embedding: recompute only when the photo has none yet (same
+    # reclaim fast-path as faces above — the previous CLIP vector, if any,
+    # is still valid).
+    clip_vec = None if clip_exists(uid) else embed_pil(rgb)
 
     # Persist thumbnail into the cache, then remove the work file.
     final = _thumb_path(uid)
@@ -377,7 +394,10 @@ def _process_one(uid: str) -> None:
         insert_clip(uid, clip_vec.tobytes())
 
     set_photo_done(uid, final.name, gps, place)
-    log.debug("processed %s: %d faces, clip=%s", uid, face_count, clip_vec is not None)
+    log.debug(
+        "processed %s: %d faces (kept=%d), clip=%s",
+        uid, face_count, bool(existing_faces), clip_vec is not None,
+    )
 
 
 def _photo_row(uid: str):

@@ -563,6 +563,28 @@ def insert_face(photo_uid: str, person_id: int | None, confidence: float, bbox: 
         return cur.lastrowid
 
 
+def count_faces_for_photo(photo_uid: str) -> int:
+    """How many face rows a photo already has.
+
+    Used by the worker to skip re-running face detection when a photo is
+    reprocessed (e.g. a reclaimed photo restored after a false deletion).
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM faces WHERE photo_uid=?", (photo_uid,)
+        ).fetchone()
+        return int(row["n"])
+
+
+def clip_exists(photo_uid: str) -> bool:
+    """Whether a photo already has a CLIP embedding (to skip recomputing it)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM clips WHERE photo_uid=? LIMIT 1", (photo_uid,)
+        ).fetchone()
+        return row is not None
+
+
 def all_face_rows() -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
