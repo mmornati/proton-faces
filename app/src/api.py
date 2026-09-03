@@ -41,7 +41,6 @@ from store import (
     all_albums,
     album_photos,
     all_clips,
-    all_face_rows,
     all_people,
     all_tags,
     archived_photos,
@@ -68,6 +67,7 @@ from store import (
     merge_person,
     person_mean_embedding,
     person_mean_embeddings,
+    person_mean_embeddings_from_cache,
     person_map_markers,
     photo_anchors,
     photos_by_tag,
@@ -89,6 +89,7 @@ from store import (
     unassigned_faces,
     unfavorite_photo,
     update_user,
+    _embedding_cache_data,
 )
 import indexer
 log = logging.getLogger("api")
@@ -1072,6 +1073,39 @@ def api_full(uid: str, request: Request,
 
 # --- people ----------------------------------------------------------------
 
+def _people_all_cached() -> list:
+    """Full (unfiltered) people list as serialized dicts, cached briefly.
+
+    Avoids re-running the expensive GROUP-BY-all-faces query (~180 k rows) on
+    every call — shares the same `_people_cache` slot (q=None) as
+    `/api/people` so the suggest endpoint and the people grid don't each pay
+    for it independently.
+    """
+    global _people_cache
+    now = time.time()
+    if _people_cache is not None:
+        cached_q, ts, full = _people_cache
+        if cached_q is None and now - ts < _PEOPLE_CACHE_TTL:
+            return full
+    rows = all_people()
+    full = [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "cover_uid": r["cover_uid"],
+            "cover_face_id": r["cover_face_id"],
+            "face_count": r["face_count"],
+            "photo_count": r["photo_count"],
+            "cover_url": _sign_if_needed(
+                f"/api/people/{r['id']}/cover" if r["cover_face_id"] else None
+            ),
+        }
+        for r in rows
+    ]
+    _people_cache = (None, now, full)
+    return full
+
+
 @app.get("/api/people")
 def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
     """People ordered by photo_count DESC. Paginated, optionally filtered by name.
@@ -1085,6 +1119,10 @@ def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
     offset = max(0, offset)
     global _people_cache
     now = time.time()
+    if q is None:
+        full = _people_all_cached()
+        page = full[offset : offset + limit]
+        return {"people": page, "total": len(full), "limit": limit, "offset": offset}
     if _people_cache is not None:
         cached_q, ts, full = _people_cache
         if cached_q == q and now - ts < _PEOPLE_CACHE_TTL:
@@ -1312,30 +1350,30 @@ def api_face_suggest(face_id: int, limit: int = 5):
     if emb is None:
         return {"suggestions": []}
     fe = np.frombuffer(emb, dtype=np.float32)
-    means = person_mean_embeddings()
+    means = person_mean_embeddings_from_cache()
     if not means:
         return {"suggestions": []}
-    by_id = {p["id"]: p for p in all_people()}
+    # Vectorized: one (P,512) @ (512,) matmul over every person's mean.
+    pids = np.array(list(means.keys()), dtype=np.int64)
+    M = np.stack([means[p] for p in pids]).astype(np.float32)
+    sims = M @ fe
+    order = np.argsort(-sims)
+    by_id = {p["id"]: p for p in _people_all_cached()}
     scored = []
-    for pid, mean in means.items():
-        s = float(fe @ mean)
+    for i in order[: max(1, min(limit, 50))]:
+        pid = int(pids[i])
         p = by_id.get(pid)
         scored.append(
             {
                 "person_id": pid,
                 "name": (p["name"] if p else None) or f"person {pid}",
-                "similarity": s,
+                "similarity": float(sims[i]),
                 "photo_count": p["photo_count"] if p else 0,
                 "face_count": p["face_count"] if p else 0,
-                "cover_url": (
-                    _sign_if_needed(f"/api/people/{pid}/cover")
-                    if p and p["cover_face_id"]
-                    else None
-                ),
+                "cover_url": p["cover_url"] if p else None,
             }
         )
-    scored.sort(key=lambda s: s["similarity"], reverse=True)
-    return {"suggestions": scored[: max(1, min(limit, 50))]}
+    return {"suggestions": scored}
 
 
 @app.get("/api/photos/{uid}/faces")
@@ -1709,23 +1747,31 @@ def _semantic_search(vec: np.ndarray, limit: int, user_id: int) -> dict:
 
 
 def _face_similarity(emb: np.ndarray, limit: int, user_id: int) -> dict:
-    rows = all_face_rows()
-    if not rows:
+    data = _embedding_cache_data()
+    mat = data["mat"]
+    if mat.shape[0] == 0:
         return {"results": [], "total": 0}
-    photo_to_best = {}
-    sim_to_photo = {}
-    for r in rows:
-        fe = np.frombuffer(r["embedding"], dtype=np.float32)
-        s = float(fe @ emb)
-        uid = r["photo_uid"]
-        if s > sim_to_photo.get(uid, -1.0):
-            sim_to_photo[uid] = s
-            photo_to_best[uid] = s
-    ranked = sorted(sim_to_photo.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-    uids = [uid for uid, _ in ranked]
-    fav_set = favorite_uids(user_id, uids)
+    uids = data["photo_uids"]
+    scores = mat @ emb
+    # Rank all faces by similarity, then dedupe per photo keeping the best
+    # face score. The vectorized matmul replaces the previous per-row Python
+    # loop; the scan below is bounded because it stops after `limit` photos.
+    order = np.argsort(-scores)
+    seen: set = set()
+    top_uids: list = []
+    top_scores: list = []
+    for i in order:
+        uid = uids[i]
+        if uid in seen:
+            continue
+        seen.add(uid)
+        top_uids.append(uid)
+        top_scores.append(float(scores[i]))
+        if len(top_uids) >= limit:
+            break
+    fav_set = favorite_uids(user_id, top_uids)
     results = []
-    for uid, score in ranked:
+    for uid, score in zip(top_uids, top_scores):
         photo = get_photo(uid)
         if photo is None:
             continue

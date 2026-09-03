@@ -1271,29 +1271,10 @@ async function openFacePopover(face, x, y) {
     else if (el.dataset.create || el.dataset.name) commit({ name: el.dataset.name });
   };
 
-  // Top-5 most similar people, ranked by face→person-mean-embedding similarity.
-  try {
-    const data = await api(`/api/faces/${face.id}/suggest?limit=5`);
-    const sugg = data.suggestions || [];
-    const box = $("#popsugg");
-    if (!sugg.length) {
-      box.innerHTML = '<div class="sugg-title">Top matches</div><div class="sugg-empty" style="color:var(--muted);font-size:12px">No people yet — create a name below.</div>';
-    } else {
-      box.innerHTML = `<div class="sugg-title">Top matches</div>` + sugg.map((s) => `
-        <button class="sugg-item" data-pid="${s.person_id}" data-name="${esc(s.name)}">
-          ${s.cover_url ? `<img loading="lazy" src="${s.cover_url}" alt="">` : '<div style="width:26px;height:26px;border-radius:6px;background:var(--bg);flex:none"></div>'}
-          <span class="sugg-name">${esc(s.name)}</span>
-          <span class="sugg-sim">${Math.round(Math.max(0, Math.min(1, s.similarity)) * 100)}%</span>
-        </button>`).join("");
-      box.querySelectorAll(".sugg-item").forEach((b) => b.addEventListener("click", () => pick(b)));
-    }
-  } catch (e) {
-    const box = $("#popsugg");
-    if (box) box.innerHTML = '<div class="sugg-title">Top matches</div><div class="sugg-empty" style="color:var(--muted);font-size:12px">Suggestions unavailable.</div>';
-  }
-
   // Typeahead over existing people, plus a "create new" entry when the typed
-  // name doesn't exactly match an existing person.
+  // name doesn't exactly match an existing person. Registered BEFORE the
+  // async suggest fetch so name search stays usable even while "Top matches"
+  // is still loading (the suggest endpoint used to be slow).
   let acTimer = null;
   let acItems = [];
   const renderAc = () => {
@@ -1367,6 +1348,29 @@ async function openFacePopover(face, x, y) {
       else if (state.view === "unassigned") loadUnassigned();
     } catch (e) { toast("Error: " + e.message); }
   });
+
+  // Top-5 most similar people, ranked by face→person-mean-embedding similarity.
+  // Rendered asynchronously; the "Loading…" placeholder stays visible until it
+  // resolves so the name search above is never blocked by this request.
+  try {
+    const data = await api(`/api/faces/${face.id}/suggest?limit=5`);
+    const sugg = data.suggestions || [];
+    const box = $("#popsugg");
+    if (!sugg.length) {
+      box.innerHTML = '<div class="sugg-title">Top matches</div><div class="sugg-empty" style="color:var(--muted);font-size:12px">No people yet — create a name below.</div>';
+    } else {
+      box.innerHTML = `<div class="sugg-title">Top matches</div>` + sugg.map((s) => `
+        <button class="sugg-item" data-pid="${s.person_id}" data-name="${esc(s.name)}">
+          ${s.cover_url ? `<img loading="lazy" src="${s.cover_url}" alt="">` : '<div style="width:26px;height:26px;border-radius:6px;background:var(--bg);flex:none"></div>'}
+          <span class="sugg-name">${esc(s.name)}</span>
+          <span class="sugg-sim">${Math.round(Math.max(0, Math.min(1, s.similarity)) * 100)}%</span>
+        </button>`).join("");
+      box.querySelectorAll(".sugg-item").forEach((b) => b.addEventListener("click", () => pick(b)));
+    }
+  } catch (e) {
+    const box = $("#popsugg");
+    if (box) box.innerHTML = '<div class="sugg-title">Top matches</div><div class="sugg-empty" style="color:var(--muted);font-size:12px">Suggestions unavailable.</div>';
+  }
 }
 
 function closePopover() {

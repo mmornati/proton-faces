@@ -651,8 +651,12 @@ def unassigned_faces(limit: int = 500) -> list[sqlite3.Row]:
 
 
 # Module-level cache of every face embedding as one (N,512) float32 matrix.
-# The indexer adds faces continuously, so the cache is short-lived (30 s).
-_EMBEDDING_CACHE_TTL = 30.0
+# The indexer adds faces continuously, so the cache is short-lived. TTL is
+# sized so the ~460 MB matrix / ~13 s load is amortized across requests (the
+# interactive face-suggest and face-search endpoints reuse it), while still
+# refreshing often enough for the background auto-tag path to see new faces
+# within a couple of minutes.
+_EMBEDDING_CACHE_TTL = 120.0
 _embedding_cache: dict | None = None
 _embedding_cache_ts = 0.0
 _embedding_cache_lock = threading.Lock()
@@ -805,6 +809,41 @@ def person_mean_embeddings() -> dict[int, np.ndarray]:
         norm = float(np.linalg.norm(mean))
         if norm > 0:
             out[pid] = (mean / norm).astype(np.float32)
+    return out
+
+
+def person_mean_embeddings_from_cache() -> dict[int, np.ndarray]:
+    """Person-mean embeddings derived from the shared cached face matrix.
+
+    Unlike `person_mean_embeddings()` (which issues a fresh ~180 k-row SQLite
+    fetch on every call), this reuses `_embedding_cache_data()` so the
+    expensive load is amortized across requests within the cache TTL. The
+    means are computed vectorized via ``np.add.reduceat`` over the sorted
+    person-id axis. Used by the interactive "top matches" suggest endpoint.
+    """
+    data = _embedding_cache_data()
+    mat = data["mat"]
+    person_ids = data["person_ids"]
+    if mat.shape[0] == 0 or not person_ids:
+        return {}
+    mask = np.array([p is not None for p in person_ids], dtype=bool)
+    if not mask.any():
+        return {}
+    sub = mat[mask]
+    spids = np.array([p for p in person_ids if p is not None], dtype=np.int64)
+    order = np.argsort(spids, kind="stable")
+    sorted_pids = spids[order]
+    sorted_mat = sub[order]
+    unique, first_idx = np.unique(sorted_pids, return_index=True)
+    sums = np.add.reduceat(sorted_mat, first_idx, axis=0)
+    counts = np.diff(np.append(first_idx, len(sorted_pids)))[:, None]
+    means = sums / counts
+    norms = np.linalg.norm(means, axis=1, keepdims=True)
+    out: dict[int, np.ndarray] = {}
+    for i, u in enumerate(unique):
+        n = norms[i, 0]
+        if n != 0:
+            out[int(u)] = (means[i] / n).astype(np.float32)
     return out
 
 
