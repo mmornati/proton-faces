@@ -11,9 +11,10 @@ hide:
   <p class="pf-tagline">Proton Faces indexes your end-to-end encrypted Proton Photos locally so you can search faces, places, and objects without ever uploading a single byte back.</p>
   <div class="pf-cta">
     <a class="pf-cta-primary" href="getting-started/quickstart/">Get started in 5 minutes →</a>
-    <a class="pf-cta-secondary" href="getting-started/demo-mode/">Try the demo (no account)</a>
+    <a class="pf-cta-secondary" href="https://protonface.mornati.ovh">Try the live demo →</a>
     <a class="pf-cta-secondary" href="https://github.com/mmornati/proton-faces">View on GitHub</a>
   </div>
+  <p class="pf-demo-credentials"><strong>Live demo login</strong> — username <code>demo</code> · password <code>protonface-demo-2026-Q9vK3m</code></p>
 </div>
 
 <div class="pf-gallery" markdown>
@@ -102,7 +103,9 @@ flowchart LR
 
 ## Try it without a Proton account
 
-Proton Faces ships with a built-in **demo mode** that replaces the Proton bridge with a curated fixture of free CC0/Unsplash photos. `docker compose --profile demo up -d` and you're browsing a populated library in under a minute — no credentials required.
+Want to poke at a running instance right now? **[Open the live demo](https://protonface.mornati.ovh)** — a hosted demo instance with a curated library of free CC0/Unsplash photos. Log in with username `demo` and password `protonface-demo-2026-Q9vK3m`.
+
+Or run the same demo locally: proton-faces ships with a built-in **demo mode** that replaces the Proton bridge with a curated fixture of free CC0/Unsplash photos. `docker compose --profile demo up -d` and you're browsing a populated library in under a minute — no Proton credentials required.
 
 [Read the demo mode guide →](getting-started/demo-mode.md)
 

@@ -71,6 +71,12 @@ def click_nav(page, view: str) -> None:
 def capture_screenshot(page, name: str) -> Path:
     SHOTS_DIR.mkdir(parents=True, exist_ok=True)
     out = SHOTS_DIR / f"{name}.png"
+    # Give thumbnail tiles a real chance to finish loading before shooting,
+    # so the docs screenshots don't show "missing" (still-loading) photos.
+    try:
+        wait_for_images(page)
+    except PWTimeout:
+        pass  # never let one slow image abort the capture
     page.wait_for_timeout(300)
     page.screenshot(path=str(out), full_page=False)
     print(f"  ✓ {out.relative_to(ROOT)}")
@@ -80,6 +86,25 @@ def capture_screenshot(page, name: str) -> Path:
 def wait_for_cards(page, sel: str, min_count: int = 4, timeout_ms: int = 20000) -> None:
     page.wait_for_function(
         f"() => document.querySelectorAll('{sel}').length >= {min_count}",
+        timeout=timeout_ms,
+    )
+
+
+def wait_for_images(page, timeout_ms: int = 30000) -> None:
+    """Force every <img> in the DOM to load, then wait until all are done.
+
+    The UI sets ``loading="lazy"`` on thumbnail tiles, so images below the
+    fold never fetch on their own and stay blank in a screenshot. We flip them
+    to eager (idempotent) so they start loading immediately, then block until
+    every image is complete — otherwise the docs screenshots show "missing"
+    (still-loading / never-requested) photos.
+    """
+    page.wait_for_function(
+        """() => {
+            const imgs = Array.from(document.images);
+            for (const i of imgs) { i.loading = "eager"; i.decoding = "sync"; }
+            return imgs.every(i => i.complete === true || !i.src);
+        }""",
         timeout=timeout_ms,
     )
 
@@ -367,6 +392,10 @@ def record_screencasts(p, only: list[str] | None = None) -> None:
         try:
             login(page)
             fn(page)
+            try:
+                wait_for_images(page)
+            except PWTimeout:
+                pass
             page.wait_for_timeout(2000)
         except Exception as exc:
             print(f"  ✗ {name}: {exc}", file=sys.stderr)

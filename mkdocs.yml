@@ -2,7 +2,7 @@
 
 site_name: Proton Faces
 site_description: "Private, self-hosted face · object · location search for your Proton Drive Photos."
-site_author: "Massimo Mornati"
+site_author: "Marco Mornati"
 site_url: https://mmornati.github.io/proton-faces
 
 # Repository
@@ -10,7 +10,7 @@ repo_name: mmornati/proton-faces
 repo_url: https://github.com/mmornati/proton-faces
 edit_uri: https://github.com/mmornati/proton-faces/edit/main/docs/
 
-copyright: "Copyright &copy; 2026 Massimo Mornati. Photos in screenshots: see docs/assets/CREDITS.md."
+copyright: "Copyright &copy; 2026 Marco Mornati. Photos in screenshots: see docs/assets/CREDITS.md."
 
 theme:
   name: material

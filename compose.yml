@@ -155,6 +155,9 @@ services:
       # indexer container does NOT publish this port to the host).
       - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Shared across uvicorn workers so signed <img> URLs validate on any
+      # worker (see app-demo for the full rationale). Set explicitly in prod.
+      - SIGNING_SECRET=${SIGNING_SECRET:-demo-signing-secret}
     networks:
       - internal
 
@@ -214,6 +217,10 @@ services:
       - INDEXER_STATUS_URL=http://indexer-demo:8091
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEMO_ADMIN_PASSWORD=${DEMO_ADMIN_PASSWORD:-proton-faces}
+      # Shared across uvicorn workers so signed <img> URLs validate on any
+      # worker (each worker otherwise uses its own per-process ephemeral
+      # secret, causing intermittent 401s on /thumb /full /cover /crop).
+      - SIGNING_SECRET=${SIGNING_SECRET:-demo-signing-secret}
     networks:
       - internal
 

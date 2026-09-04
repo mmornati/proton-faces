@@ -8,7 +8,7 @@ A self-hosted app that turns your end-to-end encrypted Proton Drive Photos into 
 
 ### Is it an official Proton project?
 
-No. This is an independent project by [Massimo Mornati](https://github.com/mmornati). "Proton", "Proton Drive" and "Proton Photos" are trademarks of Proton AG. Use at your own risk.
+No. This is an independent project by [Marco Mornati](https://github.com/mmornati). "Proton", "Proton Drive" and "Proton Photos" are trademarks of Proton AG. Use at your own risk.
 
 ### Is it free?
 

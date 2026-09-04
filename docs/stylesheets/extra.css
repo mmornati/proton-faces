@@ -16,6 +16,7 @@
   --pf-slate-100: #c3cbd6;
   --pf-text: #e6e6e6;
   --pf-text-muted: #a0a8b4;
+  --pf-hero-text: #dbe3ec;
 }
 
 /* Light-mode overrides */
@@ -93,8 +94,8 @@
 
 .pf-hero .pf-tagline {
   font-size: 1.25rem;
-  color: var(--pf-text);
-  opacity: 0.85;
+  color: var(--pf-hero-text);
+  opacity: 0.95;
   margin: 0 0 1.5rem;
   max-width: 720px;
 }
@@ -143,13 +144,28 @@
 
 .pf-hero .pf-cta-secondary {
   background: rgba(255, 255, 255, 0.06);
-  color: var(--pf-text);
+  color: var(--pf-hero-text);
   border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .pf-hero .pf-cta-secondary:hover {
   background: rgba(255, 255, 255, 0.1);
-  color: var(--pf-text);
+  color: #ffffff;
+}
+
+/* Login hint shown under the hero call-to-action buttons */
+.pf-hero .pf-demo-credentials {
+  margin-top: 0.9rem;
+  font-size: 0.85rem;
+  color: var(--pf-hero-text);
+  opacity: 0.9;
+}
+.pf-hero .pf-demo-credentials code {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--pf-amber);
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  font-weight: 600;
 }
 
 /* Card grids */
