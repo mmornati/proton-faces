@@ -37,6 +37,8 @@ services:
     restart: unless-stopped
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    pids_limit: 256
     volumes:
       - ${DATA_MOUNT:-data}:/data
     environment:
@@ -65,6 +67,9 @@ services:
     restart: unless-stopped
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    mem_limit: 3g
+    pids_limit: 512
+    cpus: "2.0"
     depends_on:
       - proton-bridge
     command: ["python", "indexer_main.py"]
@@ -122,6 +127,8 @@ services:
     restart: unless-stopped
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    mem_limit: 4g
+    pids_limit: 512
     depends_on:
       - proton-bridge
       - indexer
