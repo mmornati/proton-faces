@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 import indexer
 from store import stats
@@ -46,3 +46,25 @@ def status() -> dict:
         pending_db = 0
     rt["pending_db"] = int(pending_db)
     return rt
+
+
+@app.post("/trigger-sync")
+def trigger_sync() -> dict:
+    """Ask the sync loop to run a full scan on its next iteration."""
+    indexer.request_full_sync()
+    return {"ok": True}
+
+
+@app.get("/sync-config")
+def sync_config() -> dict:
+    """Return the live sync configuration (env defaults + file overrides)."""
+    return indexer.get_sync_config()
+
+
+@app.put("/sync-config")
+def update_sync_config(body: dict) -> dict:
+    """Validate, persist and return the merged sync configuration."""
+    try:
+        return indexer.set_sync_config(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))

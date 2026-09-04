@@ -619,6 +619,29 @@ def _fetch_remote_indexer_state() -> dict:
     return payload
 
 
+def _indexer_proxy_json(method: str, path: str, body: dict | None = None) -> dict:
+    """Proxy a JSON request to the indexer container's status HTTP server.
+
+    Used by the admin sync-control endpoints. Raises HTTPException(502) on any
+    transport, HTTP or parse failure so the admin UI gets a clean error.
+    """
+    url = settings.indexer_status_url.rstrip("/") + path
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_INDEXER_PROXY_TIMEOUT) as resp:
+            if getattr(resp, "status", 200) != 200:
+                raise RuntimeError(f"indexer {method} {path} -> HTTP {resp.status}")
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as exc:
+        raise HTTPException(502, f"indexer proxy {method} {path} failed: {exc}")
+
+
 def _merged_indexer_state() -> dict:
     """Return the best indexer state for `/api/status`.
 
@@ -1946,6 +1969,33 @@ def api_admin_get_schedule(_: CurrentUser = Depends(require_role("admin"))):
 def api_admin_set_schedule(body: dict = Body(...),
                            _: CurrentUser = Depends(require_role("admin"))):
     return admin.set_schedule(body)
+
+
+@app.get("/api/admin/sync")
+def api_admin_get_sync(_: CurrentUser = Depends(require_role("admin"))):
+    """Admin view of the indexer's sync state + live sync configuration."""
+    status = _indexer_proxy_json("GET", "/status")
+    cfg = _indexer_proxy_json("GET", "/sync-config")
+    return {
+        "last_sync": status.get("last_sync"),
+        "last_sync_error": status.get("last_sync_error"),
+        "threads": status.get("threads", {}),
+        "tip_interval": settings.sync_interval,
+        "config": cfg,
+    }
+
+
+@app.post("/api/admin/sync/trigger")
+def api_admin_trigger_sync(_: CurrentUser = Depends(require_role("admin"))):
+    """Ask the indexer to run a full scan on its next sync-loop iteration."""
+    return _indexer_proxy_json("POST", "/trigger-sync")
+
+
+@app.put("/api/admin/sync")
+def api_admin_set_sync(body: dict = Body(...),
+                       _: CurrentUser = Depends(require_role("admin"))):
+    """Persist the live sync configuration on the indexer."""
+    return _indexer_proxy_json("PUT", "/sync-config", body)
 
 
 @app.post("/api/admin/checks")

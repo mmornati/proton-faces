@@ -13,17 +13,19 @@ Runs in the background of the FastAPI process:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
-from bridge_client import BridgeTransientError, get_bridge
+from bridge_client import BridgeError, BridgeTransientError, get_bridge
 from clip import embed_pil
 from cluster import cluster_once
 from config import settings
@@ -72,6 +74,108 @@ _runtime: dict = {
     "threads": {},             # name -> bool alive
     "pending_in_queue": 0,     # _pending.qsize() snapshot
 }
+
+# A `status='error'` photo is re-queued to 'new' by the sync loop until it has
+# been parked too many times (see reset_stuck_fullres, which parks at >= 5).
+# Using the same budget here stops the sync loop from resurrecting a
+# permanently-failing row forever.
+MAX_RETRY_PARK = 5
+
+# Thumbnails of deleted rows younger than this are kept on disk, so a photo
+# that was falsely deleted and reclaimed within the window doesn't need its
+# thumbnail re-downloaded. 7 days.
+DELETED_THUMB_GRACE_SEC = 7 * 24 * 3600
+
+# Set by request_full_sync() (an admin trigger) to force a full scan on the
+# next sync-loop iteration, even when auto-sync / auto full-scan is disabled.
+_sync_wakeup = threading.Event()
+
+# Keys persisted in DATA_DIR/sync_config.json. The file overrides env at
+# runtime; missing keys fall back to `settings.*` defaults.
+_SYNC_CONFIG_KEYS = (
+    "enabled",
+    "tip_size",
+    "full_scan_interval",
+    "deletion_threshold",
+    "last_full_scan",
+)
+
+
+def _sync_config_path() -> Path:
+    return settings.data_dir / "sync_config.json"
+
+
+def get_sync_config() -> dict:
+    """Return the merged sync configuration (env defaults + file overrides)."""
+    cfg: dict = {
+        "enabled": bool(settings.sync_enabled),
+        "tip_size": int(settings.sync_tip_size),
+        "full_scan_interval": int(settings.full_scan_interval),
+        "deletion_threshold": float(settings.sync_deletion_threshold),
+        "last_full_scan": None,
+    }
+    path = _sync_config_path()
+    if not path.exists():
+        return cfg
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:
+        log.warning("sync_config unreadable (%s); using defaults", exc)
+        return cfg
+    if not isinstance(data, dict):
+        log.warning("sync_config not a dict; using defaults")
+        return cfg
+    for key in _SYNC_CONFIG_KEYS:
+        if key in data:
+            cfg[key] = data[key]
+    return cfg
+
+
+def set_sync_config(partial: dict) -> dict:
+    """Validate and merge partial config over the current one, persist, return merged.
+
+    Unknown keys raise ValueError. tip_size >= 1, full_scan_interval >= 0,
+    0 < deletion_threshold < 1. `last_full_scan` is a nullable epoch float.
+    """
+    if not isinstance(partial, dict):
+        raise ValueError("sync config must be a dict")
+    unknown = set(partial) - set(_SYNC_CONFIG_KEYS)
+    if unknown:
+        raise ValueError(f"unknown sync config keys: {sorted(unknown)}")
+    cfg = get_sync_config()
+    for key in _SYNC_CONFIG_KEYS:
+        if key not in partial:
+            continue
+        val = partial[key]
+        if key == "enabled":
+            cfg["enabled"] = bool(val)
+        elif key == "tip_size":
+            tip = int(val)
+            if tip < 1:
+                raise ValueError("tip_size must be >= 1")
+            cfg["tip_size"] = tip
+        elif key == "full_scan_interval":
+            interval = int(val)
+            if interval < 0:
+                raise ValueError("full_scan_interval must be >= 0")
+            cfg["full_scan_interval"] = interval
+        elif key == "deletion_threshold":
+            threshold = float(val)
+            if not 0 < threshold < 1:
+                raise ValueError("deletion_threshold must be in (0, 1)")
+            cfg["deletion_threshold"] = threshold
+        elif key == "last_full_scan":
+            cfg["last_full_scan"] = float(val) if val is not None else None
+    try:
+        _sync_config_path().write_text(json.dumps(cfg))
+    except Exception as exc:
+        log.warning("failed to persist sync_config: %s", exc)
+    return cfg
+
+
+def request_full_sync() -> None:
+    """Wake the sync loop to run a full scan on its next iteration."""
+    _sync_wakeup.set()
 
 
 def _record_threads(threads: list[threading.Thread]) -> None:
@@ -162,9 +266,18 @@ def _norm_bbox(bbox: list, w: int, h: int) -> list:
 # --- sync loop -------------------------------------------------------------
 
 def _sync_once() -> None:
+    """Full scan: reconcile the local index against the full remote timeline.
+
+    This is the ONLY path that stages/confirms deletions and the only path
+    that processes brand-new uids. It is called on the full-scan schedule or
+    when the tip check (or an admin trigger) detects new uploads. Guarded so
+    a truncated/empty remote listing can never cascade into mass false
+    deletion (see the deletion threshold below).
+    """
     _runtime["last_sync"] = time.time()
     _runtime["last_sync_error"] = None
     bridge = get_bridge()
+    cfg = get_sync_config()
 
     if settings.sync_limit:
         # Limited sync (testing): fetch full metadata for the N most recent.
@@ -180,8 +293,33 @@ def _sync_once() -> None:
     # full metadata only for photos we haven't seen before.
     ids = bridge.timeline_ids()
     remote = {i["uid"] for i in ids}
+
+    # Refuse to diff an empty listing: it means the bridge returned no data at
+    # all (Proton hiccup), not that the user deleted every photo.
+    if not remote:
+        raise BridgeError("timeline listing empty; refusing to diff")
+
     with _db_conn() as conn:
-        stored = {r["uid"] for r in conn.execute("SELECT uid FROM photos")}
+        # Exclude pending_removal/deleted rows so a recovered uid re-enters
+        # `new_uids` and hits the ON CONFLICT reclaim path in upsert_photos.
+        stored = {r["uid"] for r in conn.execute(
+            "SELECT uid FROM photos WHERE status NOT IN ('pending_removal','deleted')"
+        )}
+        local_active = conn.execute(
+            "SELECT COUNT(*) FROM photos WHERE status NOT IN ('pending_removal','deleted')"
+        ).fetchone()[0]
+
+    # Deletion safety: if the remote listing is a fraction of what we have
+    # locally, it's almost certainly truncated (Proton incident) — skip the
+    # whole diff rather than stage tens of thousands of false deletions.
+    if len(remote) < (1 - cfg["deletion_threshold"]) * local_active:
+        log.warning(
+            "sync skipped: remote=%d < (1-%.3f)*local_active=%d "
+            "(possible truncated listing); skipping sync without staging "
+            "deletions or processing new uids",
+            len(remote), cfg["deletion_threshold"], local_active,
+        )
+        return
 
     new_uids = sorted(remote - stored)
     gone = sorted(stored - remote)
@@ -212,9 +350,15 @@ def _sync_once() -> None:
     else:
         log.info("sync: %d remote, no new, %d gone", len(remote), len(gone))
 
-    # Retry photos that failed previously (e.g. transient network errors).
+    # Retry photos that failed previously, but respect the retry budget so a
+    # permanently-failing row isn't resurrected forever (reset_stuck_fullres
+    # parks rows at retry_count >= MAX_RETRY_PARK).
     with _db_conn() as conn:
-        conn.execute("UPDATE photos SET status='new' WHERE status='error'")
+        conn.execute(
+            "UPDATE photos SET status='new' WHERE status='error' "
+            "AND (retry_count IS NULL OR retry_count < ?)",
+            (MAX_RETRY_PARK,),
+        )
 
     # DEMO_MODE only: inject GPS/place from the fixture so the Places view
     # works out of the box. No-op outside demo mode.
@@ -257,12 +401,20 @@ def _epoch(ts) -> int | None:
         return None
 
 
+@contextmanager
 def _db_conn():
     import sqlite3
 
     conn = sqlite3.connect(settings.db_path, timeout=30)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # --- downloader ------------------------------------------------------------
@@ -457,6 +609,7 @@ def _fullres_loop() -> None:
                     continue
                 uid = stuck[0]["uid"]
             if not claim_photo_for_full(uid):
+                time.sleep(5)
                 continue
 
             photo = _photo_row(uid)
@@ -652,6 +805,10 @@ def start() -> list[threading.Thread]:
     # Recover photos stuck in 'processing' from a previous crash/hang.
     with _db_conn() as conn:
         conn.execute("UPDATE photos SET status='downloading' WHERE status='processing'")
+        # Any photo parked mid-download in 'fullres' from a previous crash must
+        # go back to 'full' so claim_photo_for_full() (which requires
+        # status='full') can pick it up again.
+        conn.execute("UPDATE photos SET status='full' WHERE status='fullres'")
     try:
         n = backfill_fullres_images()
         if n:
@@ -693,18 +850,96 @@ def start() -> list[threading.Thread]:
     return threads
 
 
+def _run_full_scan_and_cleanup() -> None:
+    """Run a full scan then purge thumbnails for confirmed-deleted rows."""
+    _sync_once()
+    try:
+        cleanup_deleted()
+    except Exception as exc:  # pragma: no cover
+        log.warning("cleanup_deleted failed: %s", exc)
+
+
 def _sync_loop() -> None:
     while True:
+        # Decide how long to sleep before the next wakeup. When a full scan is
+        # scheduled, wake at the earlier of (next full-scan deadline, tip
+        # interval) so we don't oversleep the scan; otherwise just the tip
+        # interval.
         try:
-            _sync_once()
+            cfg = get_sync_config()
+            last_full = cfg.get("last_full_scan")
+        except Exception:
+            cfg = None
+            last_full = None
+        timeout = settings.sync_interval
+        if cfg and cfg.get("full_scan_interval", 0) > 0 and last_full is not None:
             try:
-                cleanup_deleted()
-            except Exception as exc:  # pragma: no cover
-                log.warning("cleanup_deleted failed: %s", exc)
+                remaining = cfg["full_scan_interval"] - (time.time() - last_full)
+                timeout = min(settings.sync_interval, max(0.0, remaining))
+            except Exception:
+                pass
+
+        triggered = _sync_wakeup.wait(timeout=timeout)
+        _sync_wakeup.clear()
+
+        try:
+            cfg = get_sync_config()
         except Exception as exc:  # pragma: no cover
-            log.exception("sync loop error: %s", exc)
+            log.exception("sync config load failed: %s", exc)
             _runtime["last_sync_error"] = f"{type(exc).__name__}: {exc}"
-        time.sleep(settings.sync_interval)
+            continue
+
+        now = time.time()
+        last_full = cfg.get("last_full_scan")
+        requested = bool(triggered)
+        due = bool(
+            cfg["full_scan_interval"] > 0
+            and (last_full is None or now - last_full >= cfg["full_scan_interval"])
+        )
+        first_run = last_full is None
+
+        # If auto-sync is disabled, keep waiting — but a manual trigger still
+        # forces a full scan.
+        if not cfg["enabled"] and not requested:
+            continue
+
+        if due or first_run or requested:
+            try:
+                _run_full_scan_and_cleanup()
+            except Exception as exc:  # pragma: no cover
+                log.exception("full scan error: %s", exc)
+                _runtime["last_sync_error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                set_sync_config({"last_full_scan": time.time()})
+            continue
+
+        # Tip check: cheaply look for new uploads among the most recent items.
+        # This NEVER touches deletion logic — only a full scan reconciles
+        # removals, so a truncated tip listing can't cause false deletions.
+        try:
+            ids = get_bridge().timeline_ids(limit=cfg["tip_size"])
+        except Exception as exc:  # pragma: no cover
+            log.exception("tip check failed: %s", exc)
+            _runtime["last_sync_error"] = f"{type(exc).__name__}: {exc}"
+            continue
+        if not ids:
+            log.warning("tip listing empty; suspicious, skipping")
+            continue
+        tip_uids = {i["uid"] for i in ids}
+        with _db_conn() as conn:
+            local = {r["uid"] for r in conn.execute(
+                "SELECT uid FROM photos WHERE status NOT IN ('pending_removal','deleted')"
+            )}
+        if any(u not in local for u in tip_uids):
+            log.info("tip check: new uploads detected; running full scan")
+            try:
+                _run_full_scan_and_cleanup()
+            except Exception as exc:  # pragma: no cover
+                log.exception("tip-triggered full scan error: %s", exc)
+                _runtime["last_sync_error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                set_sync_config({"last_full_scan": time.time()})
+        # else: nothing new — loop around and sleep until the next wakeup.
 
 
 # --- GPS enrichment (local Takeout sidecars) ------------------------------
@@ -864,12 +1099,21 @@ def _run_gps_subprocess() -> None:
 
 
 def cleanup_deleted() -> None:
-    """Remove local thumbnails for photos that were deleted from Proton."""
+    """Remove local thumbnails for photos that were deleted from Proton.
+
+    Rows whose `was_deleted_at` is within DELETED_THUMB_GRACE_SEC are skipped
+    so a recently-reclaimed (falsely deleted) photo doesn't have its thumbnail
+    purged before the reclaim path can reuse it.
+    """
+    grace = DELETED_THUMB_GRACE_SEC
+    now = int(time.time())
     with _db_conn() as conn:
         rows = conn.execute(
-            "SELECT uid, thumb_path FROM photos WHERE status='deleted'"
+            "SELECT uid, thumb_path, was_deleted_at FROM photos WHERE status='deleted'"
         ).fetchall()
     for r in rows:
+        if r["was_deleted_at"] is not None and now - r["was_deleted_at"] < grace:
+            continue
         if r["thumb_path"]:
             p = settings.thumb_dir / r["thumb_path"]
             if p.exists():

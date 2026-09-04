@@ -2342,6 +2342,7 @@ let adminOverview = null;
 let adminChecks = null;
 let adminBackups = [];
 let adminSchedule = { enabled: false, hour: 3, minute: 0, keep: 7 };
+let adminSync = { config: {} };
 let adminUsers = [];
 let adminBusy = false;
 
@@ -2364,11 +2365,12 @@ async function renderAdminModal() {
   const body = $("#adminmodalbody");
   body.innerHTML = `<div class="empty">Loading…</div>`;
   try {
-    [adminOverview, adminBackups, adminSchedule, adminUsersWrap] = await Promise.all([
+    [adminOverview, adminBackups, adminSchedule, adminUsersWrap, adminSync] = await Promise.all([
       api("/api/admin/overview"),
       api("/api/admin/backups"),
       api("/api/admin/schedule"),
       api("/api/admin/users"),
+      api("/api/admin/sync"),
     ]);
     adminUsers = (adminUsersWrap && adminUsersWrap.users) || [];
   } catch (e) {
@@ -2380,6 +2382,7 @@ async function renderAdminModal() {
     renderAdminChecksSection() +
     renderAdminBackupSection() +
     renderAdminScheduleSection() +
+    renderAdminSyncSection() +
     renderAdminUsersSection();
   wireAdminHandlers();
 }
@@ -2488,6 +2491,33 @@ function renderAdminScheduleSection() {
     </div>`;
 }
 
+function renderAdminSyncSection() {
+  const s = adminSync || {};
+  const cfg = s.config || {};
+  const lastSync = s.last_sync ? fmtAbs(s.last_sync * 1000) : "—";
+  const lastFull = cfg.last_full_scan ? fmtAbs(cfg.last_full_scan * 1000) : "—";
+  const lastErr = s.last_sync_error ? esc(s.last_sync_error) : "—";
+  const tipInt = s.tip_interval || 300;
+  return `
+    <h4>Indexer sync</h4>
+    <div class="chkrow"><label><input type="checkbox" id="admin-sync-enabled" ${cfg.enabled ? "checked" : ""}> Auto-scan enabled</label></div>
+    <div class="userform">
+      <label>Tip-check interval (s) <input type="number" id="admin-sync-tip-interval" min="1" value="${tipInt}"></label>
+      <label>Tip size <input type="number" id="admin-sync-tip-size" min="1" value="${cfg.tip_size || 10}"></label>
+      <label>Full scan interval (s, 0 = manual only) <input type="number" id="admin-sync-full-interval" min="0" value="${cfg.full_scan_interval || 0}"></label>
+      <label>Deletion threshold (%) <input type="number" id="admin-sync-threshold" min="1" max="99" value="${Math.round((cfg.deletion_threshold || 0.1) * 100)}"></label>
+    </div>
+    <div class="adminactions">
+      <button id="admin-sync-now" class="small">Sync now</button>
+      <button id="admin-save-sync" class="small">Save sync settings</button>
+    </div>
+    <table>
+      <tr><td class="k">Last sync</td><td class="v">${lastSync}</td></tr>
+      <tr><td class="k">Last full scan</td><td class="v">${lastFull}</td></tr>
+      <tr><td class="k">Last error</td><td class="v">${lastErr}</td></tr>
+    </table>`;
+}
+
 function renderAdminUsersSection() {
   let rows = "";
   for (const u of adminUsers) {
@@ -2545,6 +2575,7 @@ function wireAdminHandlers() {
         renderAdminChecksSection() +
         renderAdminBackupSection() +
         renderAdminScheduleSection() +
+        renderAdminSyncSection() +
         renderAdminUsersSection();
       wireAdminHandlers();
     } catch (e) { toast("Checks failed: " + (e.message || e)); }
@@ -2605,6 +2636,7 @@ function wireAdminHandlers() {
         renderAdminChecksSection() +
         renderAdminBackupSection() +
         renderAdminScheduleSection() +
+        renderAdminSyncSection() +
         renderAdminUsersSection();
       wireAdminHandlers();
     } catch (e) { toast("Backup failed: " + (e.message || e)); }
@@ -2624,6 +2656,7 @@ function wireAdminHandlers() {
         renderAdminChecksSection() +
         renderAdminBackupSection() +
         renderAdminScheduleSection() +
+        renderAdminSyncSection() +
         renderAdminUsersSection();
       wireAdminHandlers();
     } catch (e) { toast("Prune failed: " + (e.message || e)); }
@@ -2653,6 +2686,27 @@ function wireAdminHandlers() {
       toast("Schedule saved");
       renderAdminModal();
     } catch (e) { toast("Save failed: " + (e.message || e)); }
+  });
+
+  $("#admin-save-sync").addEventListener("click", async () => {
+    const body = JSON.stringify({
+      enabled: $("#admin-sync-enabled").checked,
+      tip_size: parseInt($("#admin-sync-tip-size").value, 10),
+      full_scan_interval: parseInt($("#admin-sync-full-interval").value, 10),
+      deletion_threshold: parseInt($("#admin-sync-threshold").value, 10) / 100,
+    });
+    try {
+      adminSync = await api("/api/admin/sync", { method: "PUT", headers: { "content-type": "application/json" }, body });
+      toast("Sync settings saved");
+      renderAdminModal();
+    } catch (e) { toast("Save failed: " + (e.message || e)); }
+  });
+
+  $("#admin-sync-now").addEventListener("click", async () => {
+    try {
+      await api("/api/admin/sync/trigger", { method: "POST" });
+      toast("Sync triggered");
+    } catch (e) { toast("Trigger failed: " + (e.message || e)); }
   });
 
   $("#admin-create-user").addEventListener("click", async () => {

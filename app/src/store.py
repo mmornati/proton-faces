@@ -5,6 +5,7 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -128,6 +129,7 @@ CREATE INDEX IF NOT EXISTS idx_user_favorites_photo ON user_favorites(photo_uid)
 _lock = threading.Lock()
 
 
+@contextmanager
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(settings.db_path, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -141,7 +143,14 @@ def get_conn() -> sqlite3.Connection:
     # the checkpoint across many more writes.
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA wal_autocheckpoint=16000")
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db() -> None:

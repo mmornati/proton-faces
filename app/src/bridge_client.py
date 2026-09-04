@@ -101,20 +101,50 @@ class BridgeClient:
             raise BridgeError(f"timeline returned unexpected payload: {items!r}")
         return items
 
-    def timeline_ids(self) -> list[dict]:
+    def timeline_ids(self, limit: int = 0) -> list[dict]:
         """Return only {uid, captureTime} for every photo in the timeline.
 
         Cheap: no per-node metadata decryption, so it completes in seconds even
         on a large library. Used to diff against the local index without
         re-fetching (and re-decrypting) full metadata for every photo.
+
+        ``limit > 0`` restricts to the `limit` most recent entries (the tip
+        check); 0 fetches everything.
+
+        The bridge appends a terminal `# done: <count>` line. We parse it and
+        refuse to return the listing unless the number of uid rows matches, so
+        a silently-truncated stream raises BridgeError instead of being
+        mistaken for "no photos". If no `# done:` line is present (older
+        bridge), verification is skipped for backward compatibility.
         """
+        params = {"limit": limit} if limit > 0 else None
+        items: list[dict] = []
+        done_count: int | None = None
         with self._client.stream(
             "GET",
             f"{self.base_url}/timeline/ids",
+            params=params,
             timeout=httpx.Timeout(3600.0, connect=30.0),
         ) as r:
             r.raise_for_status()
-            return self._ndjson_items(r)
+            for line in r.iter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    if line.startswith("# done:"):
+                        try:
+                            done_count = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            done_count = None
+                    continue
+                items.append(json.loads(line))
+        if done_count is not None and len(items) != done_count:
+            raise BridgeError(
+                f"timeline/ids truncated: got {len(items)} rows, "
+                f"bridge sent done:{done_count}"
+            )
+        return items
 
     def nodes(self, uids: list[str]) -> list[dict]:
         """Fetch full metadata for specific photo uids (NDJSON streamed)."""

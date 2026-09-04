@@ -176,6 +176,11 @@ async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: Tok
                         }
                     }
                 }
+
+                // Terminal sentinel: the client verifies that the number of uid
+                // rows it parsed matches this count, so a silently-truncated
+                // stream is detected instead of being mistaken for "no photos".
+                send(`# done: ${uids.length}`);
                 controller.close();
             } catch (error) {
                 const ra = extractRetryAfter(error);

@@ -144,11 +144,15 @@ class DemoBridge:
             items = items[:limit]
         return items
 
-    def timeline_ids(self) -> list[dict]:
-        return [
+    def timeline_ids(self, limit: int = 0) -> list[dict]:
+        items = [
             {"uid": n["uid"], "captureTime": n.get("captureTime")}
             for n in self._fixture["timeline"]
         ]
+        items.sort(key=lambda n: n.get("captureTime") or 0, reverse=True)
+        if limit and limit > 0:
+            items = items[:limit]
+        return items
 
     def nodes(self, uids: list[str]) -> list[dict]:
         out = []

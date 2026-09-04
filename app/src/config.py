@@ -42,6 +42,19 @@ class Settings:
         self.port = int(os.environ.get("PORT", "8080"))
         self.sync_interval = int(os.environ.get("SYNC_INTERVAL", "300"))
         self.sync_limit = int(os.environ.get("SYNC_LIMIT", "0"))  # 0 = all photos
+        # Whether the sync loop runs at all. When disabled, no auto-sync or
+        # auto full-scan runs; a manual "Sync now" admin trigger still works.
+        self.sync_enabled = _env_bool("SYNC_ENABLED", True)
+        # How many of the most-recent timeline entries the cheap tip check
+        # fetches each tick to detect new uploads without a full scan.
+        self.sync_tip_size = int(os.environ.get("SYNC_TIP_SIZE", "10"))
+        # How often (seconds) the full scan runs, which is the only path that
+        # reconciles deletions. 0 = never automatically (manual trigger only).
+        self.full_scan_interval = int(os.environ.get("FULL_SCAN_INTERVAL", "21600"))
+        # Deletion safety: a full scan refuses to stage deletions (and returns
+        # early) if the remote listing is smaller than (1 - threshold) of the
+        # local active count, treating that as a truncated timeline listing.
+        self.sync_deletion_threshold = float(os.environ.get("SYNC_DELETION_THRESHOLD", "0.10"))
         self.workers = int(os.environ.get("WORKERS", "2"))
         self.cluster_interval = int(os.environ.get("CLUSTER_INTERVAL", "1800"))
         self.gps_interval = int(os.environ.get("GPS_INTERVAL", "21600"))  # 6h
