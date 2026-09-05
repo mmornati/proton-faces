@@ -1557,6 +1557,92 @@ def api_people_merge(source_id: int, body: dict,
     }
 
 
+@app.get("/api/people/{person_id}/similar")
+def api_people_similar(person_id: int, threshold: float = 0.40, limit: int = 50):
+    """People whose mean face embedding is similar to `person_id`'s (cosine).
+
+    Vectorized: one (P,512) @ (512,) matmul over every other person's mean,
+    reusing the shared cached face matrix. Returns only people at/above the
+    given similarity `threshold`, sorted by score desc. Drives the per-person
+    "similar people" merge assistant.
+    """
+    if limit < 1:
+        limit = 50
+    means = person_mean_embeddings_from_cache()
+    fe = means.get(person_id)
+    if fe is None or len(means) < 2:
+        return {"similar": []}
+    pids = np.array([pid for pid in means if pid != person_id], dtype=np.int64)
+    if pids.size == 0:
+        return {"similar": []}
+    M = np.stack([means[pid] for pid in pids]).astype(np.float32)
+    sims = M @ fe
+    hits = np.flatnonzero(sims >= threshold)
+    if hits.size == 0:
+        return {"similar": []}
+    order = hits[np.argsort(-sims[hits])][:limit]
+    top_pids = [int(pids[i]) for i in order]
+    top_sims = [float(sims[i]) for i in order]
+    by_id = {r["id"]: r for r in people_by_ids(top_pids)}
+    similar = []
+    for pid, sim in zip(top_pids, top_sims):
+        p = by_id.get(pid)
+        similar.append(
+            {
+                "person_id": pid,
+                "name": (p["name"] if p else None) or f"person {pid}",
+                "similarity": round(sim, 4),
+                "photo_count": p["photo_count"] if p else 0,
+                "face_count": p["face_count"] if p else 0,
+                "cover_url": _sign_if_needed(
+                    f"/api/people/{pid}/cover" if p and p["cover_face_id"] else None
+                ),
+            }
+        )
+    return {"similar": similar}
+
+
+@app.post("/api/people/{target_id}/merge_all")
+def api_people_merge_all(target_id: int, body: dict,
+                         user: CurrentUser = Depends(require_role("write"))):
+    """Merge many people into `target_id` in one call.
+
+    Body: {"source_ids": [..]}. Each source is moved into the target (its
+    faces re-parented, its row deleted), then look-alike propagation runs once
+    against the merged target so newly absorbed faces also pull in unassigned
+    matches. The target itself must exist and is never merged into itself.
+    """
+    source_ids = body.get("source_ids")
+    if not isinstance(source_ids, list) or not source_ids:
+        raise HTTPException(400, "source_ids list required")
+    target = get_person(target_id)
+    if target is None:
+        raise HTTPException(404, "target person not found")
+    merged_ids: list[int] = []
+    seen: set[int] = set()
+    for sid in source_ids:
+        if not isinstance(sid, int) or sid == target_id or sid in seen:
+            continue
+        seen.add(sid)
+        if get_person(sid) is None:
+            continue
+        _drop_person_crops(sid)
+        merge_person(sid, target_id)
+        merged_ids.append(sid)
+    assigned = _merge_propagate(target_id) if merged_ids else 0
+    _invalidate_dups_cache()
+    _invalidate_people_cache()
+    tgt = get_person(target_id)
+    return {
+        "ok": True,
+        "target_id": target_id,
+        "merged_count": len(merged_ids),
+        "assigned_similar": assigned,
+        "photo_count": tgt["photo_count"] if tgt else None,
+        "face_count": tgt["face_count"] if tgt else None,
+    }
+
+
 @app.get("/api/people/duplicates")
 def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
     """Find people whose mean face embeddings are highly similar (likely dupes).
