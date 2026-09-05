@@ -53,6 +53,7 @@ from store import (
     done_photos,
     face_embedding,
     faces_for_photo,
+    faces_for_person,
     favorite_photo,
     favorite_uids,
     find_person_by_name,
@@ -1195,6 +1196,50 @@ def api_person_cover(person_id: int,
         if crop is None:
             raise HTTPException(404, "cover face crop unavailable")
     return FileResponse(cache_path, media_type="image/jpeg", headers=_IMMUTABLE_HEADERS)
+
+
+@app.get("/api/people/{person_id}/faces")
+def api_person_faces(person_id: int, limit: int = 500,
+                      user: CurrentUser = Depends(require_user)):
+    """Every face of a person, for the cover picker.
+
+    Returns face ids plus a signed crop URL for each, so the front-end can
+    render a grid of candidate face-crops without knowing bbox math.
+    """
+    person = get_person(person_id)
+    if person is None:
+        raise HTTPException(404, "person not found")
+    rows = faces_for_person(person_id, limit=max(1, min(limit, 1000)))
+    faces = [
+        {
+            "id": r["id"],
+            "photo_uid": r["photo_uid"],
+            "confidence": r["confidence"],
+            "crop_url": _sign_if_needed(f"/api/faces/{r['id']}/crop"),
+            "is_cover": r["id"] == person["cover_face_id"],
+        }
+        for r in rows
+    ]
+    return {"faces": faces, "cover_face_id": person["cover_face_id"], "count": len(faces)}
+
+
+@app.post("/api/people/{person_id}/cover")
+def api_people_set_cover(person_id: int, body: dict,
+                         user: CurrentUser = Depends(require_role("write"))):
+    """Set a person's cover photo from one of their own faces."""
+    face_id = body.get("face_id")
+    if not isinstance(face_id, int):
+        raise HTTPException(400, "face_id required")
+    person = get_person(person_id)
+    if person is None:
+        raise HTTPException(404, "person not found")
+    row = _face_row(face_id)
+    if row is None or row["person_id"] != person_id:
+        raise HTTPException(400, "face does not belong to this person")
+    set_person_cover_face(person_id, face_id)
+    _invalidate_people_cache()
+    return {"ok": True, "cover_face_id": face_id,
+            "cover_url": _sign_if_needed(f"/api/people/{person_id}/cover")}
 
 
 def _face_crop_bytes(face_id: int) -> bytes | None:

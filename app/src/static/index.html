@@ -118,11 +118,11 @@ main { padding: 18px; }
 .person .name { font-size: 14px; font-weight: 600; }
 .person .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
 .person input { width: 100%; margin-top: 6px; padding: 5px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); }
-.person .merge-btn, .person .person-map-btn {
+.person .merge-btn, .person .person-map-btn, .person .cover-btn {
   margin-top: 6px; flex: 1; min-width: 0; white-space: nowrap;
   background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
 }
-.person .merge-btn:hover, .person .person-map-btn:hover { color: var(--text); border-color: var(--accent); }
+.person .merge-btn:hover, .person .person-map-btn:hover, .person .cover-btn:hover { color: var(--text); border-color: var(--accent); }
 .dups { margin-bottom: 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .duphead {
   width: 100%; display: flex; align-items: center; gap: 8px;
@@ -176,6 +176,31 @@ main { padding: 18px; }
 .mpitem img { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; background: var(--panel2); flex: none; }
 .mpitem .mpname { font-size: 14px; font-weight: 600; }
 .mpitem .mpmeta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+/* cover photo picker modal */
+#coverpick {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+  z-index: 152; align-items: flex-start; justify-content: center; padding: 60px 20px 20px;
+}
+#coverpick.open { display: flex; }
+#coverpickbox {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  max-width: 640px; width: 100%; max-height: 84vh; display: flex; flex-direction: column;
+  overflow: hidden;
+}
+#coverpickhead { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+#coverpickhead img { width: 44px; height: 44px; border-radius: 10px; object-fit: cover; background: var(--panel2); }
+#coverpickhead .cpname { font-size: 15px; font-weight: 600; }
+#coverpickhead .cphint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+#coverpickhead button { margin-left: auto; }
+#coverpickgrid { overflow: auto; padding: 10px; display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+.coverpick-item { position: relative; border-radius: 10px; overflow: hidden; background: var(--panel2); cursor: pointer; border: 0; padding: 0; }
+.coverpick-item img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+.coverpick-item .cp-check {
+  position: absolute; top: 4px; left: 4px; width: 22px; height: 22px; line-height: 22px;
+  border-radius: 50%; background: var(--green); color: #fff; font-size: 13px; text-align: center;
+}
+.coverpick-item:hover { outline: 2px solid var(--accent); }
+.coverpick-item.current { outline: 2px solid var(--green); }
 /* similar-people merge assistant modal */
 #simpeople {
   display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
@@ -648,6 +673,19 @@ body { padding-bottom: 34px; }
     </div>
     <input id="mpsearch" type="text" placeholder="Search name…" autocomplete="off">
     <div id="mergepicklist"></div>
+  </div>
+</div>
+<div id="coverpick">
+  <div id="coverpickbox">
+    <div id="coverpickhead">
+      <img id="cpsrcimg" alt="">
+      <div>
+        <div class="cpname" id="cpsrcname"></div>
+        <div class="cphint">Pick the photo that best shows who this is. The current cover is highlighted.</div>
+      </div>
+      <button id="cpclose" class="secondary small">Close</button>
+    </div>
+    <div id="coverpickgrid"><div class="empty">Loading faces…</div></div>
   </div>
 </div>
 <div id="simpeople">
@@ -1303,6 +1341,7 @@ async function openFacePopover(face, x, y) {
       <div class="ac" id="popac" style="display:none"></div>
     </div>
     <div class="row">
+      ${face.person_id ? `<button class="secondary small" id="pop-setcover" title="Use this photo as the main photo for ${esc(face.person_name || "this person")}">Set as cover</button>` : ""}
       <button class="secondary small" id="pop-unassign" style="margin-left:auto">Unassign</button>
     </div>
     <div class="hint">Naming a face auto-tags similar unassigned faces.</div>`;
@@ -1411,6 +1450,16 @@ async function openFacePopover(face, x, y) {
       else if (state.view === "unassigned") loadUnassigned();
     } catch (e) { toast("Error: " + e.message); }
   });
+  if (face.person_id) {
+    $("#pop-setcover").addEventListener("click", async () => {
+      try {
+        await api(`/api/people/${face.person_id}/cover`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ face_id: face.id }) });
+        closePopover();
+        toast("Cover photo updated.");
+        if (state.view === "people") loadPeople();
+      } catch (e) { toast("Error: " + e.message); }
+    });
+  }
 
   // Top-5 most similar people, ranked by face→person-mean-embedding similarity.
   // Rendered asynchronously; the "Loading…" placeholder stays visible until it
@@ -1765,7 +1814,8 @@ function personCardHtml(p) {
       <div class="name">${esc(p.name || "Unknown person")}</div>
       <div class="meta">${p.photo_count} photos · ${p.face_count} faces</div>
       <input class="rename" placeholder="Name" value="${esc(p.name || "")}">
-      <div style="display:flex;gap:6px;justify-content:center">
+      <div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap">
+        <button class="small cover-btn" data-id="${p.id}" title="Choose the main photo for this person">Set photo</button>
         <button class="small merge-btn" data-id="${p.id}">Merge into…</button>
         <button class="small person-sim-btn" data-id="${p.id}">Similar</button>
         <button class="small person-map-btn" data-id="${p.id}">Map</button>
@@ -1851,6 +1901,11 @@ function bindPersonCards(people, scope) {
     card.querySelector(".person-sim-btn").addEventListener("click", (e) => {
       e.stopPropagation();
       openSimilarPeople(pid);
+    });
+    card.querySelector(".cover-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const img = card.querySelector("img");
+      openCoverPicker(pid, { name: card.querySelector(".name")?.textContent, cover_url: img ? img.src : "" });
     });
     card.querySelector(".person-map-btn").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1951,6 +2006,59 @@ function closeMergePicker() {
   $("#mergepick").classList.remove("open");
   mpSrcId = null;
   mpPeople = [];
+}
+
+// --- cover photo picker -----------------------------------------------------
+let cpPersonId = null;
+let cpFaces = [];
+
+async function openCoverPicker(personId, person) {
+  cpPersonId = personId;
+  $("#cpsrcname").textContent = person && person.name ? person.name : `Person #${personId}`;
+  $("#cpsrcimg").src = person && person.cover_url ? person.cover_url : "";
+  $("#coverpick").classList.add("open");
+  $("#coverpickgrid").innerHTML = '<div class="empty">Loading faces…</div>';
+  try {
+    const data = await api(`/api/people/${personId}/faces?limit=500`);
+    cpFaces = data.faces || [];
+    renderCoverPicker();
+  } catch (e) {
+    $("#coverpickgrid").innerHTML = `<div class="empty">Error loading faces: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderCoverPicker() {
+  const grid = $("#coverpickgrid");
+  if (!cpFaces.length) {
+    grid.innerHTML = '<div class="empty">No faces found for this person yet.</div>';
+    return;
+  }
+  grid.innerHTML = cpFaces.map((f) => `
+    <button class="coverpick-item${f.is_cover ? " current" : ""}" data-fid="${f.id}">
+      ${f.crop_url ? `<img loading="lazy" decoding="async" src="${f.crop_url}" alt="">` : '<div style="width:100%;aspect-ratio:1;background:var(--panel2)"></div>'}
+      ${f.is_cover ? '<div class="cp-check">✓</div>' : ""}
+    </button>`).join("");
+  grid.querySelectorAll(".coverpick-item").forEach((item) => item.addEventListener("click", async () => {
+    const faceId = +item.dataset.fid;
+    try {
+      const r = await api(`/api/people/${cpPersonId}/cover`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ face_id: faceId }) });
+      toast("Cover photo updated.");
+      cpFaces.forEach((f) => f.is_cover = (f.id === r.cover_face_id));
+      renderCoverPicker();
+      // Refresh the person card cover in place without a full reload.
+      const card = document.querySelector(`.person[data-id="${cpPersonId}"]`);
+      if (card) {
+        const img = card.querySelector("img");
+        if (img && r.cover_url) img.src = r.cover_url;
+      }
+    } catch (e) { toast("Error: " + e.message); }
+  }));
+}
+
+function closeCoverPicker() {
+  $("#coverpick").classList.remove("open");
+  cpPersonId = null;
+  cpFaces = [];
 }
 
 // --- similar-people merge assistant ----------------------------------------
@@ -3120,6 +3228,8 @@ $("#dclose").addEventListener("click", () => $("#detail").classList.remove("open
 $("#lbclose").addEventListener("click", () => $("#lightbox").classList.remove("open"));
 $("#lightbox").addEventListener("click", (e) => { if (e.target.id === "lightbox") $("#lightbox").classList.remove("open"); });
 $("#mpclose").addEventListener("click", closeMergePicker);
+$("#cpclose").addEventListener("click", closeCoverPicker);
+$("#coverpick").addEventListener("click", (e) => { if (e.target.id === "coverpick") closeCoverPicker(); });
 $("#mpsearch").addEventListener("input", () => {
   clearTimeout(mpSearchTimer);
   mpSearchTimer = setTimeout(renderMergePickerList, 200);
