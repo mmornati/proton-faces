@@ -78,6 +78,8 @@ Authentication is via `Authorization: Bearer <token>`. Get a token from `POST /a
 |--------|------|------|-------------|
 | GET | `/api/people?q=&limit=200&offset=0` | read | List clusters, optional name filter |
 | GET | `/api/people/{id}/cover` | none (binary) | Face-crop cover JPEG, immutable cache |
+| GET | `/api/people/{id}/faces` | read | Every face of a person, with crop URLs (cover picker) |
+| POST | `/api/people/{id}/cover` | write | Set cover photo `{face_id}` |
 | GET | `/api/people/{id}/photos` | read | Photos containing this person |
 | GET | `/api/people/{id}/map` | read | Per-person map markers |
 | GET | `/api/people/duplicates?threshold=0.40&limit=50` | read | Suggested merges |

@@ -971,6 +971,24 @@ def count_faces_for_person(person_id: int) -> int:
         return conn.execute("SELECT COUNT(*) FROM faces WHERE person_id=?", (person_id,)).fetchone()[0]
 
 
+def faces_for_person(person_id: int, limit: int = 500) -> list[sqlite3.Row]:
+    """Every face belonging to a person (id, photo_uid, confidence, bbox).
+
+    Used by the cover picker so a person's cover photo can be chosen from
+    any of their detected faces. bbox is returned as the raw JSON string;
+    callers deserialize it with json.loads.
+    """
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT f.id, f.photo_uid, f.confidence, f.bbox
+               FROM faces f
+               WHERE f.person_id=? AND f.photo_uid IS NOT NULL
+               ORDER BY f.confidence DESC, f.id ASC
+               LIMIT ?""",
+            (person_id, limit),
+        ).fetchall()
+
+
 # --- clips ----------------------------------------------------------------
 
 def insert_clip(photo_uid: str, embedding: bytes) -> None:

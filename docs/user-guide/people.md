@@ -19,7 +19,17 @@ The clustering is incremental: as new faces arrive, the indexer re-runs HDBSCAN 
 - **Name input** — type a name and press <kbd>Enter</kbd>. The card updates immediately. If another person already has that name, the clusters are **merged** (the faces of one move to the other).
 - **Merge into…** — pick a different person to merge into. Used when two clusters should be the same.
 - **Map button** — opens the per-person map (see below).
+- **Set photo button** — opens a cover picker: a grid of every detected face for that person. Click one to make it the card's cover photo (see [Choosing the cover photo](#choosing-the-cover-photo)).
 - **Suggested merges** strip — pairs of clusters whose mean embeddings are highly similar (cosine ≥ 0.40). One click merges them.
+
+## Choosing the cover photo
+
+By default the cover is the cluster's highest-confidence face crop, which isn't always the most recognizable one. Two ways to pick a better main photo:
+
+- **Set photo** on the person card — opens a grid of every face detected for that person (face crops only, current cover highlighted with a green outline and a ✓). Click any crop to make it the cover; the card updates in place.
+- **Set as cover** in the photo-detail face popover — click a face box on a photo, then *Set as cover*. Convenient when you're already looking at a good photo.
+
+Either way the choice is stored as the person's `cover_face_id`; it survives re-clustering and is served from `GET /api/people/{id}/cover`.
 
 ## Naming and merging
 
@@ -70,6 +80,8 @@ The matrix multiply `X @ X.T` computes every pairwise cosine similarity at once.
 |----------|---------|
 | `GET /api/people?q=&limit=200` | List clusters, optionally filtered by name |
 | `GET /api/people/{id}/cover` | Face-crop cover JPEG |
+| `GET /api/people/{id}/faces` | Every face of a person, with crop URLs (feeds the cover picker) |
+| `POST /api/people/{id}/cover` | Set the cover photo from one of the person's faces (`{"face_id":N}`) |
 | `GET /api/people/{id}/photos` | Photos containing this person |
 | `GET /api/people/{id}/map` | Clustered map markers for this person |
 | `GET /api/people/duplicates?threshold=0.40` | Suggested merges |
