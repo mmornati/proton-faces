@@ -27,7 +27,7 @@ from PIL import Image
 
 from bridge_client import BridgeError, BridgeTransientError, get_bridge
 from clip import embed_pil
-from cluster import cluster_once
+from cluster import cluster_once, match_person
 from config import settings
 from faces import detect_faces
 from geocode import reverse_geocode_many
@@ -524,10 +524,20 @@ def _process_one(uid: str) -> None:
     else:
         faces = detect_faces(bgr)
         face_count = len(faces)
+        matched = 0
         for f in faces:
+            # Assign straight to an existing person when their mean embedding
+            # matches, so a known face never sits unassigned and can't spawn a
+            # duplicate-person cluster. Unmatched faces stay NULL for the
+            # cluster loop / manual review.
+            person_id = match_person(
+                f["embedding"].tobytes(), settings.face_sim_threshold
+            )
+            if person_id is not None:
+                matched += 1
             insert_face(
                 photo_uid=uid,
-                person_id=None,
+                person_id=person_id,
                 confidence=f["confidence"],
                 bbox=_norm_bbox(f["bbox"], w, h),
                 embedding=f["embedding"].tobytes(),
@@ -547,8 +557,9 @@ def _process_one(uid: str) -> None:
 
     set_photo_done(uid, final.name, gps, place)
     log.debug(
-        "processed %s: %d faces (kept=%d), clip=%s",
-        uid, face_count, bool(existing_faces), clip_vec is not None,
+        "processed %s: %d faces (kept=%d, matched=%d), clip=%s",
+        uid, face_count, bool(existing_faces), matched if not existing_faces else 0,
+        clip_vec is not None,
     )
 
 
