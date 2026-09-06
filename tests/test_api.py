@@ -1182,3 +1182,104 @@ class TestDemoDisableAdminUserManagement:
         headers = self._seed_admin(client, password_hash)
         assert client.get("/api/auth/me", headers=headers).status_code == 200
         assert client.post("/api/auth/logout", headers=headers).status_code == 200
+
+
+class TestCompression:
+    """HTTP compression middleware: gzip JSON/UI responses, skip binary media."""
+
+    def test_json_compressed(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        for i in range(5):
+            _seed_done_photo(f"p{i}", capture_time=1700000000 + i)
+        headers = _bearer(client)
+        headers["Accept-Encoding"] = "gzip"
+        r = client.get("/api/photos", headers=headers)
+        assert r.status_code == 200
+        assert r.headers.get("content-encoding") == "gzip"
+        assert "accept-encoding" in r.headers.get("vary", "").lower()
+        assert len(r.json()["photos"]) == 5
+
+    def test_binary_not_compressed(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        headers = _bearer(client)
+        headers["Accept-Encoding"] = "gzip"
+        r = client.get("/api/photos/p1/thumb", headers=headers)
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/webp"
+        assert "content-encoding" not in r.headers
+
+    def test_small_json_passthrough(self, client):
+        r = client.get("/api/auth/limits", headers={"Accept-Encoding": "gzip"})
+        assert r.status_code == 200
+        assert r.json() == {"min_username": 2, "min_password": 8}
+        assert "content-encoding" not in r.headers
+
+    def test_no_accept_encoding_no_compression(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        headers = _bearer(client)
+        headers["Accept-Encoding"] = "identity"
+        r = client.get("/api/photos", headers=headers)
+        assert r.status_code == 200
+        assert "content-encoding" not in r.headers
+
+    def test_streaming_response_compressed(self):
+        """Streaming JSON responses are gzipped chunk-by-chunk."""
+        import asyncio
+
+        from compression import CompressionMiddleware
+
+        async def app(scope, receive, send):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b'{"a": ' + b"1" * 2000, "more_body": True})
+            await send({"type": "http.response.body", "body": b"}", "more_body": False})
+
+        messages = []
+
+        async def send(message):
+            messages.append(message)
+
+        scope = {"type": "http", "headers": [(b"accept-encoding", b"gzip")]}
+        asyncio.run(CompressionMiddleware(app, minimum_size=1)(scope, None, send))
+        start = messages[0]
+        headers = dict(start["headers"])
+        assert headers[b"content-encoding"] == b"gzip"
+        assert b"content-length" not in headers
+        assert b"accept-encoding" in headers[b"vary"].lower()
+        # Both body chunks were compressed.
+        assert messages[1]["body"] != b'{"a": ' + b"1" * 2000
+        assert messages[2]["body"] != b"}"
+
+    def test_pathsend_passthrough(self):
+        """pathsend responses are forwarded uncompressed."""
+        import asyncio
+
+        from compression import CompressionMiddleware
+
+        async def app(scope, receive, send):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.pathsend", "path": "/tmp/x"})
+
+        messages = []
+
+        async def send(message):
+            messages.append(message)
+
+        scope = {"type": "http", "headers": [(b"accept-encoding", b"gzip")]}
+        asyncio.run(CompressionMiddleware(app, minimum_size=1)(scope, None, send))
+        assert messages[0]["type"] == "http.response.start"
+        assert messages[1]["type"] == "http.response.pathsend"
+        assert b"content-encoding" not in dict(messages[0]["headers"])

@@ -40,6 +40,7 @@ from auth import (
 )
 from bridge_client import BridgeTransientError, get_bridge
 from clip import embed_text
+from compression import CompressionMiddleware
 from config import settings
 from faces import embed_query_face
 from indexer import get_indexer_state
@@ -135,6 +136,8 @@ app = FastAPI(
     redoc_url="/redoc" if _EXPOSE_API_DOCS else None,
     openapi_url="/openapi.json" if _EXPOSE_API_DOCS else None,
 )
+
+app.add_middleware(CompressionMiddleware, minimum_size=1024)
 
 _STATIC = Path(__file__).parent / "static"
 
