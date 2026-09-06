@@ -51,6 +51,7 @@ Every demo photo has a real sha1 hash, real capture time, and the right media ty
 | Thumbnails | Downloaded from Proton | Generated locally from `photos/<uid>.jpg` |
 | GPS / place names | From a Google Takeout export | Injected from the fixture |
 | Multi-user auth | Manual `--create-admin` | Default `demo` admin auto-created on first boot |
+| Binary media endpoints (`/thumb`, `/full`, `/cover`, `/crop`) | Secure by default (bearer token or signed URL) | World-readable — the profile sets `DEMO_ALLOW_PUBLIC_THUMBS=1` so static `<img>` tags work without JS |
 | Everything else (CLIP, faces, clustering, search, admin) | Same | Same |
 
 The ML pipeline — InsightFace, CLIP, HDBSCAN — runs **exactly** as it does in real mode. The only thing that's different is where the photo bytes come from.

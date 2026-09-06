@@ -85,17 +85,17 @@ def _extract_token(request: Request) -> str | None:
 # /thumb, /full, /cover, /crop are consumed by <img>/<video>/<source> tags
 # that can't attach an Authorization header. Two release modes:
 #
-#   1. DEMO_ALLOW_PUBLIC_THUMBS=1 (default for the demo profile)
-#      - the suffix endpoints stay world-readable so a static <img> tag
-#        works without any JS round-trip.
-#      - signed URLs are still issued and accepted (so the prod binary
-#        can opt-in to signed-only at any time without breaking demos).
-#
-#   2. DEMO_ALLOW_PUBLIC_THUMBS=0 (recommended for prod)
+#   1. DEMO_ALLOW_PUBLIC_THUMBS=0 (default)
 #      - the suffix endpoints require either a valid bearer token OR a
 #        valid short-lived signed URL (?sig=...&exp=...). Front-end
 #        must call /api/sign once per page load and append ?sig=&exp=
 #        to every <img src=...> URL it renders.
+#
+#   2. DEMO_ALLOW_PUBLIC_THUMBS=1 (explicit opt-in, demo profile)
+#      - the suffix endpoints stay world-readable so a static <img> tag
+#        works without any JS round-trip.
+#      - signed URLs are still issued and accepted (so a deployment can
+#        flip back to signed-only at any time without breaking clients).
 
 def _env_bool(key: str, default: bool = False) -> bool:
     return os.environ.get(key, str(default)).strip().lower() in ("1", "true", "yes", "on")
@@ -104,11 +104,14 @@ def _env_bool(key: str, default: bool = False) -> bool:
 def _hardening_overrides(key: str, demo_default: bool) -> bool:
     """Resolve a demo flag, with DEMO_HARDENING_MODE as the master switch.
 
-    When DEMO_HARDENING_MODE=1, return the SAFE value (overriding whatever
-    the env says) for flags that should be locked-down in public demos.
-    The legacy opt-in flags (DEMO_ALLOW_PUBLIC_THUMBS=1) win when
-    DEMO_HARDENING_MODE is explicitly 0.
+    An explicitly-set environment variable always wins — operators opt-in
+    to public thumbs / login logs with DEMO_ALLOW_PUBLIC_THUMBS=1 /
+    DEMO_LOGIN_LOGS=1 even when DEMO_HARDENING_MODE=1. When the variable is
+    unset, hardening mode falls back to the SAFE value; otherwise the flag's
+    own default applies.
     """
+    if key in os.environ:
+        return _env_bool(key, demo_default)
     from config import demo_hardening_mode  # local import: avoid cycle
     if demo_hardening_mode():
         # When hardening mode is on, force these flags to their safe values.
@@ -122,12 +125,16 @@ def _hardening_overrides(key: str, demo_default: bool) -> bool:
             "DEMO_DISABLE_BACKUPS",
         ):
             return True
-    return _env_bool(key, demo_default)
+    return demo_default
 
 
 def allow_public_thumbs() -> bool:
-    """True when the suffix endpoints (/thumb,/full,/cover,/crop) are world-readable."""
-    return _hardening_overrides("DEMO_ALLOW_PUBLIC_THUMBS", True)
+    """True when the suffix endpoints (/thumb,/full,/cover,/crop) are world-readable.
+
+    Default OFF: binary endpoints require a bearer token or a short-lived
+    signed URL. Public demos opt in with DEMO_ALLOW_PUBLIC_THUMBS=1.
+    """
+    return _hardening_overrides("DEMO_ALLOW_PUBLIC_THUMBS", False)
 
 
 def demo_disable_admin_user_management() -> bool:
@@ -221,9 +228,10 @@ _AUTH_FREE_PATHS = frozenset({
 
 # Path-segment suffixes for routes that return binary responses (image/video
 # bytes) consumed by <img>/<video>/<source> tags. Those browser primitives
-# can't attach an Authorization header, so they have to be world-readable —
-# the server is already gated by the login modal and (in front of Traefik)
-# the auth-aware reverse proxy in real deployments.
+# can't attach an Authorization header, so in demo mode (or when
+# DEMO_ALLOW_PUBLIC_THUMBS=1 is explicitly set) the tail endpoints are
+# world-readable. By default they require a bearer token or a short-lived
+# signed URL issued by /api/sign.
 _AUTH_FREE_BINARY_SUFFIXES = frozenset({
     "/thumb",
     "/full",
@@ -272,9 +280,10 @@ def require_user(request: Request) -> CurrentUser | None:
     """Resolve the bearer token to a CurrentUser; raise 401 otherwise.
 
     Auth-free paths (`/api/auth/*`, `/api/health`, `/api/status`, plus the
-    binary `/thumb`, `/full`, `/cover`, `/crop` tail endpoints in demo mode)
-    short-circuit and return None — those routes don't need a user. All other
-    routes receive a fully-populated CurrentUser or raise 401.
+    binary `/thumb`, `/full`, `/cover`, `/crop` tail endpoints when public
+    thumbs are enabled, DEMO_ALLOW_PUBLIC_THUMBS=1) short-circuit and return
+    None — those routes don't need a user. All other routes receive a
+    fully-populated CurrentUser or raise 401.
 
     In prod mode (DEMO_ALLOW_PUBLIC_THUMBS=0), the binary endpoints are NOT
     auth-free: the global dep runs the bearer check here, but a valid signed

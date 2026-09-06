@@ -217,3 +217,25 @@ class TestSignedOrToken:
         req = _request("/api/photos/abc/thumb", token=token)
         user = auth.signed_or_token(req)
         assert user is not None and user.username == "grace"
+
+
+class TestAllowPublicThumbs:
+    def test_default_is_false(self, monkeypatch):
+        monkeypatch.delenv("DEMO_ALLOW_PUBLIC_THUMBS", raising=False)
+        monkeypatch.delenv("DEMO_MODE", raising=False)
+        monkeypatch.delenv("DEMO_HARDENING_MODE", raising=False)
+        assert auth.allow_public_thumbs() is False
+
+    def test_explicit_opt_in(self, monkeypatch):
+        monkeypatch.setenv("DEMO_ALLOW_PUBLIC_THUMBS", "1")
+        assert auth.allow_public_thumbs() is True
+
+    def test_hardening_mode_stays_secure_by_default(self, monkeypatch):
+        monkeypatch.setenv("DEMO_MODE", "1")
+        monkeypatch.delenv("DEMO_ALLOW_PUBLIC_THUMBS", raising=False)
+        assert auth.allow_public_thumbs() is False
+
+    def test_explicit_env_wins_over_hardening_mode(self, monkeypatch):
+        monkeypatch.setenv("DEMO_MODE", "1")
+        monkeypatch.setenv("DEMO_ALLOW_PUBLIC_THUMBS", "1")
+        assert auth.allow_public_thumbs() is True
