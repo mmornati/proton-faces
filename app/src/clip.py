@@ -10,6 +10,7 @@ text_model.onnx + tokenizer.json), baked into the image at /models/clip.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 
 import numpy as np
@@ -37,6 +38,28 @@ def _model_dir():
     return settings.models_dir / "clip"
 
 
+def _session_options(ort, threads: int | None = None):
+    """Build ORT SessionOptions with a bounded intra-op thread pool.
+
+    Each InferenceSession otherwise spawns one thread per physical core,
+    so N sessions on a multi-core box oversubscribe the CPU. Default 1
+    thread keeps the indexer's WORKERS + CLIP sessions from fighting for
+    cores; override with ORT_INTRA_OP_THREADS.
+    """
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = threads if threads is not None else _intra_op_threads()
+    return so
+
+
+def _intra_op_threads() -> int:
+    raw = os.environ.get("ORT_INTRA_OP_THREADS", "1")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        log.warning("ORT_INTRA_OP_THREADS=%r is not an int; using 1", raw)
+        return 1
+
+
 def _load():
     global _sess_vision, _sess_text, _tokenizer
     if _sess_vision is not None:
@@ -52,10 +75,14 @@ def _load():
         tokenizer_path = clip_dir / "tokenizer.json"
 
         _sess_vision = ort.InferenceSession(
-            str(vision_path), providers=["CPUExecutionProvider"]
+            str(vision_path),
+            sess_options=_session_options(ort),
+            providers=["CPUExecutionProvider"],
         )
         _sess_text = ort.InferenceSession(
-            str(text_path), providers=["CPUExecutionProvider"]
+            str(text_path),
+            sess_options=_session_options(ort),
+            providers=["CPUExecutionProvider"],
         )
 
         from tokenizers import Tokenizer

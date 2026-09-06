@@ -23,6 +23,7 @@ These are read by `docker-compose.yml` itself, not by the containers:
 | `RUN_INDEXER` | `0` | Set `1` on the `app` service to start the in-process indexer (legacy single-process layout). |
 | `INDEXER_STATUS_PORT` | `8091` | Internal-only port on the `indexer` container for its `/status` endpoint. |
 | `BRIDGE_CACHE_STALE_SEC` | `21600` (6 h) | Age (seconds) at which the on-disk Proton SDK cache is flagged "stale" by the admin Server-checks panel. Only fires when full-res downloads are also failing. Lower it to surface stale caches earlier; raise it if your bridge is idle for longer than 6 h. |
+| `ORT_INTRA_OP_THREADS` | `1` | Threads per ONNX Runtime session (CLIP). Default `1` prevents the indexer's workers + CLIP sessions from oversubscribing the CPU; raise only on a box with spare cores. `OMP_NUM_THREADS=1` is set in compose for the OpenMP-backed kernels (insightface). |
 
 ## In-container
 

@@ -114,6 +114,10 @@ services:
       # while the loop drains a backlog (videos are downloaded in full, which
       # saturates a home connection and shows up as cloudflared QUIC timeouts).
       - FULLRES_DRAIN_INTERVAL_SEC=${FULLRES_DRAIN_INTERVAL_SEC:-15}
+      # Bound ONNX Runtime / OpenMP thread pools to 1 so the WORKERS face
+      # threads + CLIP sessions don't oversubscribe the CPU (issue #79).
+      - OMP_NUM_THREADS=1
+      - ORT_INTRA_OP_THREADS=${ORT_INTRA_OP_THREADS:-1}
       # Internal-only port for the live status endpoint. Not published to
       # the host; reachable from the `app` service over the compose
       # network via the `indexer` hostname.
@@ -155,6 +159,10 @@ services:
       # indexer container does NOT publish this port to the host).
       - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Bound ONNX Runtime / OpenMP thread pools to 1 (issue #79). The app
+      # container runs CLIP sessions for search; keep them from oversubscribing.
+      - OMP_NUM_THREADS=1
+      - ORT_INTRA_OP_THREADS=${ORT_INTRA_OP_THREADS:-1}
       # Shared across uvicorn workers so signed <img> URLs validate on any
       # worker. REQUIRED: compose refuses to start without it (`:?` fails
       # loudly) so a known default can't be used to forge signed URLs.
@@ -195,6 +203,9 @@ services:
       - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEMO_ADMIN_PASSWORD=${DEMO_ADMIN_PASSWORD:-proton-faces}
+      # Bound ONNX Runtime / OpenMP thread pools to 1 (issue #79).
+      - OMP_NUM_THREADS=1
+      - ORT_INTRA_OP_THREADS=${ORT_INTRA_OP_THREADS:-1}
     networks:
       - internal
 
@@ -224,6 +235,9 @@ services:
       - INDEXER_STATUS_URL=http://indexer-demo:8091
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEMO_ADMIN_PASSWORD=${DEMO_ADMIN_PASSWORD:-proton-faces}
+      # Bound ONNX Runtime / OpenMP thread pools to 1 (issue #79).
+      - OMP_NUM_THREADS=1
+      - ORT_INTRA_OP_THREADS=${ORT_INTRA_OP_THREADS:-1}
       # Demo content is public by design, so a fixed signing secret is fine; it
       # keeps signed URLs stable across the demo's 4 uvicorn workers (a
       # per-worker ephemeral secret would cause intermittent 401s on

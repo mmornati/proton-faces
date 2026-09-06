@@ -50,6 +50,39 @@ class TestL2Norm:
         assert np.linalg.norm(out) == 0.0
 
 
+class TestSessionOptions:
+    def test_defaults_to_one_thread(self, monkeypatch):
+        monkeypatch.delenv("ORT_INTRA_OP_THREADS", raising=False)
+        so = clip._session_options(_FakeOrt())
+        assert so.intra_op_num_threads == 1
+
+    def test_reads_env_override(self, monkeypatch):
+        monkeypatch.setenv("ORT_INTRA_OP_THREADS", "4")
+        so = clip._session_options(_FakeOrt())
+        assert so.intra_op_num_threads == 4
+
+    def test_explicit_threads_wins(self, monkeypatch):
+        monkeypatch.setenv("ORT_INTRA_OP_THREADS", "4")
+        so = clip._session_options(_FakeOrt(), threads=2)
+        assert so.intra_op_num_threads == 2
+
+    def test_invalid_env_falls_back_to_one(self, monkeypatch):
+        monkeypatch.setenv("ORT_INTRA_OP_THREADS", "lots")
+        so = clip._session_options(_FakeOrt())
+        assert so.intra_op_num_threads == 1
+
+    def test_zero_or_negative_clamps_to_one(self, monkeypatch):
+        monkeypatch.setenv("ORT_INTRA_OP_THREADS", "0")
+        so = clip._session_options(_FakeOrt())
+        assert so.intra_op_num_threads == 1
+
+
+class _FakeOrt:
+    class SessionOptions:
+        def __init__(self):
+            self.intra_op_num_threads = 0
+
+
 class _FakeSession:
     def __init__(self, output):
         self._output = output
