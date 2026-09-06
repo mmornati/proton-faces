@@ -36,7 +36,7 @@ import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, extractRetryAfter, type TokenBucket } from './rateLimit';
-import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseRange } from './helpers';
+import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseRange, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
 const DATA_DIR = process.env.DATA_DIR ?? '/data';
@@ -490,6 +490,39 @@ async function main(): Promise<void> {
     });
 
     console.log(`[bridge] init complete; session logged in: ${ctx.auth.isLoggedIn()}`);
+
+    // Sweep orphaned work/*.full temp files left by a previous crash.
+    // Any *.full file older than 5 minutes is stale — the container is
+    // single-process so no concurrent writer could be using it. The age
+    // check is a safety margin against racing a concurrently-starting old
+    // process (impossible in practice but kept as defense-in-depth).
+    const workDir = path.join(DATA_DIR, 'work');
+    try {
+        const entries: Array<{ name: string; mtimeMs: number }> = [];
+        for (const name of readdirSync(workDir)) {
+            if (!STALE_WORK_FILE_GLOB.test(name)) continue;
+            try {
+                const st = statSync(path.join(workDir, name));
+                entries.push({ name, mtimeMs: st.mtimeMs });
+            } catch {
+                // vanished between readdir and stat — skip
+            }
+        }
+        const stale = sweepStaleWorkFiles(entries, Date.now(), 5 * 60 * 1000);
+        for (const name of stale) {
+            try {
+                Bun.file(path.join(workDir, name)).unlink();
+                console.log(`[bridge] removed stale work file: ${name}`);
+            } catch {
+                // best-effort
+            }
+        }
+        if (stale.length > 0) {
+            console.log(`[bridge] sweep complete; removed ${stale.length} stale work file(s)`);
+        }
+    } catch {
+        // workDir doesn't exist yet (first run) — nothing to sweep
+    }
 
     if (process.env.PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION === '1') {
         console.warn(
