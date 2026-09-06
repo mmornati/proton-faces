@@ -28,8 +28,12 @@ if command -v proton-drive >/dev/null 2>&1; then
   # Any command that forces a refresh of the cached session works. Login
   # happens on first use if the user isn't authenticated yet.
   proton-drive auth login >/dev/null 2>&1 || true
-  echo "=> auth session should now be at $DATA_DIR/auth-session.json"
-  ls -l "$DATA_DIR/auth-session.json" 2>/dev/null || echo "   (not found — run 'proton-drive auth login' interactively first)"
+  if [ -f "$DATA_DIR/auth-session.json" ]; then
+    chmod 600 "$DATA_DIR/auth-session.json"
+    echo "=> auth session secured at $DATA_DIR/auth-session.json (chmod 600)"
+  else
+    echo "   (not found — run 'proton-drive auth login' interactively first)"
+  fi
 else
   echo "proton-drive CLI not found on PATH."
   echo "Place a session file at $DATA_DIR/auth-session.json manually."
