@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import httpx
 
@@ -16,6 +17,16 @@ from config import settings
 
 class BridgeError(Exception):
     pass
+
+
+# Mirror of the bridge's isValidUid: uids are opaque base64url-ish
+# identifiers. Rejecting anything else before it lands in a URL path keeps
+# the Python side consistent with the bridge's own validation (fix #37).
+_UID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _is_valid_uid(uid: str) -> bool:
+    return bool(_UID_RE.match(uid))
 
 
 class BridgeTransientError(BridgeError):
@@ -204,6 +215,8 @@ class BridgeClient:
         """
         # Streaming: return the raw response so the caller can iterate the body
         # as it arrives (full-res downloads can be slow; don't buffer them).
+        if not _is_valid_uid(uid):
+            raise ValueError(f"invalid photo uid: {uid!r}")
         headers = {"Range": range_header} if range_header else {}
         if timeout_ms:
             headers["X-Timeout-Ms"] = str(timeout_ms)

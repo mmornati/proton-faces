@@ -36,7 +36,7 @@ import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, extractRetryAfter, type TokenBucket } from './rateLimit';
-import { CACHE_FILE_GLOB, nodeToJson, parseRange } from './helpers';
+import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseRange } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
 const DATA_DIR = process.env.DATA_DIR ?? '/data';
@@ -175,9 +175,18 @@ async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: Tok
 }
 
 async function fetchNodes(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket, body: unknown): Promise<Response> {
-    const { uids } = (body ?? {}) as { uids?: string[] };
+    const { uids } = (body ?? {}) as { uids?: unknown };
     if (!Array.isArray(uids) || uids.length === 0) {
         return Response.json({ ok: false, error: 'Expected {"uids": [...]}' }, { status: 400 });
+    }
+    if (uids.length > MAX_UID_BATCH) {
+        return Response.json(
+            { ok: false, error: `Too many uids (max ${MAX_UID_BATCH})` },
+            { status: 400 },
+        );
+    }
+    if (!uids.every(isValidUid)) {
+        return Response.json({ ok: false, error: 'Invalid uid in request' }, { status: 400 });
     }
 
     const encoder = new TextEncoder();
@@ -217,9 +226,18 @@ async function fetchAlbums(ctx: Awaited<ReturnType<typeof init>>, limiter: Token
 }
 
 async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket, body: unknown): Promise<Response> {
-    const { uids } = (body ?? {}) as { uids?: string[] };
+    const { uids } = (body ?? {}) as { uids?: unknown };
     if (!Array.isArray(uids) || uids.length === 0) {
         return Response.json({ ok: false, error: 'Expected {"uids": [...]}' }, { status: 400 });
+    }
+    if (uids.length > MAX_UID_BATCH) {
+        return Response.json(
+            { ok: false, error: `Too many uids (max ${MAX_UID_BATCH})` },
+            { status: 400 },
+        );
+    }
+    if (!uids.every(isValidUid)) {
+        return Response.json({ ok: false, error: 'Invalid uid in request' }, { status: 400 });
     }
 
     const workDir = path.join(DATA_DIR, 'work');
@@ -229,6 +247,10 @@ async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     const pending: string[] = [];
     for (const uid of uids) {
         const dest = path.join(workDir, `${uid}.webp`);
+        // Belt-and-braces: even with isValidUid, never write outside workDir.
+        if (!path.resolve(dest).startsWith(path.resolve(workDir) + path.sep)) {
+            return Response.json({ ok: false, error: 'Invalid uid in request' }, { status: 400 });
+        }
         // Skip if we already have this thumbnail (resumability).
         if (await Bun.file(dest).exists()) {
             results.push({ uid, ok: true });
@@ -253,8 +275,8 @@ async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, limiter: T
 
 async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket, url: URL, request: Request): Promise<Response> {
     const uid = url.pathname.split('/')[2];
-    if (!uid) {
-        return Response.json({ ok: false, error: 'Missing photo uid' }, { status: 400 });
+    if (!isValidUid(uid)) {
+        return Response.json({ ok: false, error: 'Missing or invalid photo uid' }, { status: 400 });
     }
 
     // Resolve the real MIME type from the node (preferred) so the browser
@@ -466,6 +488,9 @@ async function main(): Promise<void> {
         port: PORT,
         // /timeline of a large library takes a while to paginate; /photo/*/full streams.
         idleTimeout: 255,
+        // Cap request bodies so a peer can't push an unbounded uid array
+        // (Bun's default is ~128MB). 1 MiB is plenty for a 5,000-uid batch.
+        maxRequestBodySize: 1 << 20,
         async fetch(request: Request) {
             const url = new URL(request.url);
             try {

@@ -54,6 +54,20 @@ export function nodeToJson(node: PhotoNodeLike): Record<string, unknown> {
 /** SDK cache files the "clear cache" endpoint unlinks (WAL/SHM siblings too). */
 export const CACHE_FILE_GLOB = /^cache-.*\.sqlite(-(shm|wal))?$/i;
 
+/** Maximum number of uids accepted in a single /nodes or /thumbnails request. */
+export const MAX_UID_BATCH = 5000;
+
+/**
+ * Validate a Proton photo uid before it is used to build filesystem paths,
+ * temp filenames, or response headers. Uids are opaque base64url-ish
+ * identifiers; anything else (path separators, `..`, whitespace, control
+ * chars, non-strings) is rejected so a request can never escape the work dir
+ * or probe arbitrary files.
+ */
+export function isValidUid(uid: unknown): uid is string {
+    return typeof uid === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(uid);
+}
+
 /** A successfully parsed byte range. */
 export interface ParsedRange {
     start: number;
