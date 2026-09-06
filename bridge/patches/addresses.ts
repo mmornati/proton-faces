@@ -233,7 +233,7 @@ private async getOwnPublicKeys(address: coreComponents['schemas']['AddressUser']
                     userPrimaryPrivateKeys.push(userPrimaryPrivateKey);
                     userPrimaryPublicKeys.push(userPrimaryPublicKey);
                 } catch (error) {
-                    this.logger.error(`Error importing user key: ${JSON.stringify(userKey)}`, error);
+                    this.logger.error(`Error importing user key ${userKey?.ID}`, error);
                 }
             }
 
