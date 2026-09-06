@@ -46,6 +46,13 @@ services:
       - DATA_DIR=/data
       - PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file
       - PROTON_DRIVE_CACHE_DIR=/data
+      # E2E manifest/address-key verification is DISABLED by default: the patched
+      # addresses.ts imports the armored public key without verifying its key token,
+      # and fileDownloader.ts skips verifyManifest(). Deliberate workaround for a
+      # Bun 1.2 WASM OpenPGP hang (cryptoProxy.decryptMessage) that stalls full-res
+      # downloads on migrated accounts that omit the deprecated PublicKey field.
+      # Set to 0 to restore full E2E verification (downloads may hang on such accounts).
+      - PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=${PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION:-1}
       # Optional: point at a custom Proton API environment.
       # - PROTON_DRIVE_BASE_URL=drive-api.proton.me
       # Outbound rate limit to Proton API. 3 req/s burst 2 keeps us inside

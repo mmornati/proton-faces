@@ -72,10 +72,12 @@ ENV PORT=8090
 ENV DATA_DIR=/data
 ENV PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file
 ENV PROTON_DRIVE_CACHE_DIR=/data
-# Address keys for migrated accounts often omit the deprecated PublicKey field; our
-# addresses.ts patch then skips verification keys and fileDownloader.ts honors this flag
-# to skip the manifest check (instead of failing after streaming the whole file)。
-ENV PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=1
+# PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION is intentionally NOT baked into the
+# image: it is set per-deployment in compose.yml (proton-bridge service) so the
+# E2E manifest/address-key verification downgrade is visible and opt-out-able.
+# Remove the flag and the addresses.ts / fileDownloader.ts patches once the
+# Bun 1.2 WASM OpenPGP hang (cryptoProxy.decryptMessage) is fixed upstream.
+# Tracked in https://github.com/mmornati/proton-faces/issues/39.
 # Optional outbound throttle on Proton HTTPS. Default OFF (0). Set e.g. 5 (req/s) to
 # protect a small home router/CPE from NAT-table saturation during big syncs.
 ENV PROTON_BRIDGE_RATE_LIMIT=0
