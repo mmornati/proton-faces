@@ -158,10 +158,12 @@ and tunable when it happens:
   hangs (e.g. on an upstream crypto bug). The browser shows a toast instead
   of spinning forever.
 - **Manifest verification bypass** — `PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=1`
-  is enabled in the published image because migrated Proton accounts often
-  omit the deprecated `AddressKey.PublicKey` field; without this flag the
-  SDK hangs on the key-token decrypt (Bun 1.2 WASM OpenPGP issue). Block-level
-  SHA256 integrity still applies where available.
+  is set per-deployment in `compose.yml` (default `1`) because migrated Proton
+  accounts often omit the deprecated `AddressKey.PublicKey` field; without this
+  flag the SDK hangs on the key-token decrypt (Bun 1.2 WASM OpenPGP issue).
+  It is **not** baked into the image: set it to `0` in `compose.yml` to restore
+  full E2E verification. Block-level SHA256 integrity still applies where
+  available. The bridge logs a loud warning at startup when the flag is on.
 - **Container hardening** — `compose.yml` drops all Linux capabilities and sets
   `no-new-privileges` on every service. No container runs with `--network host`
   or `--privileged`; everything goes through the internal `internal` compose

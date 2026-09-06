@@ -460,6 +460,15 @@ async function main(): Promise<void> {
 
     console.log(`[bridge] init complete; session logged in: ${ctx.auth.isLoggedIn()}`);
 
+    if (process.env.PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION === '1') {
+        console.warn(
+            '[bridge] WARNING: PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=1 — E2E manifest verification DISABLED; ' +
+                'downloads are not cryptographically anchored to account keys. ' +
+                'This is a workaround for the Bun 1.2 WASM OpenPGP hang (cryptoProxy.decryptMessage); ' +
+                'set it to 0 to restore full E2E verification.',
+        );
+    }
+
     const limiter = createRateLimiter();
 
     Bun.serve({
