@@ -198,6 +198,70 @@ class TestLoginRefresh:
         assert exc.value.status_code == 401
 
 
+class TestLoginRateLimit:
+    def _clock(self, monkeypatch):
+        state = {"now": 1_000_000.0}
+        monkeypatch.setattr(auth.time, "time", lambda: state["now"])
+        return state
+
+    def test_lockout_after_max_failures(self, tmp_db, monkeypatch):
+        self._clock(monkeypatch)
+        store.create_user("bob", auth.hash_password("s3cret!"))
+        for _ in range(auth._LOGIN_MAX_FAILURES):
+            with pytest.raises(HTTPException) as exc:
+                auth.login("bob", "wrong", ip="1.2.3.4")
+            assert exc.value.status_code == 401
+        with pytest.raises(HTTPException) as exc:
+            auth.login("bob", "s3cret!", ip="1.2.3.4")
+        assert exc.value.status_code == 429
+        assert "Retry-After" in exc.value.headers
+
+    def test_lockout_expires(self, tmp_db, monkeypatch):
+        state = self._clock(monkeypatch)
+        store.create_user("bob", auth.hash_password("s3cret!"))
+        for _ in range(auth._LOGIN_MAX_FAILURES):
+            with pytest.raises(HTTPException):
+                auth.login("bob", "wrong", ip="1.2.3.4")
+        state["now"] += auth._LOGIN_LOCKOUT_SEC + 1
+        access, _, _ = auth.login("bob", "s3cret!", ip="1.2.3.4")
+        assert store.lookup_token(access)["kind"] == "access"
+
+    def test_different_username_unaffected(self, tmp_db, monkeypatch):
+        self._clock(monkeypatch)
+        store.create_user("bob", auth.hash_password("s3cret!"))
+        store.create_user("carol", auth.hash_password("s3cret!"))
+        for _ in range(auth._LOGIN_MAX_FAILURES):
+            with pytest.raises(HTTPException):
+                auth.login("bob", "wrong", ip="1.2.3.4")
+        access, _, _ = auth.login("carol", "s3cret!", ip="1.2.3.4")
+        assert store.lookup_token(access)["kind"] == "access"
+
+    def test_success_resets_counter(self, tmp_db, monkeypatch):
+        self._clock(monkeypatch)
+        store.create_user("bob", auth.hash_password("s3cret!"))
+        for _ in range(auth._LOGIN_MAX_FAILURES - 1):
+            with pytest.raises(HTTPException):
+                auth.login("bob", "wrong", ip="1.2.3.4")
+        auth.login("bob", "s3cret!", ip="1.2.3.4")
+        for _ in range(auth._LOGIN_MAX_FAILURES):
+            with pytest.raises(HTTPException):
+                auth.login("bob", "wrong", ip="1.2.3.4")
+        with pytest.raises(HTTPException) as exc:
+            auth.login("bob", "s3cret!", ip="1.2.3.4")
+        assert exc.value.status_code == 429
+
+    def test_neutral_body(self, tmp_db, monkeypatch):
+        self._clock(monkeypatch)
+        store.create_user("bob", auth.hash_password("s3cret!"))
+        for _ in range(auth._LOGIN_MAX_FAILURES):
+            with pytest.raises(HTTPException):
+                auth.login("bob", "wrong", ip="1.2.3.4")
+        with pytest.raises(HTTPException) as exc:
+            auth.login("bob", "s3cret!", ip="1.2.3.4")
+        assert "ip" not in exc.value.detail.lower()
+        assert "username" not in exc.value.detail.lower()
+
+
 class TestSignedOrToken:
     def test_valid_signed_url_passes(self, tmp_db, monkeypatch):
         monkeypatch.setenv("DEMO_ALLOW_PUBLIC_THUMBS", "0")

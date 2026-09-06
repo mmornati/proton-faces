@@ -386,19 +386,94 @@ def require_role(min_role: str):
 
 # --- login / refresh / logout (called from api.py) ------------------------
 
+@dataclass
+class _LoginAttempt:
+    failures: int = 0
+    lockout_count: int = 0
+    locked_until: float = 0.0
+
+
+# In-memory per-worker login rate limiter (issue #33). Keyed by (ip, username)
+# so a distributed brute force across many usernames from one IP still trips
+# the per-username budget, and one username from many IPs trips the per-IP
+# budget. Per-worker state is acceptable: with 4 workers an attacker gets 4x
+# the budget, which is still bounded. Redis is out of scope.
+_LOGIN_MAX_FAILURES = 5
+_LOGIN_LOCKOUT_SEC = 900
+_LOGIN_MAX_ENTRIES = 10_000
+_login_attempts: dict[tuple[str, str], _LoginAttempt] = {}
+
+
+def _login_key(ip: str | None, username: str) -> tuple[str, str]:
+    return (ip or "unknown", username)
+
+
+def _prune_login_attempts() -> None:
+    """Drop expired entries so spoofed IPs can't grow the map unboundedly."""
+    if len(_login_attempts) <= _LOGIN_MAX_ENTRIES:
+        return
+    now = time.time()
+    for key in [k for k, v in _login_attempts.items() if v.locked_until <= now]:
+        _login_attempts.pop(key, None)
+
+
+def check_login_rate_limit(ip: str | None, username: str) -> None:
+    """Raise 429 if (ip, username) is currently locked out.
+
+    The response body is deliberately neutral — it must not reveal whether
+    the IP or the username triggered the lockout.
+    """
+    _prune_login_attempts()
+    attempt = _login_attempts.get(_login_key(ip, username))
+    if attempt is not None and attempt.locked_until > time.time():
+        retry_after = int(attempt.locked_until - time.time()) + 1
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many failed login attempts",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def record_login_failure(ip: str | None, username: str) -> None:
+    """Increment the failure counter; lock out once the budget is exhausted."""
+    key = _login_key(ip, username)
+    attempt = _login_attempts.get(key)
+    if attempt is None:
+        if len(_login_attempts) >= _LOGIN_MAX_ENTRIES:
+            _prune_login_attempts()
+        attempt = _login_attempts.setdefault(key, _LoginAttempt())
+    attempt.failures += 1
+    if attempt.failures >= _LOGIN_MAX_FAILURES:
+        backoff = _LOGIN_LOCKOUT_SEC * (2 ** attempt.lockout_count)
+        attempt.locked_until = time.time() + backoff
+        attempt.lockout_count += 1
+        attempt.failures = 0
+        if demo_login_logs():
+            log.warning("login lockout for user=%r ip=%r for %ds", username, ip, backoff)
+
+
+def record_login_success(ip: str | None, username: str) -> None:
+    """Successful logins don't count toward the budget; reset the entry."""
+    _login_attempts.pop(_login_key(ip, username), None)
+
+
 def login(username: str, password: str, *, user_agent: str | None = None,
            ip: str | None = None) -> tuple[str, str, CurrentUser]:
     """Verify credentials, mint access + refresh tokens, return (access, refresh, user).
 
     On bad credentials: raises 401 (caller decides the response shape).
+    On lockout: raises 429 with a Retry-After header.
     """
+    check_login_rate_limit(ip, username)
     row = store.get_user_by_username(username)
     if row is None or row["disabled"] or not verify_password(password, row["password_hash"]):
         # Constant-ish: always hash the dummy to keep wall time comparable when
         # the username doesn't exist (defense against username enumeration).
         if row is None:
             bcrypt.checkpw(b"probe", bcrypt.hashpw(b"probe", bcrypt.gensalt(rounds=4)))
+        record_login_failure(ip, username)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
+    record_login_success(ip, username)
     access = store.issue_token(row["id"], "access", access_ttl(),
                                 user_agent=user_agent, ip=ip)
     refresh = store.issue_token(row["id"], "refresh", refresh_ttl(),
