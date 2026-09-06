@@ -907,6 +907,36 @@ class TestSearch:
         r = client.get("/api/search", params={"q": "beach"}, headers=headers)
         assert r.json() == {"results": [], "total": 0}
 
+    def test_search_limit_clamped(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        for i in range(3):
+            _seed_done_photo(f"p{i}")
+            store.insert_clip(f"p{i}", _emb(i).tobytes())
+        monkeypatch.setattr(api, "embed_text", lambda text: _emb(5))
+        headers = _bearer(client)
+        r = client.get("/api/search", params={"q": "beach", "limit": 10**6}, headers=headers)
+        assert r.status_code == 200
+        assert len(r.json()["results"]) == 3
+        r = client.get("/api/search", params={"q": "beach", "limit": 0}, headers=headers)
+        assert r.status_code == 200
+        assert len(r.json()["results"]) == 1
+
+    def test_search_face_limit_clamped(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        for i in range(3):
+            _seed_done_photo(f"p{i}")
+            _seed_face(f"p{i}", emb=_emb(i))
+        monkeypatch.setattr(api, "embed_query_face", lambda bgr: _emb(5))
+        headers = _bearer(client)
+        r = client.post("/api/search/face", files={"file": ("face.jpg", _jpeg_bytes(), "image/jpeg")},
+                        params={"limit": 10**6}, headers=headers)
+        assert r.status_code == 200
+        assert len(r.json()["results"]) == 3
+        r = client.post("/api/search/face", files={"file": ("face.jpg", _jpeg_bytes(), "image/jpeg")},
+                        params={"limit": 0}, headers=headers)
+        assert r.status_code == 200
+        assert len(r.json()["results"]) == 1
+
     def test_search_face(self, client, monkeypatch, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1")

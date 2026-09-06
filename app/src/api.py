@@ -1897,6 +1897,17 @@ def api_person_map(person_id: int, limit: int = 500):
 
 # --- search ----------------------------------------------------------------
 
+# Upper bound for `limit` on the search endpoints. The UI never asks for more
+# than 200 results, and the result-assembly loops do a `get_photo` SQLite call
+# per hit — an unclamped limit lets one request amplify into a worker-wide
+# CPU/memory/bandwidth DoS.
+SEARCH_MAX_LIMIT = 200
+
+
+def _clamp_search_limit(limit: int) -> int:
+    return max(1, min(limit, SEARCH_MAX_LIMIT))
+
+
 @app.get("/api/search")
 def api_search(q: str, limit: int = 100, user: CurrentUser = Depends(require_user)):
     """Free-text semantic search via CLIP (objects, scenes, etc.)."""
@@ -1908,7 +1919,7 @@ def api_search(q: str, limit: int = 100, user: CurrentUser = Depends(require_use
     except Exception as exc:
         log.warning("clip text embed failed: %s", exc)
         raise HTTPException(503, "CLIP model unavailable")
-    return _semantic_search(vec, limit, user.id)
+    return _semantic_search(vec, _clamp_search_limit(limit), user.id)
 
 
 # Max bytes for `/api/search/face` uploads (P-03 from the 2026-09-01 pen
@@ -1973,7 +1984,7 @@ async def api_face_search(file: UploadFile = File(...), limit: int = 50,
     emb = embed_query_face(bgr)
     if emb is None:
         raise HTTPException(404, "no face found in image")
-    return _face_similarity(emb, limit, user.id)
+    return _face_similarity(emb, _clamp_search_limit(limit), user.id)
 
 
 def _get_clip_matrix() -> tuple[list[str], np.ndarray]:
@@ -1996,6 +2007,7 @@ def _get_clip_matrix() -> tuple[list[str], np.ndarray]:
 
 
 def _semantic_search(vec: np.ndarray, limit: int, user_id: int) -> dict:
+    limit = _clamp_search_limit(limit)
     uids, X = _get_clip_matrix()
     if X.size == 0:
         return {"results": [], "total": 0}
@@ -2016,6 +2028,7 @@ def _semantic_search(vec: np.ndarray, limit: int, user_id: int) -> dict:
 
 
 def _face_similarity(emb: np.ndarray, limit: int, user_id: int) -> dict:
+    limit = _clamp_search_limit(limit)
     data = _embedding_cache_data()
     mat = data["mat"]
     if mat.shape[0] == 0:
