@@ -18,7 +18,7 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY requirements.txt requirements-core.txt requirements-ml.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # --- bake in ML models ---
