@@ -31,6 +31,11 @@ def _load():
         model_dir = Path(settings.models_dir) / "insightface"
         model_dir.mkdir(parents=True, exist_ok=True)
 
+        # insightface 0.7.3's FaceAnalysis only forwards `providers` /
+        # `provider_options` to its internal InferenceSessions — there is no
+        # session-options pass-through, so per-session intra_op_num_threads
+        # can't be set here. Thread oversubscription is instead bounded by
+        # OMP_NUM_THREADS=1 in compose (the ORT build is OpenMP-backed).
         app = FaceAnalysis(
             name="buffalo_l",
             allowed_modules=["detection", "recognition"],
