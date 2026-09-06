@@ -216,6 +216,18 @@ class TestAuthEndpoints:
         r = client.post("/api/auth/login", json={"username": "nobody", "password": "password123"})
         assert r.status_code == 401
 
+    def test_login_lockout_429(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        for _ in range(5):
+            assert client.post(
+                "/api/auth/login", json={"username": "admin", "password": "wrong"}
+            ).status_code == 401
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        assert r.status_code == 429
+        assert "Retry-After" in r.headers
+        assert "ip" not in r.text.lower()
+        assert "username" not in r.text.lower()
+
     def test_limits_public(self, client):
         r = client.get("/api/auth/limits")
         assert r.status_code == 200
