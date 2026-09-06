@@ -419,19 +419,19 @@ class TestPhotos:
     def test_thumb(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1")
-        r = client.get("/api/photos/p1/thumb")
+        r = client.get("/api/photos/p1/thumb", headers=_bearer(client))
         assert r.status_code == 200
         assert r.headers["content-type"] == "image/webp"
 
     def test_thumb_missing(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1", thumb=False)
-        assert client.get("/api/photos/p1/thumb").status_code == 404
+        assert client.get("/api/photos/p1/thumb", headers=_bearer(client)).status_code == 404
 
     def test_full_photo(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1")
-        r = client.get("/api/photos/p1/full")
+        r = client.get("/api/photos/p1/full", headers=_bearer(client))
         assert r.status_code == 200
         assert b"fake-jpeg" in r.content
 
@@ -442,13 +442,13 @@ class TestPhotos:
             bridge_client, "_bridge",
             FailingFullBridge(bridge_client.BridgeTransientError(429, "rate limited", retry_after_sec=5)),
         )
-        r = client.get("/api/photos/p1/full")
+        r = client.get("/api/photos/p1/full", headers=_bearer(client))
         assert r.status_code == 429
         assert r.headers.get("Retry-After") == "5"
 
     def test_full_photo_404(self, client, password_hash):
         _seed_user(password_hash=password_hash)
-        assert client.get("/api/photos/missing/full").status_code == 404
+        assert client.get("/api/photos/missing/full", headers=_bearer(client)).status_code == 404
 
     def test_meta(self, client, monkeypatch, password_hash):
         _seed_user(password_hash=password_hash)
@@ -487,7 +487,8 @@ class TestPhotos:
         r = client.get("/api/map", headers=headers)
         marker = r.json()["markers"][0]
         assert marker["lat"] == 48.8584
-        assert marker["thumb_url"] == "/api/photos/p1/thumb"
+        assert marker["thumb_url"].split("?")[0] == "/api/photos/p1/thumb"
+        assert "sig=" in marker["thumb_url"]  # signed by default when public thumbs are off
 
 
 # --- faces / people -------------------------------------------------------
@@ -506,7 +507,8 @@ class TestFacesAndPeople:
         people = r.json()["people"]
         assert people[0]["name"] == "Alice"
         assert people[0]["face_count"] == 1
-        assert people[0]["cover_url"] == "/api/people/1/cover"
+        assert people[0]["cover_url"].split("?")[0] == "/api/people/1/cover"
+        assert "sig=" in people[0]["cover_url"]  # signed by default when public thumbs are off
 
     def test_people_filtered(self, client, password_hash):
         _seed_user(password_hash=password_hash)
@@ -524,13 +526,13 @@ class TestFacesAndPeople:
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1")
         store.create_person(name="Alice", cover_uid="p1", cover_face_id=None)
-        r = client.get("/api/people/1/cover")
+        r = client.get("/api/people/1/cover", headers=_bearer(client))
         assert r.status_code == 200
         assert r.headers["content-type"] == "image/webp"
 
     def test_person_cover_404(self, client, password_hash):
         _seed_user(password_hash=password_hash)
-        assert client.get("/api/people/999/cover").status_code == 404
+        assert client.get("/api/people/999/cover", headers=_bearer(client)).status_code == 404
 
     def test_person_faces(self, client, password_hash):
         _seed_user(password_hash=password_hash)
@@ -593,9 +595,69 @@ class TestFacesAndPeople:
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1")
         face_id = _seed_face("p1", bbox=(0.2, 0.2, 0.4, 0.4))
-        r = client.get(f"/api/faces/{face_id}/crop")
+        r = client.get(f"/api/faces/{face_id}/crop", headers=_bearer(client))
         assert r.status_code == 200
         assert r.headers["content-type"] == "image/jpeg"
+
+
+class TestBinaryEndpointAuth:
+    """Binary endpoints (/thumb /full /cover /crop) are secure by default."""
+
+    def test_thumb_requires_auth_by_default(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        r = client.get("/api/photos/p1/thumb")
+        assert r.status_code == 401
+
+    def test_full_requires_auth_by_default(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        r = client.get("/api/photos/p1/full")
+        assert r.status_code == 401
+
+    def test_thumb_public_when_opt_in(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        monkeypatch.setenv("DEMO_ALLOW_PUBLIC_THUMBS", "1")
+        r = client.get("/api/photos/p1/thumb")
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/webp"
+
+    def test_thumb_ok_with_bearer(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        r = client.get("/api/photos/p1/thumb", headers=_bearer(client))
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/webp"
+
+    def test_thumb_ok_with_signed_url(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        sig, exp = auth.make_signed_token("/api/photos/p1/thumb", ttl_seconds=300)
+        r = client.get(f"/api/photos/p1/thumb?sig={sig}&exp={exp}")
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/webp"
+
+    def test_thumb_ok_with_signed_url_when_opt_in(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        monkeypatch.setenv("DEMO_ALLOW_PUBLIC_THUMBS", "1")
+        sig, exp = auth.make_signed_token("/api/photos/p1/thumb", ttl_seconds=300)
+        r = client.get(f"/api/photos/p1/thumb?sig={sig}&exp={exp}")
+        assert r.status_code == 200
+
+    def test_signed_url_via_api_sign_endpoint(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        r = client.post(
+            "/api/sign",
+            json={"paths": ["/api/photos/p1/thumb"]},
+            headers=_bearer(client),
+        )
+        assert r.status_code == 200, r.text
+        url = r.json()["urls"][0]
+        signed = f"/api/photos/p1/thumb?sig={url['sig']}&exp={url['exp']}"
+        assert client.get(signed).status_code == 200
 
     def test_face_assign_to_person(self, client, password_hash):
         _seed_user(password_hash=password_hash)

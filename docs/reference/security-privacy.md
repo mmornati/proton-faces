@@ -102,7 +102,7 @@ There is no CORS layer in the app — the web UI is served from the same origin 
 |---|---|
 | Someone reads your disk | The DB has bcrypt password hashes + opaque bearer tokens. Photos aren't on disk; only thumbs. Revoke all tokens + change passwords if you suspect compromise. |
 | Someone sniffs your network | All traffic to Proton is TLS. The compose-internal traffic is plaintext HTTP but on a private network. Put a TLS-terminating reverse proxy in front of `:8080` for remote access. |
-| Someone accesses `localhost:8080` while you're away | Bearer tokens are required for every non-binary endpoint. The `?` overlay shows who's signed in. Sign out from another device via the admin **Users** tab. |
+| Someone accesses `localhost:8080` while you're away | Bearer tokens are required for every API endpoint — including the binary media endpoints (`/thumb`, `/full`, `/cover`, `/crop`), which additionally accept short-lived signed URLs from `/api/sign`. These are world-readable only when you explicitly set `DEMO_ALLOW_PUBLIC_THUMBS=1`. The `?` overlay shows who's signed in. Sign out from another device via the admin **Users** tab. |
 | Bug in the bridge | The bridge is read-only by construction; even a bug can't write back to Proton. Pin the SDK tag in your fork if you're paranoid. |
 | Malicious auth-session.json | Only the bridge reads it. It authenticates to Proton and streams the encrypted timeline — it can't be used to delete or upload. Revoke the session on Proton's website to invalidate. |
 

@@ -44,8 +44,9 @@ Authentication is via `Authorization: Bearer <token>`. Get a token from `POST /a
 | GET | `/api/duplicates?limit=200` | read | Groups by sha1 (`{groups: [...]}`) |
 | GET | `/api/photos/{uid}` | read | Single photo row |
 | GET | `/api/photos/{uid}/meta` | read | Full metadata + live Proton node info + album names |
-| GET | `/api/photos/{uid}/thumb` | none (binary) | 512px WebP, immutable cache |
-| GET | `/api/photos/{uid}/full` | none (binary) | Full-resolution stream (HTTP Range supported) |
+| GET | `/api/photos/{uid}/thumb` | bearer or signed URL (binary) | 512px WebP, immutable cache |
+| GET | `/api/photos/{uid}/full` | bearer or signed URL (binary) | Full-resolution stream (HTTP Range supported) |
+| POST | `/api/sign` | bearer | Returns `{sig, exp}` for a binary path (`/thumb`/`/full`/`/cover`/`/crop`), so `<img>`/`<video>` tags can append `?sig=&exp=` to URLs |
 | PATCH | `/api/photos/{uid}` | write | Toggle `favorited` / `archived` / `hidden` (any subset) |
 | GET | `/api/photos/{uid}/faces` | read | All face rows for this photo |
 | GET | `/api/photos/{uid}/tags` | read | User tags |
@@ -77,7 +78,7 @@ Authentication is via `Authorization: Bearer <token>`. Get a token from `POST /a
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/people?q=&limit=200&offset=0` | read | List clusters, optional name filter |
-| GET | `/api/people/{id}/cover` | none (binary) | Face-crop cover JPEG, immutable cache |
+| GET | `/api/people/{id}/cover` | bearer or signed URL (binary) | Face-crop cover JPEG, immutable cache |
 | GET | `/api/people/{id}/faces` | read | Every face of a person, with crop URLs (cover picker) |
 | POST | `/api/people/{id}/cover` | write | Set cover photo `{face_id}` |
 | GET | `/api/people/{id}/photos` | read | Photos containing this person |
@@ -86,7 +87,7 @@ Authentication is via `Authorization: Bearer <token>`. Get a token from `POST /a
 | POST | `/api/people/{id}/name` | write | Rename (auto-merges if name exists) |
 | POST | `/api/people/{src}/merge` | write | Explicit merge `{target_id}` |
 | GET | `/api/faces/unassigned?limit=500` | read | The unassigned queue |
-| GET | `/api/faces/{id}/crop` | none (binary) | Face-crop JPEG |
+| GET | `/api/faces/{id}/crop` | bearer or signed URL (binary) | Face-crop JPEG |
 | GET | `/api/faces/{id}/suggest?limit=5` | read | Ranked "who might this be" people (face→person-mean-embedding similarity) |
 | POST | `/api/faces/{id}/person` | write | Assign (`{person_id}` or `{name}`); propagation kicks in |
 | POST | `/api/faces/{id}/unassign` | write | Unassign from person |
