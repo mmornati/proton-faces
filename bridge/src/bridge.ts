@@ -31,7 +31,7 @@
 import { init } from './init';
 import type { PhotoNode } from '@protontech/drive-sdk';
 import { ThumbnailType } from '@protontech/drive-sdk';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -263,7 +263,16 @@ async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     for await (const result of ctx.photosSdk.iterateThumbnails(pending, ThumbnailType.Type1)) {
         if (result.ok) {
             const dest = path.join(workDir, `${result.nodeUid}.webp`);
-            await writeFile(dest, result.thumbnail);
+            const tmp = path.join(workDir, `${result.nodeUid}.webp.tmp-${randomUUID()}`);
+            try {
+                await writeFile(tmp, result.thumbnail);
+                await rename(tmp, dest);
+            } catch (e) {
+                // Clean up the temp file on error; ignore unlink failures.
+                await unlink(tmp).catch(() => {});
+                results.push({ uid: result.nodeUid, ok: false, error: String(e) });
+                continue;
+            }
             results.push({ uid: result.nodeUid, ok: true });
         } else {
             results.push({ uid: result.nodeUid, ok: false, error: result.error });
