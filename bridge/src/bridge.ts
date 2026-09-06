@@ -36,6 +36,7 @@ import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, extractRetryAfter, type TokenBucket } from './rateLimit';
+import { CACHE_FILE_GLOB, nodeToJson, parseRange } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
 const DATA_DIR = process.env.DATA_DIR ?? '/data';
@@ -48,7 +49,6 @@ const FULL_RES_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_FULL_RES_TIMEOUT_MS
 // another cache file later, "clear cache" still picks it up. The session
 // file (auth-session.json) and work/ are NOT matched, so authentication
 // state survives a clear.
-const CACHE_FILE_GLOB = /^cache-.*\.sqlite(-(shm|wal))?$/i;
 
 // Cache-control knobs for the admin "stale cache" check. We report the
 // cache files' sizes + mtimes so the Python admin check can flag a
@@ -107,25 +107,6 @@ async function ensureLoggedIn(ctx: Awaited<ReturnType<typeof init>>): Promise<Re
         );
     }
     return Response.json({ ok: true, loggedIn });
-}
-
-const PHOTO_TAGS = ['Favorites', 'Screenshots', 'Videos', 'LivePhotos', 'MotionPhotos', 'Selfies', 'Portraits', 'Bursts', 'Panoramas', 'Raw'];
-
-function nodeToJson(node: PhotoNode): Record<string, unknown> {
-    return {
-        uid: node.uid,
-        name: node.name.value ?? node.name.key,
-        mediaType: node.mediaType,
-        captureTime: node.photo?.captureTime ? node.photo.captureTime.toISOString() : null,
-        albums: node.photo?.albums?.map((a) => a.nodeUid) ?? [],
-        sha1: node.activeRevision?.claimedDigests?.sha1 ?? null,
-        size: node.activeRevision?.claimedSize ?? node.activeRevision?.storageSize ?? null,
-        creationTime: node.creationTime ? node.creationTime.toISOString() : null,
-        modificationTime: node.modificationTime ? node.modificationTime.toISOString() : null,
-        tags: node.photo?.tags?.map((t) => PHOTO_TAGS[t] ?? String(t)) ?? [],
-        mainPhotoNodeUid: node.photo?.mainPhotoNodeUid ?? null,
-        relatedPhotoNodeUids: node.photo?.relatedPhotoNodeUids ?? [],
-    };
 }
 
 async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket, url?: URL, idsOnly = false): Promise<Response> {
@@ -411,30 +392,17 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
         // Parse a single `Range: bytes=start-end | start- | -suffix` header so
         // the browser can seek. Unsupported forms fall back to serving the full
         // body (200), matching common static-server behavior.
-        let start = 0;
-        let end = size - 1;
-        let status = 200;
-        const rangeHeader = request.headers.get('range');
-        if (rangeHeader) {
-            const m = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
-            if (m && (m[1] || m[2])) {
-                if (m[1]) {
-                    start = parseInt(m[1], 10);
-                    if (m[2]) end = parseInt(m[2], 10);
-                } else {
-                    start = Math.max(0, size - parseInt(m[2], 10));
-                }
-                if (start >= size) {
-                    await file.unlink();
-                    return new Response(null, {
-                        status: 416,
-                        headers: { 'Content-Range': `bytes */${size}` },
-                    });
-                }
-                end = Math.min(end, size - 1);
-                status = 206;
-            }
+        const parsed = parseRange(request.headers.get('range'), size);
+        if (parsed?.status === 416) {
+            await file.unlink();
+            return new Response(null, {
+                status: 416,
+                headers: { 'Content-Range': parsed.contentRange ?? `bytes */${size}` },
+            });
         }
+        const start = parsed?.range?.start ?? 0;
+        const end = parsed?.range?.end ?? size - 1;
+        const status = parsed?.status ?? 200;
 
         const length = end - start + 1;
         const headers: Record<string, string> = {

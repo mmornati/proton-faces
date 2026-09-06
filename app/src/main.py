@@ -22,8 +22,8 @@ import sys
 
 import uvicorn
 
-from api import app  # noqa: F401  (registers FastAPI routes; also runs init)
 import store
+from api import app  # noqa: F401  (registers FastAPI routes; also runs init)
 from auth import hash_password
 
 logging.basicConfig(
@@ -147,9 +147,9 @@ def main() -> None:
             "RUN_INDEXER unset: serving API only; indexer runs in its own container"
         )
 
-    from config import settings
     # Start the admin's auto-backup daemon (schedule read from admin_config.json).
     from admin import start_backup_worker
+    from config import settings
     start_backup_worker()
     # Pre-generate people cover crops so the People page serves plain files
     # instead of on-demand PIL encodes (runs in the parent process only).

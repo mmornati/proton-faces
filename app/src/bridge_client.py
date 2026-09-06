@@ -10,6 +10,7 @@ import json
 import os
 
 import httpx
+
 from config import settings
 
 
@@ -263,7 +264,7 @@ class BridgeClient:
         return r.json()
 
 
-_bridge: BridgeClient | "DemoBridge" | None = None  # type: ignore[name-defined]
+_bridge: BridgeClient | "DemoBridge" | None = None  # noqa: F821
 
 
 def get_bridge():

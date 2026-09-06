@@ -234,8 +234,8 @@ def main() -> int:
         "",
         "| Source | License | Used for |",
         "|--------|---------|----------|",
-        "| [picsum.photos](https://picsum.photos) → [Unsplash](https://unsplash.com) | [Unsplash License](https://unsplash.com/license) (free for commercial and noncommercial use, no attribution required) | Scene / object photos, attributed to the original photographer |",
-        "| [Wikimedia Commons](https://commons.wikimedia.org) | [CC0 / CC BY / CC BY-SA](https://commons.wikimedia.org/wiki/Commons:Licensing) | Face portraits used by the recognition pipeline |",
+        "| [picsum.photos](https://picsum.photos) → [Unsplash](https://unsplash.com) | [Unsplash License](https://unsplash.com/license) (free for commercial and noncommercial use, no attribution required) | Scene / object photos, attributed to the original photographer |",  # noqa: E501
+        "| [Wikimedia Commons](https://commons.wikimedia.org) | [CC0 / CC BY / CC BY-SA](https://commons.wikimedia.org/wiki/Commons:Licensing) | Face portraits used by the recognition pipeline |",  # noqa: E501
         "",
         "## Individual photos",
         "",

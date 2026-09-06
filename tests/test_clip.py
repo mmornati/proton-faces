@@ -1,0 +1,106 @@
+
+import numpy as np
+import pytest
+from PIL import Image
+
+import clip
+
+
+def _rgb_image(size=(64, 64)):
+    return Image.fromarray(
+        np.full((size[1], size[0], 3), 128, dtype=np.uint8), mode="RGB"
+    )
+
+
+class TestPreprocess:
+    def test_shape_and_dtype(self):
+        out = clip._preprocess(_rgb_image())
+        assert out.shape == (1, 3, 224, 224)
+        assert out.dtype == np.float32
+
+    def test_normalization(self):
+        out = clip._preprocess(_rgb_image())
+        # (128/255 - mean)/std applied per-channel
+        expected = (128 / 255.0 - clip._MEAN) / clip._STD
+        assert np.allclose(out[0, 0, 0, 0], expected[0], atol=1e-3)
+        assert np.allclose(out[0, 1, 0, 0], expected[1], atol=1e-3)
+        assert np.allclose(out[0, 2, 0, 0], expected[2], atol=1e-3)
+
+    def test_resizes_larger_images(self):
+        out = clip._preprocess(_rgb_image((400, 300)))
+        assert out.shape == (1, 3, 224, 224)
+
+    def test_handles_rgba_and_palette(self):
+        rgba = Image.fromarray(np.full((10, 10, 4), 128, dtype=np.uint8), mode="RGBA")
+        assert clip._preprocess(rgba).shape == (1, 3, 224, 224)
+        pal = Image.new("P", (10, 10))
+        assert clip._preprocess(pal).shape == (1, 3, 224, 224)
+
+
+class TestL2Norm:
+    def test_normalizes(self):
+        v = np.array([3.0, 4.0], dtype=np.float32)
+        out = clip._l2norm(v)
+        assert np.isclose(np.linalg.norm(out), 1.0)
+        assert np.allclose(out, [0.6, 0.8])
+
+    def test_zero_vector(self):
+        out = clip._l2norm(np.zeros(4, dtype=np.float32))
+        assert not np.any(np.isnan(out))
+        assert np.linalg.norm(out) == 0.0
+
+
+class _FakeSession:
+    def __init__(self, output):
+        self._output = output
+        self.run_calls = []
+
+    def run(self, feeds, inputs):
+        self.run_calls.append(inputs)
+        return [self._output]
+
+
+class _FakeTokenizer:
+    class _Encoded:
+        def __init__(self):
+            self.ids = [49406, 1, 2, 3, 49407]
+
+    def encode(self, text):
+        return self._Encoded()
+
+
+class TestEmbed:
+    @pytest.fixture
+    def fake_sessions(self, monkeypatch):
+        vec = np.ones((1, 512), dtype=np.float32) * 3.0
+        vis = _FakeSession(vec)
+        txt = _FakeSession(vec)
+        monkeypatch.setattr(clip, "_load", lambda: (vis, txt, _FakeTokenizer()))
+        return vis, txt
+
+    def test_embed_image_returns_normalized(self, fake_sessions, tmp_path):
+        p = tmp_path / "a.jpg"
+        _rgb_image().save(p, format="JPEG")
+        out = clip.embed_image(str(p))
+        assert out is not None
+        assert out.shape == (512,)
+        assert out.dtype == np.float32
+        assert np.isclose(np.linalg.norm(out), 1.0)
+
+    def test_embed_pil_feeds_pixel_values(self, fake_sessions):
+        vis, _ = fake_sessions
+        out = clip.embed_pil(_rgb_image())
+        assert out is not None
+        assert np.isclose(np.linalg.norm(out), 1.0)
+        assert "pixel_values" in vis.run_calls[0]
+        assert vis.run_calls[0]["pixel_values"].shape == (1, 3, 224, 224)
+
+    def test_embed_text_feeds_input_ids(self, fake_sessions):
+        _, txt = fake_sessions
+        out = clip.embed_text("a beach")
+        assert out is not None
+        assert np.isclose(np.linalg.norm(out), 1.0)
+        assert "input_ids" in txt.run_calls[0]
+
+    def test_missing_file_returns_none(self, fake_sessions, tmp_path):
+        assert clip.embed_image(str(tmp_path / "nope.jpg")) is None

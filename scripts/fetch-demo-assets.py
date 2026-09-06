@@ -264,8 +264,8 @@ def write_credits(face_photos: list[dict], scene_photos: list[dict]) -> None:
         "",
         "| Source | License | Used for |",
         "|--------|---------|----------|",
-        "| [picsum.photos](https://picsum.photos) | [Unsplash License](https://unsplash.com/license) (free for commercial and noncommercial use) | Scene / object photos |",
-        "| [randomuser.me](https://randomuser.me) | [MIT](https://randomuser.me/copyright) | Face portraits used by the recognition pipeline |",
+        "| [picsum.photos](https://picsum.photos) | [Unsplash License](https://unsplash.com/license) (free for commercial and noncommercial use) | Scene / object photos |",  # noqa: E501
+        "| [randomuser.me](https://randomuser.me) | [MIT](https://randomuser.me/copyright) | Face portraits used by the recognition pipeline |",  # noqa: E501
         "",
         "## Individual photos",
         "",
@@ -278,8 +278,8 @@ def write_credits(face_photos: list[dict], scene_photos: list[dict]) -> None:
         "",
         "## Removal",
         "",
-        "If you fork the project and don't want bundled demo photos, delete",
-        "`app/src/demo_assets/photos/` and `app/src/demo_assets/fixture.json`.",
+        "If you fork the project and don't want bundled demo photos, delete",  # noqa: E501
+        "`app/src/demo_assets/photos/` and `app/src/demo_assets/fixture.json`.",  # noqa: E501
         "DEMO_MODE will then refuse to start until the assets are restored.",
         "",
     ])
@@ -291,14 +291,22 @@ def main() -> int:
     PHOTOS.mkdir(parents=True, exist_ok=True)
 
     if FIXTURE.exists():
-        print(f"fixture.json already present — only fetching missing photos")
+        print("fixture.json already present — only fetching missing photos")
         # Re-parse just enough to learn which uids we already have so we don't
         # re-download scenes that exist on disk.
         existing = json.loads(FIXTURE.read_text())
         face_existing = [u for u in existing if u["uid"].startswith("face-")]
         scene_existing = [u for u in existing if u["uid"].startswith("pic-")]
-        face_photos = [{"uid": u["uid"], "src": "already-fetched", "license": "MIT (randomuser.me)", "kind": "face"} for u in face_existing]
-        scene_photos = [{"uid": u["uid"], "src": "already-fetched", "license": "Unsplash License (picsum.photos)", "kind": "scene"} for u in scene_existing]
+        face_photos = [
+            {"uid": u["uid"], "src": "already-fetched",
+             "license": "MIT (randomuser.me)", "kind": "face"}
+            for u in face_existing
+        ]
+        scene_photos = [
+            {"uid": u["uid"], "src": "already-fetched",
+             "license": "Unsplash License (picsum.photos)", "kind": "scene"}
+            for u in scene_existing
+        ]
         # Still try to fetch any photos that are missing on disk.
         for u in existing:
             if not (PHOTOS / f"{u['uid']}.jpg").exists():

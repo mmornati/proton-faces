@@ -67,7 +67,9 @@ export class TokenBucket {
 
     noteRetryAfter(retryAfterSeconds: number): void {
         const ms = Math.max(0, retryAfterSeconds * 1000);
-        const minMs = this.isEnabled() ? 1000 / this.ratePerMs : 0;
+        // Minimum backoff = time to refill one token = 1000/rate ms
+        // (ratePerMs = rate/1000, so this is 1/ratePerMs).
+        const minMs = this.isEnabled() ? 1 / this.ratePerMs : 0;
         const backoff = Math.max(ms, minMs);
         this.resumeAt = Math.max(this.resumeAt, Date.now() + backoff);
     }

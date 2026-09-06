@@ -110,8 +110,9 @@ def load_prev() -> set:
 
 
 def main() -> int:
-    from faces import detect_faces
     from io import BytesIO
+
+    from faces import detect_faces
 
     done = load_prev()
 
@@ -147,7 +148,6 @@ def main() -> int:
         print(f"# persisted {len(seen)} candidates", file=sys.stderr)
 
     # Phase 2: validate faces, append incrementally.
-    results = []
     pending = [c for c in seen.values() if c["title"] not in done]
     print(f"# {len(seen)} candidates, {len(pending)} to validate", file=sys.stderr)
 
@@ -177,8 +177,8 @@ def main() -> int:
 
     # Rewrite result file as a clean JSON array.
     with open(RESULT_PATH) as fh:
-        lines = [l for l in fh if l.strip()]
-    arr = [json.loads(l) for l in lines]
+        lines = [line for line in fh if line.strip()]
+    arr = [json.loads(line) for line in lines]
     arr.sort(key=lambda c: -c["face_frac"])
     with open(RESULT_PATH, "w") as fh:
         json.dump(arr, fh, indent=1)

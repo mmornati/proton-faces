@@ -8,38 +8,42 @@ import os
 import threading
 import time
 import urllib.error
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
 
 import numpy as np
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi import Body
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+import indexer
 from auth import (
+    ROLE_RANK,
     CurrentUser,
+    allow_public_thumbs,
+    demo_disable_backups,
     hash_password,
     login,
-     refresh as refresh_tokens,
-     require_role,
-     require_user,
-     ROLE_RANK,
-     signed_or_token,
-     make_signed_token,
-     allow_public_thumbs,
-     demo_disable_backups,
+    make_signed_token,
+    require_role,
+    require_user,
+    signed_or_token,
 )
 from auth import access_ttl as auth_access_ttl
-from bridge_client import get_bridge, BridgeTransientError
+from auth import (
+    refresh as refresh_tokens,
+)
+from bridge_client import BridgeTransientError, get_bridge
 from clip import embed_text
 from config import settings
 from faces import embed_query_face
 from indexer import get_indexer_state
 from store import (
-    all_albums,
+    _embedding_cache_data,
     album_photos,
+    all_albums,
     all_clips,
     all_people,
     all_tags,
@@ -51,29 +55,30 @@ from store import (
     create_user,
     delete_user,
     done_photos,
+    duplicate_groups,
     face_embedding,
-    faces_for_photo,
     faces_for_person,
+    faces_for_photo,
     favorite_photo,
     favorite_uids,
     find_person_by_name,
-    get_photo,
     get_person,
+    get_photo,
     get_tags,
     get_user_by_id,
     get_user_by_username,
     is_favorite,
     list_users,
     map_markers,
+    memories_for_today,
     merge_person,
+    people_by_ids,
+    person_map_markers,
     person_mean_embedding,
     person_mean_embeddings,
     person_mean_embeddings_from_cache,
-    person_map_markers,
     photo_anchors,
     photos_by_tag,
-    duplicate_groups,
-    memories_for_today,
     photos_for_person,
     place_stats,
     rename_person,
@@ -90,10 +95,8 @@ from store import (
     unassigned_faces,
     unfavorite_photo,
     update_user,
-    people_by_ids,
-    _embedding_cache_data,
 )
-import indexer
+
 log = logging.getLogger("api")
 
 # P-01: in production, hide the interactive API docs (Swagger UI + ReDoc)
@@ -936,7 +939,11 @@ def api_photo_meta(uid: str, user: CurrentUser = Depends(require_user)):
         nodes = get_bridge().nodes([uid])
         if nodes:
             n = nodes[0]
-            for k in ("size", "creationTime", "modificationTime", "mainPhotoNodeUid", "relatedPhotoNodeUids", "mediaType"):
+            keys = (
+                "size", "creationTime", "modificationTime", "mainPhotoNodeUid",
+                "relatedPhotoNodeUids", "mediaType",
+            )
+            for k in keys:
                 if n.get(k) is not None:
                     meta[k] = n[k]
             # Proton's read-only photo tags come back under `proton_tags` so
@@ -1317,7 +1324,6 @@ def start_crop_prewarm_worker() -> None:
 
     def _loop() -> None:
         import sqlite3
-
         import time as _time
 
         from config import settings as _s
@@ -1945,7 +1951,8 @@ def _face_similarity(emb: np.ndarray, limit: int, user_id: int) -> dict:
 
 
 # --- admin: user management + server ops -----------------------------------
-import admin
+import admin  # noqa: E402  (imported late to avoid a circular import)
+
 
 def _user_row_public(row) -> dict:
     return {

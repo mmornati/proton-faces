@@ -27,9 +27,7 @@ so the login screen is reachable.
 """
 from __future__ import annotations
 
-import datetime as _dt
 import hashlib
-import io
 import json
 import logging
 import os

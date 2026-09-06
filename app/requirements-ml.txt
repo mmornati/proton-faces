@@ -1,0 +1,9 @@
+# proton-faces app — ML inference deps (optional)
+# insightface 0.7.3 has no wheels for Python >= 3.12, so the app image
+# (python:3.11-slim) installs these. Unit tests use only requirements-core.txt.
+# All of these are imported lazily at runtime (faces._load, clip._load).
+
+pillow-heif>=1.0,<1.6
+onnxruntime>=1.18,<1.20
+insightface==0.7.3
+tokenizers>=0.19,<0.22

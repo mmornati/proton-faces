@@ -1,0 +1,204 @@
+import json
+
+import numpy as np
+import pytest
+from PIL import Image
+
+import indexer
+import store
+
+
+class TestEpoch:
+    def test_none(self):
+        assert indexer._epoch(None) is None
+
+    def test_int_float(self):
+        assert indexer._epoch(123) == 123
+        assert indexer._epoch(123.9) == 123
+
+    def test_iso_z(self):
+        assert indexer._epoch("2024-01-15T10:30:00Z") == 1705314600
+
+    def test_iso_offset(self):
+        assert indexer._epoch("2024-01-15T11:30:00+01:00") == 1705314600
+
+    def test_bad_string(self):
+        assert indexer._epoch("garbage") is None
+
+
+class TestRowsFromItems:
+    def test_basic(self):
+        items = [
+            {"uid": "a", "name": "a.jpg", "mediaType": "image/jpeg",
+             "captureTime": "2024-01-15T10:30:00Z", "sha1": "s", "albums": ["x"]},
+            {"uid": "b", "name": "b.jpg", "mediaType": "image/png",
+             "captureTime": 5},
+        ]
+        rows = indexer._rows_from_items(items)
+        assert len(rows) == 2
+        assert rows[0]["uid"] == "a"
+        assert rows[0]["capture_time"] == 1705314600
+        assert rows[1]["capture_time"] == 5
+
+    def test_skips_missing(self):
+        rows = indexer._rows_from_items(
+            [{"uid": "a", "mediaType": "image/jpeg", "missing": True}]
+        )
+        assert rows == []
+
+    def test_defaults(self):
+        rows = indexer._rows_from_items([{"uid": "a", "mediaType": "image/jpeg"}])
+        assert rows[0]["name"] is None
+        assert rows[0]["capture_time"] is None
+        assert rows[0]["albums"] == []
+
+
+class TestNormBbox:
+    def test_normalizes(self):
+        assert indexer._norm_bbox([0, 0, 100, 100], 200, 100) == [0.0, 0.0, 0.5, 1.0]
+
+
+class TestIsImageVideo:
+    def test_image(self, tmp_db):
+        store.upsert_photos([{"uid": "p1", "name": "p1", "media_type": "image/jpeg", "capture_time": 1}])
+        assert indexer._is_image("p1") is True
+        assert indexer._is_video("p1") is False
+
+    def test_video(self, tmp_db):
+        store.upsert_photos([{"uid": "v1", "name": "v1", "media_type": "video/mp4", "capture_time": 1}])
+        assert indexer._is_video("v1") is True
+        assert indexer._is_image("v1") is False
+
+    def test_unknown(self, tmp_db):
+        assert indexer._is_image("nope") is False
+        assert indexer._is_video("nope") is False
+
+
+class TestResizeToThumb:
+    def test_writes_webp(self, tmp_path):
+        src = tmp_path / "in.jpg"
+        Image.fromarray(np.full((100, 80, 3), 128, dtype=np.uint8)).save(src, "JPEG")
+        dest = tmp_path / "out.webp"
+        indexer._resize_to_thumb(src, dest)
+        assert dest.exists()
+        with Image.open(dest) as img:
+            assert img.format == "WEBP"
+            assert img.size[0] <= 512 and img.size[1] <= 512
+
+    def test_downscales_large(self, tmp_path):
+        src = tmp_path / "in.jpg"
+        Image.fromarray(np.full((2000, 1000, 3), 128, dtype=np.uint8)).save(src, "JPEG")
+        dest = tmp_path / "out.webp"
+        indexer._resize_to_thumb(src, dest)
+        with Image.open(dest) as img:
+            assert img.size[0] <= 512 and img.size[1] <= 512
+
+
+class TestSyncConfig:
+    def test_defaults(self, app_settings):
+        cfg = indexer.get_sync_config()
+        assert cfg["enabled"] is True
+        assert cfg["tip_size"] == 10
+        assert cfg["last_full_scan"] is None
+
+    def test_set_and_persist(self, app_settings):
+        cfg = indexer.set_sync_config({"tip_size": 25, "enabled": False})
+        assert cfg["tip_size"] == 25
+        assert cfg["enabled"] is False
+        saved = json.loads((app_settings.data_dir / "sync_config.json").read_text())
+        assert saved["tip_size"] == 25
+
+    def test_unknown_key_raises(self, app_settings):
+        with pytest.raises(ValueError):
+            indexer.set_sync_config({"nope": 1})
+
+    def test_invalid_values_raise(self, app_settings):
+        with pytest.raises(ValueError):
+            indexer.set_sync_config({"tip_size": 0})
+        with pytest.raises(ValueError):
+            indexer.set_sync_config({"full_scan_interval": -1})
+        with pytest.raises(ValueError):
+            indexer.set_sync_config({"deletion_threshold": 0})
+        with pytest.raises(ValueError):
+            indexer.set_sync_config({"deletion_threshold": 1.5})
+
+    def test_last_full_scan_accepts_float_or_none(self, app_settings):
+        cfg = indexer.set_sync_config({"last_full_scan": 123.0})
+        assert cfg["last_full_scan"] == 123.0
+        cfg = indexer.set_sync_config({"last_full_scan": None})
+        assert cfg["last_full_scan"] is None
+
+
+class TestRequestFullSync:
+    def test_sets_event(self):
+        indexer._sync_wakeup.clear()
+        indexer.request_full_sync()
+        assert indexer._sync_wakeup.is_set()
+
+
+class TestGetIndexerState:
+    def test_remote_stub_when_not_started(self, monkeypatch):
+        monkeypatch.setitem(indexer._runtime, "threads", {})
+        state = indexer.get_indexer_state()
+        assert state["remote"] is True
+
+
+class TestProcessOne:
+    def _seed_work_photo(self, uid="w1"):
+        store.upsert_photos(
+            [{"uid": uid, "name": uid, "media_type": "image/jpeg", "capture_time": 1}]
+        )
+        assert store.claim_photo_for_download(uid) is True
+        work = indexer._work_path(uid)
+        work.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.full((50, 40, 3), 128, dtype=np.uint8)).save(work, "WEBP")
+        return uid
+
+    def test_process_one_happy_path(self, tmp_db, app_settings, monkeypatch):
+        uid = self._seed_work_photo()
+        monkeypatch.setattr(indexer, "detect_faces", lambda bgr: [])
+        monkeypatch.setattr(indexer, "embed_pil", lambda img: np.ones(512, dtype=np.float32))
+        indexer._process_one(uid)
+        row = store.get_photo(uid)
+        assert row["status"] == "done"
+        assert row["thumb_path"] == f"{uid}.webp"
+        assert store.clip_exists(uid) is True
+        assert not indexer._work_path(uid).exists()
+
+    def test_process_one_inserts_faces(self, tmp_db, app_settings, monkeypatch):
+        uid = self._seed_work_photo()
+        emb = np.ones(512, dtype=np.float32) / np.sqrt(512)
+
+        def fake_detect(bgr):
+            return [{"bbox": [0, 0, 20, 20], "confidence": 0.95, "embedding": emb}]
+
+        monkeypatch.setattr(indexer, "detect_faces", fake_detect)
+        monkeypatch.setattr(indexer, "embed_pil", lambda img: np.ones(512, dtype=np.float32))
+        indexer._process_one(uid)
+        assert store.count_faces_for_photo(uid) == 1
+        row = store.get_photo(uid)
+        assert row["status"] == "done"
+
+    def test_process_one_preserves_existing_faces(self, tmp_db, app_settings, monkeypatch):
+        uid = self._seed_work_photo()
+        emb = np.ones(512, dtype=np.float32) / np.sqrt(512)
+        store.insert_face(uid, None, 0.9, "[0,0,10,10]", emb.tobytes())
+
+        def boom(*a, **k):
+            raise AssertionError("detect must be skipped when faces exist")
+
+        monkeypatch.setattr(indexer, "detect_faces", boom)
+        monkeypatch.setattr(indexer, "embed_pil", lambda img: np.ones(512, dtype=np.float32))
+        indexer._process_one(uid)
+        assert store.count_faces_for_photo(uid) == 1
+        assert store.get_photo(uid)["status"] == "done"
+
+    def test_process_one_missing_work_file(self, tmp_db, app_settings, monkeypatch):
+        store.upsert_photos(
+            [{"uid": "nofile", "name": "nofile", "media_type": "image/jpeg", "capture_time": 1}]
+        )
+        assert store.claim_photo_for_download("nofile") is True
+        indexer._process_one("nofile")
+        row = store.get_photo("nofile")
+        assert row["status"] == "error"
+        assert row["error"] == "work file missing"

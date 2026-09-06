@@ -1,4 +1,5 @@
-import sqlite3, time
+import sqlite3
+import time
 
 c = sqlite3.connect("/data/index.sqlite3")
 c.row_factory = sqlite3.Row
