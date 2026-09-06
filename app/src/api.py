@@ -24,6 +24,7 @@ from auth import (
     ROLE_RANK,
     CurrentUser,
     allow_public_thumbs,
+    demo_disable_admin_user_management,
     demo_disable_backups,
     hash_password,
     login,
@@ -2068,12 +2069,16 @@ def _user_row_public(row) -> dict:
 
 @app.get("/api/admin/users")
 def api_admin_list_users(_: CurrentUser = Depends(require_role("admin"))):
+    if demo_disable_admin_user_management():
+        raise HTTPException(404, "not found")
     return {"users": [_user_row_public(r) for r in list_users()]}
 
 
 @app.post("/api/admin/users")
 def api_admin_create_user(body: dict,
                            _: CurrentUser = Depends(require_role("admin"))):
+    if demo_disable_admin_user_management():
+        raise HTTPException(404, "not found")
     username = (body.get("username") or "").strip()
     display_name = (body.get("display_name") or username).strip() or username
     password = body.get("password") or ""
@@ -2095,6 +2100,8 @@ def api_admin_create_user(body: dict,
 @app.patch("/api/admin/users/{user_id}")
 def api_admin_update_user(user_id: int, body: dict,
                            actor: CurrentUser = Depends(require_role("admin"))):
+    if demo_disable_admin_user_management():
+        raise HTTPException(404, "not found")
     if get_user_by_id(user_id) is None:
         raise HTTPException(404, "user not found")
     display_name = body.get("display_name")
@@ -2127,6 +2134,8 @@ def api_admin_update_user(user_id: int, body: dict,
 def api_admin_delete_user(user_id: int,
                            actor: CurrentUser = Depends(require_role("admin"))):
     """Remove a user. The last remaining admin cannot delete themselves."""
+    if demo_disable_admin_user_management():
+        raise HTTPException(404, "not found")
     row = get_user_by_id(user_id)
     if row is None:
         raise HTTPException(404, "user not found")
@@ -2143,6 +2152,8 @@ def api_admin_delete_user(user_id: int,
 def api_admin_revoke_user_tokens(user_id: int,
                                    _: CurrentUser = Depends(require_role("admin"))):
     """Sign a user out of every device."""
+    if demo_disable_admin_user_management():
+        raise HTTPException(404, "not found")
     n = revoke_all_tokens(user_id)
     return {"ok": True, "revoked": n}
 
