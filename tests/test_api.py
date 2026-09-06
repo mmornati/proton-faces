@@ -729,6 +729,60 @@ class TestFacesAndPeople:
         assert r.json()["merged_count"] == 1
         assert store.get_person(pb) is None
 
+    def test_merge_all_similar(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        # target + 3 look-alikes sharing identical embeddings (cosine == 1.0),
+        # so one call should merge all of them above any reasonable threshold.
+        for i in range(4):
+            _seed_done_photo(f"p{i}")
+        fa = _seed_face("p0", emb=_emb(10))
+        pa = store.create_person(name="Alice", cover_uid="p0", cover_face_id=fa)
+        store.assign_face_person(fa, pa)
+        source_ids = []
+        for i in range(1, 4):
+            f = _seed_face(f"p{i}", emb=_emb(10))
+            pid = store.create_person(name=None, cover_uid=f"p{i}", cover_face_id=f)
+            store.assign_face_person(f, pid)
+            source_ids.append(pid)
+        headers = _bearer(client)
+        r = client.post(f"/api/people/{pa}/merge_all_similar",
+                        json={"threshold": 0.40}, headers=headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["target_id"] == pa
+        assert body["merged_count"] == 3
+        assert body["face_count"] == 4
+        for pid in source_ids:
+            assert store.get_person(pid) is None
+
+    def test_merge_all_similar_none(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        fa = _seed_face("p1", emb=_emb(10))
+        pa = store.create_person(name="Alice", cover_uid="p1", cover_face_id=fa)
+        store.assign_face_person(fa, pa)
+        headers = _bearer(client)
+        r = client.post(f"/api/people/{pa}/merge_all_similar",
+                        json={"threshold": 0.99}, headers=headers)
+        assert r.status_code == 200
+        assert r.json()["merged_count"] == 0
+
+    def test_people_duplicates_multiple(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        # 4 identical people should be reported as duplicate pairs.
+        for i in range(4):
+            _seed_done_photo(f"p{i}")
+            f = _seed_face(f"p{i}", emb=_emb(10))
+            pid = store.create_person(name=None, cover_uid=f"p{i}", cover_face_id=f)
+            store.assign_face_person(f, pid)
+        headers = _bearer(client)
+        r = client.get("/api/people/duplicates", params={"threshold": 0.40}, headers=headers)
+        assert r.status_code == 200
+        dups = r.json()["duplicates"]
+        assert len(dups) >= 3  # 4 identical people → C(4,2)=6 pairs, all above threshold
+        assert all(d["similarity"] > 0.99 for d in dups)
+
     def test_face_suggest(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1")

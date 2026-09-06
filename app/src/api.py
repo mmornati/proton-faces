@@ -57,6 +57,7 @@ from store import (
     done_photos,
     duplicate_groups,
     face_embedding,
+    face_ids_for_people,
     faces_for_person,
     faces_for_photo,
     favorite_photo,
@@ -71,11 +72,11 @@ from store import (
     list_users,
     map_markers,
     memories_for_today,
+    merge_people_bulk,
     merge_person,
     people_by_ids,
     person_map_markers,
     person_mean_embedding,
-    person_mean_embeddings,
     person_mean_embeddings_from_cache,
     photo_anchors,
     photos_by_tag,
@@ -247,6 +248,23 @@ def _drop_person_crops(person_id: int) -> None:
         ]
     finally:
         conn.close()
+    if not face_ids:
+        return
+    with _crop_lock:
+        for fid in face_ids:
+            try:
+                _crop_cache_path(fid).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _drop_people_crops(person_ids: list[int]) -> None:
+    """Remove cached face crops for every face of many people (single query).
+
+    Bulk variant of `_drop_person_crops` so a many-source merge drops all crop
+    files with one chunked SELECT instead of one connection per person.
+    """
+    face_ids = face_ids_for_people(person_ids)
     if not face_ids:
         return
     with _crop_lock:
@@ -1694,70 +1712,136 @@ def api_people_merge_all(target_id: int, body: dict,
     }
 
 
+@app.post("/api/people/{target_id}/merge_all_similar")
+def api_people_merge_all_similar(target_id: int, body: dict,
+                                 user: CurrentUser = Depends(require_role("write"))):
+    """Merge every person whose mean embedding is similar to the target's.
+
+    Body: {"threshold": 0.40, "max_sources": 5000}. Unlike the per-person
+    similar list (capped at 50 for the UI modal), this computes the FULL set
+    of look-alike people with one vectorized matmul and merges them all in a
+    single transaction + one propagation pass, so a 49k-people dedupe costs
+    one request instead of thousands of 50-batches. `max_sources` bounds a
+    single call for very large campaigns (the client can loop).
+    """
+    threshold = float(body.get("threshold", 0.40))
+    max_sources = int(body.get("max_sources", 5000))
+    if max_sources < 1:
+        max_sources = 5000
+    target = get_person(target_id)
+    if target is None:
+        raise HTTPException(404, "target person not found")
+    means = person_mean_embeddings_from_cache()
+    fe = means.get(target_id)
+    if fe is None or len(means) < 2:
+        return {"ok": True, "target_id": target_id, "merged_count": 0, "assigned_similar": 0,
+                "photo_count": target["photo_count"], "face_count": target["face_count"]}
+    pids = np.array([pid for pid in means if pid != target_id], dtype=np.int64)
+    if pids.size == 0:
+        return {"ok": True, "target_id": target_id, "merged_count": 0, "assigned_similar": 0,
+                "photo_count": target["photo_count"], "face_count": target["face_count"]}
+    M = np.stack([means[pid] for pid in pids]).astype(np.float32)
+    sims = M @ fe
+    hits = np.flatnonzero(sims >= threshold)
+    order = hits[np.argsort(-sims[hits])]
+    source_ids = [int(pids[i]) for i in order[:max_sources]]
+    if not source_ids:
+        return {"ok": True, "target_id": target_id, "merged_count": 0, "assigned_similar": 0,
+                "photo_count": target["photo_count"], "face_count": target["face_count"]}
+    _drop_people_crops(source_ids)
+    merged_count = merge_people_bulk(source_ids, target_id)
+    assigned = _merge_propagate(target_id) if merged_count else 0
+    _invalidate_dups_cache()
+    _invalidate_people_cache()
+    tgt = get_person(target_id)
+    return {
+        "ok": True,
+        "target_id": target_id,
+        "merged_count": merged_count,
+        "assigned_similar": assigned,
+        "photo_count": tgt["photo_count"] if tgt else None,
+        "face_count": tgt["face_count"] if tgt else None,
+    }
+
+
 @app.get("/api/people/duplicates")
 def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
     """Find people whose mean face embeddings are highly similar (likely dupes).
 
-    Vectorized with a single (N x D) @ (D x N) matrix multiply and cached for
-    a few seconds so repeated reloads are cheap.
+    Reuses the shared cached people list + person-mean embeddings, and walks
+    the similarity matrix block-by-block with a bounded top-K heap so the
+    (M x M) pair matrix is never materialized in full — at 49k people that
+    would be ~9.6 GB and OOM. Results (and response shape) are identical to
+    the naive single matmul. Cached for a few seconds so reloads are cheap.
     """
     global _dups_cache
     now = time.time()
     if _dups_cache is not None and now - _dups_cache[0] < _DUP_CACHE_TTL:
         return _dups_cache[1]
+    if limit < 1:
+        limit = 50
 
-    people = all_people()
-    n = len(people)
-    if n < 2:
+    people = _people_all_cached()  # avoids re-running the expensive GROUP-BY query
+    if len(people) < 2:
         return {"duplicates": []}
-    means = person_mean_embeddings()  # single query, one entry per person w/ faces
-    idx = []
+    means = person_mean_embeddings_from_cache()  # reuses the shared face-matrix cache
     mats = []
-    for i, p in enumerate(people):
+    ids = []
+    by_id = {}
+    for p in people:
         emb = means.get(p["id"])
         if emb is not None:
             mats.append(emb)
-            idx.append(i)
+            ids.append(p["id"])
+            by_id[p["id"]] = p
     if len(mats) < 2:
         return {"duplicates": []}
-    X = np.stack(mats).astype(np.float32)          # (M, 512)
-    S = (X @ X.T).astype(np.float32)               # (M, M) cosine sims
-    iu = np.triu_indices(S.shape[0], k=1)
-    sims = S[iu]
-    mask = sims >= threshold
-    if not mask.any():
-        resp = {"duplicates": []}
-        _dups_cache = (now, resp)
-        return resp
-    hits = np.argsort(-sims[mask])[:limit]
+    X = np.stack(mats).astype(np.float32)  # (M, 512)
+    M = X.shape[0]
+    import heapq
+
+    # Blockwise similarity walk: each block is (B x M), so peak memory is
+    # O(B*M) instead of O(M*M). We keep only the top-`limit` pairs in a
+    # bounded min-heap, only counting each unordered pair once (global i < j).
+    block = 1024
+    heap: list[tuple[float, int, int]] = []
+    for s in range(0, M, block):
+        e = min(s + block, M)
+        Sb = X[s:e] @ X.T
+        rows, cols = np.nonzero(Sb >= threshold)
+        keep = (s + rows) < cols  # global i < j, no np.triu copy
+        rows, cols = rows[keep], cols[keep]
+        g_rows = s + rows
+        vals = Sb[rows, cols].tolist()
+        for v, gi, gj in zip(vals, g_rows.tolist(), cols.tolist()):
+            if len(heap) < limit:
+                heapq.heappush(heap, (v, gi, gj))
+            elif v > heap[0][0]:
+                heapq.heapreplace(heap, (v, gi, gj))
+    hits = sorted(heap, reverse=True)
+
     dups = []
-    for k in hits:
-            i = idx[iu[0][mask][k]]
-            j = idx[iu[1][mask][k]]
-            a, b = people[i], people[j]
-            dups.append(
-                {
-                    "similarity": round(float(sims[mask][k]), 4),
-                    "a": {
-                        "id": a["id"],
-                        "name": a["name"],
-                        "photo_count": a["photo_count"],
-                        "face_count": a["face_count"],
-                        "cover_url": _sign_if_needed(
-                            f"/api/people/{a['id']}/cover" if a["cover_face_id"] else None
-                        ),
-                    },
-                    "b": {
-                        "id": b["id"],
-                        "name": b["name"],
-                        "photo_count": b["photo_count"],
-                        "face_count": b["face_count"],
-                        "cover_url": _sign_if_needed(
-                            f"/api/people/{b['id']}/cover" if b["cover_face_id"] else None
-                        ),
-                    },
-                }
-            )
+    for sim, i, j in hits:
+        a, b = by_id[ids[i]], by_id[ids[j]]
+        dups.append(
+            {
+                "similarity": round(float(sim), 4),
+                "a": {
+                    "id": a["id"],
+                    "name": a["name"],
+                    "photo_count": a["photo_count"],
+                    "face_count": a["face_count"],
+                    "cover_url": a["cover_url"],
+                },
+                "b": {
+                    "id": b["id"],
+                    "name": b["name"],
+                    "photo_count": b["photo_count"],
+                    "face_count": b["face_count"],
+                    "cover_url": b["cover_url"],
+                },
+            }
+        )
     resp = {"duplicates": dups}
     _dups_cache = (now, resp)
     return resp
