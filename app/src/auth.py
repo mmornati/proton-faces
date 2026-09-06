@@ -173,27 +173,55 @@ def demo_hardening_mode() -> bool:
     return _dhm()
 
 
+def demo_mode_enabled() -> bool:
+    """True when DEMO_MODE is on — see config.is_demo_mode()."""
+    from config import is_demo_mode as _idm
+    return _idm()
+
+
 def _signing_secret() -> bytes:
     """Process-local secret used to sign short-lived URLs for binary assets.
 
-    We pull from SIGNING_SECRET env (set by the operator / deploy template) and
-    fall back to a per-boot random secret so a leaked secret only compromises
-    URLs signed during that boot. Set SIGNING_SECRET explicitly in production
-    so URLs survive a restart; rotate by setting a new value + invalidating
-    existing cookies/sessions.
+    Production (and any non-demo run) requires an explicit SIGNING_SECRET:
+    a known default would let anyone forge ``sig``/``exp``, and a per-boot
+    random secret would silently break signed URLs across uvicorn workers
+    and restarts. Missing secret outside DEMO_MODE fails closed (raises) so
+    a misconfigured deployment surfaces at startup instead of as 500s.
+
+    Only DEMO_MODE may fall back to a per-boot random secret — demo content
+    is public by design, so URL forgery is a non-issue and restart
+    invalidation is a non-issue. We still log a warning so it is never silent.
     """
     s = os.environ.get("SIGNING_SECRET", "").strip()
     if s:
         return s.encode("utf-8")
-    # Per-boot fallback. We log a warning so this is never silent in prod.
+    if not demo_mode_enabled():
+        raise RuntimeError(
+            "SIGNING_SECRET is not set. Set it in your environment (.env) before "
+            "starting the app, e.g. `openssl rand -hex 32`. Refusing to start: "
+            "without an explicit secret, signed URLs could be forged and would "
+            "not survive multi-worker restarts."
+        )
     if not hasattr(_signing_secret, "_ephemeral"):
         import secrets
         _signing_secret._ephemeral = secrets.token_bytes(32)  # type: ignore[attr-defined]
         log.warning(
-            "SIGNING_SECRET not set; using a per-boot ephemeral secret. "
-            "Set SIGNING_SECRET in production so signed URLs survive restarts."
+            "SIGNING_SECRET not set; DEMO_MODE using a per-boot ephemeral secret. "
+            "Set SIGNING_SECRET in a non-demo deployment so signed URLs survive "
+            "restarts."
         )
     return _signing_secret._ephemeral  # type: ignore[attr-defined]
+
+
+def require_signing_secret() -> None:
+    """Fail fast at startup if the signing secret is unavailable.
+
+    Raises ``RuntimeError`` unless ``SIGNING_SECRET`` is set, or DEMO_MODE is
+    on (where an ephemeral per-boot secret is acceptable). Bound as a FastAPI
+    startup hook and called from ``main.py`` so misconfiguration stops the
+    process before it binds a socket.
+    """
+    _signing_secret()
 
 
 def make_signed_token(path: str, ttl_seconds: int = 300) -> tuple[str, int]:

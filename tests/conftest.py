@@ -13,10 +13,15 @@ APP_SRC = TESTS_DIR.parent / "app" / "src"
 _SESSION_DATA = Path(tempfile.mkdtemp(prefix="proton-faces-test-"))
 os.environ["DATA_DIR"] = str(_SESSION_DATA)
 os.environ["MODELS_DIR"] = str(_SESSION_DATA / "models")
+# Non-demo runs fail closed without SIGNING_SECRET (see auth._signing_secret);
+# give the suite a stable test secret so signed-URL tests exercise the
+# explicit-secret path.
+os.environ["SIGNING_SECRET"] = "test-signing-secret-0123456789abcdef0123456789abcdef"
 
 if str(APP_SRC) not in sys.path:
     sys.path.insert(0, str(APP_SRC))
 
+import auth  # noqa: E402
 import bridge_client  # noqa: E402
 import cluster  # noqa: E402
 import config  # noqa: E402
@@ -60,6 +65,7 @@ def _reset_module_state():
     store._embedding_cache_ts = 0.0
     store._person_means_cache = None
     store._person_means_cache_ts = 0.0
+    auth._signing_secret.__dict__.pop("_ephemeral", None)
     cluster._person_means = None
     cluster._person_means_ts = 0.0
     bridge_client._bridge = None

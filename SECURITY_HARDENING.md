@@ -62,8 +62,9 @@ users fetch full-resolution Proton photos if they know a UID.
 **Server (`app/src/auth.py`):**
 
 - `make_signed_token(path, ttl)` / `verify_signed_token(path, sig, exp)` —
-  HMAC-SHA256 over `path|exp` keyed by `SIGNING_SECRET` (per-boot random
-  fallback with WARN log).
+  HMAC-SHA256 over `path|exp` keyed by `SIGNING_SECRET` (explicit secret
+  required outside DEMO_MODE — startup fails closed if unset; DEMO_MODE may
+  fall back to a per-boot random secret with a WARN log).
 - `signed_or_token(request)` — accepts EITHER a valid signed URL OR a bearer
   token. Used by the four binary endpoints.
 - `_hardening_overrides(key, default)` — resolves the demo feature flags
