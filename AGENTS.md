@@ -123,7 +123,7 @@ Additional invariants not on the F-list but enforced by code:
 - `DEMO_HARDENING_MODE` is the master switch: when an unsafe flag is unset and hardening is on, `auth._hardening_overrides` returns the **safe** value. Explicit env vars always win.
 - Bcrypt cost 12 in `auth.hash_password`. Never lower it.
 - Unknown-username login paths still run `bcrypt.checkpw` against a dummy hash to keep timing comparable — keeps the username-enumeration defense in place.
-- `SIGNING_SECRET` env var overrides the per-boot ephemeral secret. If unset, a warning is logged and a per-boot secret is used. Do not silently switch to a stable default.
+- `SIGNING_SECRET` env var is **required outside DEMO_MODE**: the app fails closed at startup if it's unset (no known default, no per-boot fallback in prod). Only `DEMO_MODE` may use a per-boot ephemeral secret (with a WARN log). Do not silently switch to a stable default.
 - `_AUTH_FREE_PATHS` and `_AUTH_FREE_BINARY_SUFFIXES` (`app/src/auth.py:221-240`) are the only auth-free allowlists. **Mutating requests** on a binary suffix are not auth-free even when public thumbs are on (`_is_auth_free` short-circuits on `method not in ("GET", "HEAD")`).
 
 ### Adding a new binary-suffix endpoint

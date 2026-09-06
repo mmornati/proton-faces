@@ -156,8 +156,9 @@ services:
       - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # Shared across uvicorn workers so signed <img> URLs validate on any
-      # worker (see app-demo for the full rationale). Set explicitly in prod.
-      - SIGNING_SECRET=${SIGNING_SECRET:-demo-signing-secret}
+      # worker. REQUIRED: compose refuses to start without it (`:?` fails
+      # loudly) so a known default can't be used to forge signed URLs.
+      - SIGNING_SECRET=${SIGNING_SECRET:?set SIGNING_SECRET in .env}
     networks:
       - internal
 
@@ -223,10 +224,11 @@ services:
       - INDEXER_STATUS_URL=http://indexer-demo:8091
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEMO_ADMIN_PASSWORD=${DEMO_ADMIN_PASSWORD:-proton-faces}
-      # Shared across uvicorn workers so signed <img> URLs validate on any
-      # worker (each worker otherwise uses its own per-process ephemeral
-      # secret, causing intermittent 401s on /thumb /full /cover /crop).
-      - SIGNING_SECRET=${SIGNING_SECRET:-demo-signing-secret}
+      # Demo content is public by design, so a fixed signing secret is fine; it
+      # keeps signed URLs stable across the demo's 4 uvicorn workers (a
+      # per-worker ephemeral secret would cause intermittent 401s on
+      # /thumb /full /cover /crop).
+      - SIGNING_SECRET=demo-signing-secret
     networks:
       - internal
 

@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,7 @@ from auth import (
     login,
     make_signed_token,
     require_role,
+    require_signing_secret,
     require_user,
     signed_or_token,
 )
@@ -110,10 +112,24 @@ _EXPOSE_API_DOCS = os.environ.get("EXPOSE_API_DOCS", "").strip().lower() in (
     "1", "true", "yes", "on",
 )
 
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    """Fail closed before serving traffic.
+
+    Signed binary URLs require an explicit SIGNING_SECRET outside DEMO_MODE
+    (a known default is forgerable and an ephemeral per-worker secret breaks
+    signed URLs across uvicorn workers). Raises so the process refuses to
+    boot instead of serving 500s on the first /thumb request.
+    """
+    require_signing_secret()
+    yield
+
+
 app = FastAPI(
     title="proton-faces",
     version="0.1.0",
     dependencies=[Depends(require_user)],
+    lifespan=_lifespan,
     docs_url="/docs" if _EXPOSE_API_DOCS else None,
     redoc_url="/redoc" if _EXPOSE_API_DOCS else None,
     openapi_url="/openapi.json" if _EXPOSE_API_DOCS else None,

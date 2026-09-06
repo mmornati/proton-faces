@@ -106,6 +106,20 @@ def client(tmp_db, monkeypatch):
         yield c
 
 
+def test_app_startup_refuses_without_signing_secret(monkeypatch):
+    monkeypatch.delenv("SIGNING_SECRET", raising=False)
+    monkeypatch.delenv("DEMO_MODE", raising=False)
+    with pytest.raises(RuntimeError, match="SIGNING_SECRET"):
+        with TestClient(api.app):
+            pass
+
+
+def test_app_startup_ok_with_signing_secret(monkeypatch):
+    monkeypatch.setattr(bridge_client, "_bridge", FakeBridge())
+    with TestClient(api.app) as c:
+        assert c.get("/api/health").status_code == 200
+
+
 def _seed_user(username="admin", role="admin", password_hash=None):
     return store.create_user(
         username=username,

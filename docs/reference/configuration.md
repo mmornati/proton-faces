@@ -46,6 +46,7 @@ Set inside `compose.yml` for each service. Most match the compose-level defaults
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `SIGNING_SECRET` | required (prod) | HMAC key for the short-lived signed URLs on binary media endpoints (`/thumb`, `/full`, `/cover`, `/crop`). **Required outside `DEMO_MODE`** — the app refuses to start without it (`compose.yml` fails the `app` service with `${SIGNING_SECRET:?…}`), so a known default can't be used to forge signed URLs and signed URLs stay valid across all 4 uvicorn workers. Generate with `openssl rand -hex 32`. In `DEMO_MODE` the `app-demo` compose service sets a fixed `demo-signing-secret` (demo content is public by design; the code also allows an ephemeral per-boot fallback there). |
 | `AUTH_ACCESS_TTL` | `28800` (8 hours) | Bearer access-token lifetime in seconds. Set `0` for effectively no expiry during a session (not recommended). |
 | `AUTH_REFRESH_TTL` | `2592000` (30 days) | Bearer refresh-token lifetime in seconds. |
 | `ADMIN_PASSWORD` | unset → prompt | Pre-set the first admin's password so `--create-admin` runs non-interactively (e.g. from an init container). At least 8 characters or the command rejects it. |

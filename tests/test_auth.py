@@ -1,4 +1,6 @@
 
+import logging
+
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -217,6 +219,51 @@ class TestSignedOrToken:
         req = _request("/api/photos/abc/thumb", token=token)
         user = auth.signed_or_token(req)
         assert user is not None and user.username == "grace"
+
+
+class TestSigningSecretRequired:
+    def test_raises_when_unset_and_not_demo(self, monkeypatch):
+        monkeypatch.delenv("SIGNING_SECRET", raising=False)
+        monkeypatch.delenv("DEMO_MODE", raising=False)
+        with pytest.raises(RuntimeError, match="SIGNING_SECRET"):
+            auth._signing_secret()
+
+    def test_make_signed_token_fails_closed(self, monkeypatch):
+        monkeypatch.delenv("SIGNING_SECRET", raising=False)
+        monkeypatch.delenv("DEMO_MODE", raising=False)
+        with pytest.raises(RuntimeError, match="SIGNING_SECRET"):
+            auth.make_signed_token("/api/photos/abc/thumb")
+
+    def test_verify_signed_token_fails_closed(self, monkeypatch):
+        monkeypatch.delenv("SIGNING_SECRET", raising=False)
+        monkeypatch.delenv("DEMO_MODE", raising=False)
+        with pytest.raises(RuntimeError, match="SIGNING_SECRET"):
+            auth.verify_signed_token("/api/photos/abc/thumb", "sig", 9999999999)
+
+    def test_explicit_secret_roundtrip(self):
+        sig, exp = auth.make_signed_token("/api/photos/abc/thumb", ttl_seconds=300)
+        assert auth.verify_signed_token("/api/photos/abc/thumb", sig, exp) is True
+
+
+class TestDemoModeEphemeralSecret:
+    def test_demo_mode_falls_back_to_ephemeral(self, monkeypatch, caplog):
+        monkeypatch.delenv("SIGNING_SECRET", raising=False)
+        monkeypatch.setenv("DEMO_MODE", "1")
+        with caplog.at_level(logging.WARNING, logger="auth"):
+            sig, exp = auth.make_signed_token("/api/photos/abc/thumb", ttl_seconds=300)
+        assert auth.verify_signed_token("/api/photos/abc/thumb", sig, exp) is True
+        assert any("ephemeral" in r.message for r in caplog.records)
+
+    def test_ephemeral_secret_is_stable_within_process(self, monkeypatch):
+        monkeypatch.delenv("SIGNING_SECRET", raising=False)
+        monkeypatch.setenv("DEMO_MODE", "1")
+        assert auth._signing_secret() == auth._signing_secret()
+
+    def test_demo_mode_deleted_still_fails_closed(self, monkeypatch):
+        monkeypatch.delenv("SIGNING_SECRET", raising=False)
+        monkeypatch.delenv("DEMO_MODE", raising=False)
+        with pytest.raises(RuntimeError, match="SIGNING_SECRET"):
+            auth.require_signing_secret()
 
 
 class TestAllowPublicThumbs:

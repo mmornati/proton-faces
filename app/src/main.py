@@ -126,6 +126,12 @@ def main() -> None:
         logging.getLogger(__name__).info("GPS place enrichment done: %d photos", enriched)
         return
 
+    # Fail closed before spawning workers: signed binary URLs need an explicit
+    # SIGNING_SECRET outside DEMO_MODE. Raising here beats a fleet of workers
+    # serving intermittent 401/500s on /thumb /full /cover /crop.
+    from auth import require_signing_secret
+    require_signing_secret()
+
     # DEMO_MODE: auto-create a default `demo` admin on first run so the login
     # screen is reachable without any one-shot script.
     if _env_bool("DEMO_MODE", False):
