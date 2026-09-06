@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CACHE_FILE_GLOB, nodeToJson, parseRange, type PhotoNodeLike } from '../src/helpers';
+import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseRange, type PhotoNodeLike } from '../src/helpers';
 
 function makeNode(overrides: Partial<PhotoNodeLike> = {}): PhotoNodeLike {
     return {
@@ -68,6 +68,50 @@ describe('nodeToJson', () => {
         expect(j.captureTime).toBeNull();
         expect(j.creationTime).toBeNull();
         expect(j.modificationTime).toBeNull();
+    });
+});
+
+describe('isValidUid', () => {
+    const valid = [
+        'abc123',
+        'ABC_123-def',
+        'a'.repeat(128),
+        '0',
+        'photo-uid_1',
+    ];
+    for (const uid of valid) {
+        test(`accepts ${JSON.stringify(uid.length > 20 ? uid.slice(0, 20) + '…' : uid)}`, () => {
+            expect(isValidUid(uid)).toBe(true);
+        });
+    }
+
+    const invalid: Array<[unknown, string]> = [
+        ['../../etc/passwd', 'path traversal'],
+        ['..', 'dotdot'],
+        ['a/b', 'forward slash'],
+        ['a\\b', 'backslash'],
+        ['a b', 'whitespace'],
+        ['a\nb', 'newline'],
+        ['a\u0000b', 'nul byte'],
+        ['', 'empty string'],
+        ['a'.repeat(129), 'too long'],
+        [42, 'non-string number'],
+        [null, 'null'],
+        [undefined, 'undefined'],
+        [['abc'], 'array'],
+        [{ uid: 'abc' }, 'object'],
+    ];
+    for (const [uid, label] of invalid) {
+        test(`rejects ${label}`, () => {
+            expect(isValidUid(uid)).toBe(false);
+        });
+    }
+});
+
+describe('MAX_UID_BATCH', () => {
+    test('is a positive bounded cap', () => {
+        expect(MAX_UID_BATCH).toBeGreaterThan(0);
+        expect(MAX_UID_BATCH).toBeLessThanOrEqual(5000);
     });
 });
 

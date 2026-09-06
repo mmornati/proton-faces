@@ -22,7 +22,7 @@ users fetch full-resolution Proton photos if they know a UID.
 |---|---|---|
 | Docker (compose.yml) | ✅ OK | `cap_drop: ALL`, `no-new-privileges`, UID 1000, internal-only bridge network. Bridge has no auth but is unreachable from outside compose. |
 | Database (SQLite) | ✅ OK | All queries parameterized; WAL + 30 s busy_timeout. |
-| Bridge (Bun/TS) | ✅ OK | Range parsing fallback to 200 is benign; no path traversal because uids come from the Proton SDK. |
+| Bridge (Bun/TS) | ✅ OK | Range parsing fallback to 200 is benign; uids are validated (`isValidUid`, `[A-Za-z0-9_-]{1,128}`) before they touch filesystem paths, temp filenames, or response headers, and request bodies are capped. |
 | Indexer / FFmpeg | ✅ OK | Subprocess args are array-form; no `shell=True`. |
 | FastAPI auth (app/src/auth.py) | ⚠️ → ✅ with this PR | Bearer tokens with bcrypt cost 12; pre-fix, the four binary endpoints (`/thumb /full /cover /crop`) were world-readable for any UID. Post-fix, they require either a bearer token OR a short-lived signed URL when `DEMO_ALLOW_PUBLIC_THUMBS=0`. |
 | Admin endpoints | ⚠️ → ✅ with this PR | Pre-fix, `/api/admin/backup*` returned the full SQLite VACUUM dump on demand. Post-fix, `DEMO_DISABLE_BACKUPS=1` returns 404 — flipped on by `DEMO_HARDENING_MODE=1`. |

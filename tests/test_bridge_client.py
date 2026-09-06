@@ -133,6 +133,16 @@ class TestAlbumsAndThumbnails:
         assert out["results"][0]["ok"] is True
 
 
+class TestIsValidUid:
+    def test_accepts_plain_uids(self):
+        for uid in ("abc123", "ABC_123-def", "0", "photo-uid_1", "a" * 128):
+            assert bridge_client._is_valid_uid(uid)
+
+    def test_rejects_traversal_and_garbage(self):
+        for uid in ("../../etc/passwd", "..", "a/b", "a\\b", "a b", "a\nb", "", "a" * 129):
+            assert not bridge_client._is_valid_uid(uid)
+
+
 class TestFullPhoto:
     def test_streams_with_headers(self, client_factory):
         captured = {}
@@ -156,6 +166,11 @@ class TestFullPhoto:
         bc = client_factory(handler)
         resp = bc.full_photo("p1")
         assert resp.status_code == 200
+
+    def test_invalid_uid_raises_value_error(self, client_factory):
+        bc = client_factory(lambda req: httpx.Response(200, content=b"x"))
+        with pytest.raises(ValueError):
+            bc.full_photo("../../etc/passwd")
 
     def test_429_raises_transient_with_retry_after(self, client_factory):
         def handler(req):
