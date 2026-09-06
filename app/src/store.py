@@ -826,6 +826,99 @@ def merge_person(source_id: int, target_id: int) -> None:
         conn.execute("DELETE FROM people WHERE id=?", (source_id,))
 
 
+# SQLite caps parameter placeholders at 999; keep the chunk small enough that
+# every generated query (UPDATE has 1 extra placeholder) stays well below it.
+_SQL_CHUNK = 500
+
+
+def merge_people_bulk(source_ids: list[int], target_id: int) -> int:
+    """Merge many people into `target_id` in a single transaction.
+
+    Mirrors `merge_person` per source: backfill the target's name/cover from
+    the sources when unset, re-parent every face onto the target, then delete
+    the source rows. Unlike calling `merge_person` N times (one connection +
+    commit each), all UPDATEs/DELETEs run on a single connection in chunks, so
+    a 49k-people dedupe campaign costs one commit, not one per source.
+
+    Missing / repeated ids and the target itself are skipped. Returns how many
+    source people were actually merged (existing rows deleted).
+    """
+    seen: set[int] = set()
+    ids: list[int] = []
+    for sid in source_ids:
+        if sid == target_id or sid in seen:
+            continue
+        seen.add(sid)
+        ids.append(sid)
+    if not ids:
+        return 0
+    with get_conn() as conn:
+        tgt = conn.execute(
+            "SELECT name, cover_uid, cover_face_id FROM people WHERE id=?", (target_id,)
+        ).fetchone()
+        if tgt is None:
+            return 0
+        t_name, t_cover_uid, t_cover_face_id = tgt["name"], tgt["cover_uid"], tgt["cover_face_id"]
+        merged = 0
+        for start in range(0, len(ids), _SQL_CHUNK):
+            chunk = ids[start : start + _SQL_CHUNK]
+            qmarks = ",".join("?" * len(chunk))
+            for src in conn.execute(
+                "SELECT name, cover_uid, cover_face_id FROM people "
+                f"WHERE id IN ({qmarks})",
+                chunk,
+            ).fetchall():
+                if not t_name and src["name"]:
+                    t_name = src["name"]
+                    conn.execute("UPDATE people SET name=? WHERE id=?", (t_name, target_id))
+                if not t_cover_uid and src["cover_uid"]:
+                    t_cover_uid = src["cover_uid"]
+                    conn.execute("UPDATE people SET cover_uid=? WHERE id=?", (t_cover_uid, target_id))
+                if not t_cover_face_id and src["cover_face_id"]:
+                    t_cover_face_id = src["cover_face_id"]
+                    conn.execute(
+                        "UPDATE people SET cover_face_id=? WHERE id=?",
+                        (t_cover_face_id, target_id),
+                    )
+                merged += 1
+        for start in range(0, len(ids), _SQL_CHUNK):
+            chunk = ids[start : start + _SQL_CHUNK]
+            qmarks = ",".join("?" * len(chunk))
+            conn.execute(
+                "UPDATE faces SET person_id=? WHERE person_id IN (" + qmarks + ")",
+                (target_id, *chunk),
+            )
+        for start in range(0, len(ids), _SQL_CHUNK):
+            chunk = ids[start : start + _SQL_CHUNK]
+            qmarks = ",".join("?" * len(chunk))
+            conn.execute("DELETE FROM people WHERE id IN (" + qmarks + ")", chunk)
+        return merged
+
+
+def face_ids_for_people(person_ids: list[int]) -> list[int]:
+    """All face ids belonging to any of `person_ids`, in one chunked query.
+
+    Used to bulk-drop crop-cache files for many people at once instead of one
+    connection per person. Returns [] when empty.
+    """
+    if not person_ids:
+        return []
+    seen: set[int] = set()
+    out: list[int] = []
+    for start in range(0, len(person_ids), _SQL_CHUNK):
+        chunk = person_ids[start : start + _SQL_CHUNK]
+        qmarks = ",".join("?" * len(chunk))
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id FROM faces WHERE person_id IN (" + qmarks + ")", chunk
+            ).fetchall()
+        for r in rows:
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                out.append(r["id"])
+    return out
+
+
 def person_mean_embedding(person_id: int) -> np.ndarray | None:
     """Mean of a person's face embeddings (L2-normalized), or None."""
     with get_conn() as conn:

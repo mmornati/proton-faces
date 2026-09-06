@@ -353,6 +353,76 @@ class TestPersonMeans:
         assert pid in means
 
 
+class TestMergePeopleBulk:
+    def _seed_person(self, uid, name, emb_seed=0.0):
+        store.upsert_photos([_photo(uid)])
+        store.set_photo_done(uid, f"thumbs/{uid}.webp", None, None)
+        fid = store.insert_face(uid, None, 0.9, "[]", _embedding(emb_seed).tobytes())
+        pid = store.create_person(name, uid, fid)
+        store.assign_face_person(fid, pid)
+        return pid
+
+    def test_reparents_and_deletes(self, tmp_db):
+        a = self._seed_person("p1", "A")
+        b = self._seed_person("p2", "B")
+        c = self._seed_person("p3", "C")
+        assert store.merge_people_bulk([b, c], a) == 2
+        assert store.get_person(b) is None
+        assert store.get_person(c) is None
+        # faces moved to target
+        from store import faces_for_photo
+
+        assert {f["person_id"] for f in faces_for_photo("p2")} == {a}
+        assert {f["person_id"] for f in faces_for_photo("p3")} == {a}
+        assert store.get_person(a)["face_count"] == 3
+
+    def test_inherits_name_and_cover_when_target_unset(self, tmp_db):
+        store.upsert_photos([_photo("p1"), _photo("p2")])
+        store.set_photo_done("p1", "t1.webp", None, None)
+        store.set_photo_done("p2", "t2.webp", None, None)
+        fa = store.insert_face("p1", None, 0.9, "[]", EMB.tobytes())
+        fb = store.insert_face("p2", None, 0.9, "[]", EMB.tobytes())
+        target = store.create_person(None, None, None)      # unnamed target
+        src = store.create_person("Source", "p2", fb)        # named source w/ cover
+        store.assign_face_person(fa, target)
+        store.assign_face_person(fb, src)
+        store.merge_people_bulk([src], target)
+        merged = store.get_person(target)
+        assert merged["name"] == "Source"
+        assert merged["cover_uid"] == "p2"
+        assert merged["cover_face_id"] == fb
+
+    def test_keeps_target_name(self, tmp_db):
+        a = self._seed_person("p1", "Target")
+        b = self._seed_person("p2", "Source")
+        store.merge_people_bulk([b], a)
+        assert store.get_person(a)["name"] == "Target"
+
+    def test_skips_self_missing_and_duplicates(self, tmp_db):
+        a = self._seed_person("p1", "A")
+        b = self._seed_person("p2", "B")
+        # target itself, a duplicate, and a non-existent id are all skipped
+        assert store.merge_people_bulk([a, b, b, 99999], a) == 1
+        assert store.get_person(b) is None
+        assert store.get_person(a)["face_count"] == 2
+
+    def test_many_sources_chunked(self, tmp_db):
+        # More sources than the SQL chunk size (500) must not trip SQLite's
+        # 999-variable placeholder limit.
+        target = self._seed_person("p0", "Target")
+        sources = [self._seed_person(f"p{i}", f"S{i}") for i in range(1, 620)]
+        assert store.merge_people_bulk(sources, target) == 619
+        assert store.get_person(target)["face_count"] == 620
+
+    def test_face_ids_for_people(self, tmp_db):
+        a = self._seed_person("p1", "A")
+        b = self._seed_person("p2", "B")
+        ids = store.face_ids_for_people([a, b])
+        assert len(ids) == 2
+        assert store.face_ids_for_people([]) == []
+        assert store.face_ids_for_people([99999]) == []
+
+
 class TestPhotosQuery:
     def test_done_photos_and_filters(self, tmp_db):
         store.upsert_photos(
