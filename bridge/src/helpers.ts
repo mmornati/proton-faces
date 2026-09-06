@@ -4,7 +4,12 @@
  *
  * This module must NOT import anything (no `./init`, no `@protontech/drive-sdk`,
  * no node/bun builtins) — keep it a plain TypeScript module.
+ *
+ * @module helpers
  */
+
+/** Glob pattern matching stale work files (e.g. `<uid>-<uuid>.full`). */
+export const STALE_WORK_FILE_GLOB = /^[A-Za-z0-9_-]+-[A-Fa-f0-9-]+\.full$/;
 
 /** Tags Proton attaches to photos; map the numeric tag id to a human name. */
 export const PHOTO_TAGS = ['Favorites', 'Screenshots', 'Videos', 'LivePhotos', 'MotionPhotos', 'Selfies', 'Portraits', 'Bursts', 'Panoramas', 'Raw'];
@@ -53,6 +58,31 @@ export function nodeToJson(node: PhotoNodeLike): Record<string, unknown> {
 
 /** SDK cache files the "clear cache" endpoint unlinks (WAL/SHM siblings too). */
 export const CACHE_FILE_GLOB = /^cache-.*\.sqlite(-(shm|wal))?$/i;
+
+/**
+ * Sweep stale work files from a directory. Removes any file matching
+ * {@link STALE_WORK_FILE_GLOB} that is older than `maxAgeMs` milliseconds.
+ * Returns the list of removed filenames.
+ *
+ * This is a pure function that takes a list of directory entries and a
+ * current-time callback so it can be unit-tested without touching the
+ * filesystem. The bridge calls it at startup to clean up orphaned temp
+ * files left by a previous crash.
+ */
+export function sweepStaleWorkFiles(
+    entries: Array<{ name: string; mtimeMs: number }>,
+    nowMs: number,
+    maxAgeMs: number,
+): string[] {
+    const cutoff = nowMs - maxAgeMs;
+    const removed: string[] = [];
+    for (const entry of entries) {
+        if (STALE_WORK_FILE_GLOB.test(entry.name) && entry.mtimeMs < cutoff) {
+            removed.push(entry.name);
+        }
+    }
+    return removed;
+}
 
 /** Maximum number of uids accepted in a single /nodes or /thumbnails request. */
 export const MAX_UID_BATCH = 5000;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseRange, type PhotoNodeLike } from '../src/helpers';
+import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseRange, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike } from '../src/helpers';
 
 function makeNode(overrides: Partial<PhotoNodeLike> = {}): PhotoNodeLike {
     return {
@@ -132,6 +132,74 @@ describe('CACHE_FILE_GLOB', () => {
             expect(CACHE_FILE_GLOB.test(name)).toBe(expected);
         });
     }
+});
+
+describe('STALE_WORK_FILE_GLOB', () => {
+    const cases: Array<[string, boolean]> = [
+        ['abc123-def456.full', true],
+        ['photo_uid-550e8400-e29b-41d4-a716-446655440000.full', true],
+        ['a-b.full', true],
+        ['0-1.full', true],
+        ['abc123.full', false], // missing uuid part
+        ['abc123-def456.tmp', false], // wrong extension
+        ['abc123-def456.full.bak', false], // extra suffix
+        ['../etc.full', false], // path chars
+        ['', false],
+    ];
+    for (const [name, expected] of cases) {
+        test(`${name} => ${expected}`, () => {
+            expect(STALE_WORK_FILE_GLOB.test(name)).toBe(expected);
+        });
+    }
+});
+
+describe('sweepStaleWorkFiles', () => {
+    const now = 1_000_000_000_000;
+    const maxAge = 5 * 60 * 1000; // 5 minutes
+    const cutoff = now - maxAge; // 999_700_000_000
+
+    test('removes stale work files, keeps fresh ones', () => {
+        const entries = [
+            { name: 'abc123-550e8400-e29b-41d4-a716-446655440000.full', mtimeMs: cutoff - 1 }, // stale
+            { name: 'def456-660e8400-e29b-41d4-a716-446655440000.full', mtimeMs: now }, // fresh
+            { name: 'ghi789-770e8400-e29b-41d4-a716-446655440000.full', mtimeMs: cutoff + 1 }, // fresh (just at edge)
+        ];
+        const removed = sweepStaleWorkFiles(entries, now, maxAge);
+        expect(removed).toEqual(['abc123-550e8400-e29b-41d4-a716-446655440000.full']);
+    });
+
+    test('ignores non-work files', () => {
+        const entries = [
+            { name: 'auth-session.json', mtimeMs: 0 },
+            { name: 'cache-abc.sqlite', mtimeMs: 0 },
+            { name: 'some-other-file.txt', mtimeMs: 0 },
+        ];
+        const removed = sweepStaleWorkFiles(entries, now, maxAge);
+        expect(removed).toEqual([]);
+    });
+
+    test('returns empty for empty input', () => {
+        expect(sweepStaleWorkFiles([], now, maxAge)).toEqual([]);
+    });
+
+    test('removes all stale work files when all are old', () => {
+        const entries = [
+            { name: 'a-1111.full', mtimeMs: 0 },
+            { name: 'b-2222.full', mtimeMs: 1000 },
+            { name: 'c-3333.full', mtimeMs: cutoff - 100 },
+        ];
+        const removed = sweepStaleWorkFiles(entries, now, maxAge);
+        expect(removed).toEqual(['a-1111.full', 'b-2222.full', 'c-3333.full']);
+    });
+
+    test('exact cutoff boundary: equal to cutoff is NOT removed', () => {
+        const entries = [
+            { name: 'a-1111.full', mtimeMs: cutoff }, // exactly at cutoff — not stale
+            { name: 'b-2222.full', mtimeMs: cutoff - 1 }, // just below — stale
+        ];
+        const removed = sweepStaleWorkFiles(entries, now, maxAge);
+        expect(removed).toEqual(['b-2222.full']);
+    });
 });
 
 describe('parseRange', () => {
