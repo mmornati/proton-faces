@@ -88,6 +88,12 @@ users fetch full-resolution Proton photos if they know a UID.
 - `/api/status` — config block hidden from anonymous callers.
 - `/api/admin/backup`, `/api/admin/backups`, `/api/admin/backups/{name}`,
   `/api/admin/backups/prune` — return 404 when `DEMO_DISABLE_BACKUPS=1`.
+- `/api/admin/users`, `POST /api/admin/users`, `PATCH/DELETE /api/admin/users/{id}`,
+  `POST /api/admin/users/{id}/logout` — return 404 when
+  `demo_disable_admin_user_management()` is True (closes #35: the flag was
+  defined but had no callers). Self-service routes (`/api/auth/me`,
+  `/api/auth/logout`) remain accessible so an admin who's already logged in
+  can still inspect or end their own session.
 
 **Server (`app/src/demo.py`):**
 
