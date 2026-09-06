@@ -232,9 +232,15 @@ _AUTH_FREE_BINARY_SUFFIXES = frozenset({
 })
 
 
-def _is_auth_free(path: str) -> bool:
+def _is_auth_free(path: str, method: str = "GET") -> bool:
     if path in _AUTH_FREE_PATHS:
         return True
+    # The binary-suffix exemption is only for read methods — <img>/<video>
+    # tags (GET/HEAD) can't attach an Authorization header. Mutating requests
+    # (POST/PUT/PATCH/DELETE) that happen to share a suffix (e.g.
+    # POST /api/people/{id}/cover) must always authenticate.
+    if method not in ("GET", "HEAD"):
+        return False
     if not allow_public_thumbs():
         # In prod mode, the binary endpoints are NOT auth-free; they require
         # either a bearer token (handled by the route) or a valid signed URL
@@ -277,12 +283,12 @@ def require_user(request: Request) -> CurrentUser | None:
     presented, we treat the binary endpoints as still "soft auth-free" at this
     layer — the per-route dependency enforces either signed URL or bearer.
     """
-    if _is_auth_free(request.url.path):
+    if _is_auth_free(request.url.path, request.method):
         return None
     # In prod mode the binary endpoints also need a guard: either a valid
-    # signed URL OR a bearer token. Short-circuit here when a valid signed URL
-    # is presented; otherwise fall through to the bearer-token check.
-    if not allow_public_thumbs() and any(
+    # signed URL OR a bearer token. Short-circuit here when a valid signed
+    # URL is presented; otherwise fall through to the bearer-token check.
+    if request.method in ("GET", "HEAD") and not allow_public_thumbs() and any(
         request.url.path.endswith(s) for s in _AUTH_FREE_BINARY_SUFFIXES
     ):
         sig = request.query_params.get("sig")

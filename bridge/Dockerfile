@@ -22,6 +22,7 @@ RUN git clone --depth 1 --branch "${SDK_REF}" "${SDK_REPO}" .
 # Drop our HTTP service into the CLI source tree so it can import ./init etc.
 COPY src/bridge.ts cli/src/bridge.ts
 COPY src/rateLimit.ts cli/src/rateLimit.ts
+COPY src/helpers.ts cli/src/helpers.ts
 
 # Overlay a patched copy of the account SDK's addresses.ts. Upstream
 # getOwnPublicKeys() decrypts the address-key token via cryptoProxy.decryptMessage,

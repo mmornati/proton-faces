@@ -25,10 +25,10 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+from playwright.sync_api import TimeoutError as PWTimeout
+from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 SHOTS_DIR = ROOT / "docs" / "assets" / "screenshots"

@@ -6,7 +6,6 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from pathlib import Path
 
 import numpy as np
 
@@ -26,15 +25,19 @@ CREATE TABLE IF NOT EXISTS photos (
     archived     INTEGER NOT NULL DEFAULT 0,    -- hidden from default grids
     hidden       INTEGER NOT NULL DEFAULT 0,    -- user hid it (e.g. resolved duplicate)
     tags         TEXT,           -- JSON array of freeform user tags
-    status       TEXT NOT NULL DEFAULT 'new',  -- new|downloading|processing|done|error|deleted|pending_removal|full|fullres
+    -- new|downloading|processing|done|error|deleted|pending_removal|full|fullres
+    status       TEXT NOT NULL DEFAULT 'new',
     thumb_path   TEXT,           -- relative path under DATA_DIR/thumbs
     gps_lat      REAL,
     gps_lng      REAL,
     place        TEXT,           -- reverse-geocoded human place name
     processed_at INTEGER,
     error        TEXT,
-    was_deleted_at INTEGER,      -- unix epoch when this row was confirmed deleted (NULL if never). Survives reclaim so we have a historical record.
-    retry_count  INTEGER NOT NULL DEFAULT 0  -- times a `status='full'` row has been re-queued; capped to avoid infinite loops
+    -- unix epoch when this row was confirmed deleted (NULL if never). Survives
+    -- reclaim so we have a historical record.
+    was_deleted_at INTEGER,
+    -- times a `status='full'` row has been re-queued; capped to avoid infinite loops
+    retry_count  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(status);
 CREATE INDEX IF NOT EXISTS idx_photos_place  ON photos(place);
@@ -268,9 +271,12 @@ def upsert_photos(rows: list[dict]) -> int:
                        -- bring it back to 'new' so the indexer reprocesses it.
                        -- Clear was_deleted_at so the historical record reflects
                        -- the *current* state (i.e. no longer deleted).
-                       status=CASE WHEN photos.status IN ('deleted','pending_removal') THEN 'new' ELSE photos.status END,
-                       was_deleted_at=CASE WHEN photos.status IN ('deleted','pending_removal') THEN NULL ELSE photos.was_deleted_at END,
-                       retry_count=CASE WHEN photos.status IN ('deleted','pending_removal') THEN 0 ELSE photos.retry_count END
+                       status=CASE WHEN photos.status IN ('deleted','pending_removal')
+                                   THEN 'new' ELSE photos.status END,
+                       was_deleted_at=CASE WHEN photos.status IN ('deleted','pending_removal')
+                                           THEN NULL ELSE photos.was_deleted_at END,
+                       retry_count=CASE WHEN photos.status IN ('deleted','pending_removal')
+                                        THEN 0 ELSE photos.retry_count END
                 """,
                 (
                     r["uid"],
@@ -994,7 +1000,8 @@ def faces_for_person(person_id: int, limit: int = 500) -> list[sqlite3.Row]:
 def insert_clip(photo_uid: str, embedding: bytes) -> None:
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO clips (photo_uid, embedding) VALUES (?,?) ON CONFLICT(photo_uid) DO UPDATE SET embedding=excluded.embedding",
+            "INSERT INTO clips (photo_uid, embedding) VALUES (?,?) "
+            "ON CONFLICT(photo_uid) DO UPDATE SET embedding=excluded.embedding",
             (photo_uid, sqlite3.Binary(embedding)),
         )
 
@@ -1014,7 +1021,9 @@ def clip_count() -> int:
 def search_photos_by_place(query: str, limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
-            "SELECT * FROM photos WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' AND place IS NOT NULL AND place LIKE ? ORDER BY capture_time DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM photos WHERE status='done' AND thumb_path IS NOT NULL "
+            "AND thumb_path != '' AND place IS NOT NULL AND place LIKE ? "
+            "ORDER BY capture_time DESC LIMIT ? OFFSET ?",
             (f"%{query}%", limit, offset),
         ).fetchall()
 
@@ -1208,7 +1217,7 @@ def set_tags(uid: str, tags: list[str]) -> list[str]:
     return clean
 
 
-def all_tags() -> list[sqlite3.Row]:
+def all_tags() -> list[tuple[str, int]]:
     """Distinct user tags with counts (photos tagged with them)."""
     with get_conn() as conn:
         rows = conn.execute(
@@ -1221,7 +1230,7 @@ def all_tags() -> list[sqlite3.Row]:
                 counts[t] = counts.get(t, 0) + 1
         except Exception:
             pass
-    return [sqlite3.Row((t, n)) for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    return [(t, n) for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
 
 
 def photos_by_tag(tag: str, limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:

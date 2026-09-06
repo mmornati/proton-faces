@@ -220,7 +220,6 @@ def check_map_equivalence(conn: sqlite3.Connection, limit: int = 1000) -> tuple[
     """
     new_rows = conn.execute(MAP_MARKERS_SQL, (limit,)).fetchall()
     old_rows = conn.execute(OLD_MAP_MARKERS_SQL, (limit,)).fetchall()
-    row_count_match = len(new_rows) == len(old_rows)
     cover_uid_match = sum(
         1 for o, n in zip(old_rows, new_rows) if o["cover_uid"] == n["cover_uid"]
     )
@@ -320,7 +319,10 @@ def main() -> int:
     print(f"  map latency <= 60 ms .................. {'OK' if ok_map else 'FAIL'} ({map_min:.2f} ms)")
     print(f"  done_photos uses idx_photos_done_time . {'OK' if ok_plan_photos else 'FAIL'}")
     print(f"  map_markers no correlated subquery .... {'OK' if ok_plan_map else 'FAIL'}")
-    print(f"  map_markers result equivalence ........ {'OK' if ok_equiv else 'FAIL'} ({cover_uid_match}/{new_n} cover_uids match)")
+    print(
+        "  map_markers result equivalence ........ "
+        f"{'OK' if ok_equiv else 'FAIL'} ({cover_uid_match}/{new_n} cover_uids match)"
+    )
 
     passed = ok_photos and ok_map and ok_plan_photos and ok_plan_map and ok_equiv
     print(f"\nresult: {'PASS' if passed else 'FAIL'}")

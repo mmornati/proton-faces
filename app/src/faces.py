@@ -26,7 +26,6 @@ def _load():
     with _lock:
         if _app is not None:
             return _app
-        import insightface  # heavy import, do it lazily
         from insightface.app import FaceAnalysis
 
         model_dir = Path(settings.models_dir) / "insightface"

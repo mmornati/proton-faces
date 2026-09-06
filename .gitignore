@@ -6,6 +6,12 @@ __pycache__/
 .venv/
 venv/
 
+# Test / coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+
 # Data (never commit)
 data/
 credentials/

@@ -36,21 +36,20 @@ from store import (
     claim_photo_for_download,
     claim_photo_for_full,
     claim_photo_for_processing,
+    clip_exists,
     confirm_deletions,
     count_faces_for_photo,
-    clip_exists,
     get_photos,
     init_db,
     insert_clip,
     insert_face,
-    mark_deleted,
     mark_pending_removal,
     reset_stuck_fullres,
+    set_photo_deleted,
     set_photo_done,
     set_photo_duration,
     set_photo_error,
     set_photo_full,
-    set_photo_deleted,
     sync_albums,
     upsert_photos,
 )
@@ -623,7 +622,6 @@ def _fullres_loop() -> None:
                 time.sleep(5)
                 continue
 
-            photo = _photo_row(uid)
             bridge = get_bridge()
             tmp = settings.work_dir / f"{uid}.download"
             try:

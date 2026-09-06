@@ -1,0 +1,11 @@
+{
+  "name": "proton-faces-bridge-tests",
+  "private": true,
+  "description": "Unit tests for the pure bridge helpers (bun test). Not part of the Docker build — the image compiles bridge.ts inside the Proton SDK monorepo.",
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0"
+  }
+}
