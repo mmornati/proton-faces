@@ -504,6 +504,9 @@ async function main(): Promise<void> {
             const url = new URL(request.url);
             try {
                 if (url.pathname === '/health') {
+                    if (request.method !== 'GET') {
+                        return new Response(null, { status: 405, headers: { Allow: 'GET' } });
+                    }
                     return await ensureLoggedIn(ctx);
                 }
                 if (url.pathname === '/cache' && request.method === 'GET') {
@@ -529,21 +532,33 @@ async function main(): Promise<void> {
                     return body;
                 }
                 if (url.pathname === '/timeline') {
+                    if (request.method !== 'GET') {
+                        return new Response(null, { status: 405, headers: { Allow: 'GET' } });
+                    }
                     return await fetchTimeline(ctx, limiter, url, false);
                 }
                 if (url.pathname === '/timeline/ids') {
+                    if (request.method !== 'GET') {
+                        return new Response(null, { status: 405, headers: { Allow: 'GET' } });
+                    }
                     return await fetchTimeline(ctx, limiter, url, true);
                 }
                 if (url.pathname === '/nodes' && request.method === 'POST') {
                     return await fetchNodes(ctx, limiter, await request.json());
                 }
                 if (url.pathname === '/albums') {
+                    if (request.method !== 'GET') {
+                        return new Response(null, { status: 405, headers: { Allow: 'GET' } });
+                    }
                     return await fetchAlbums(ctx, limiter);
                 }
                 if (url.pathname === '/thumbnails' && request.method === 'POST') {
                     return await fetchThumbnails(ctx, limiter, await request.json());
                 }
                 if (url.pathname.startsWith('/photo/') && url.pathname.endsWith('/full')) {
+                    if (request.method !== 'GET' && request.method !== 'HEAD') {
+                        return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD' } });
+                    }
                     return await streamFullPhoto(ctx, limiter, url, request);
                 }
                 return Response.json({ ok: false, error: 'Not found' }, { status: 404 });
