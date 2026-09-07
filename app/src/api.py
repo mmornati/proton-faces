@@ -2027,15 +2027,17 @@ def _semantic_search(vec: np.ndarray, limit: int, user_id: int) -> dict:
         return {"results": [], "total": 0}
     sims = X @ vec  # all embeddings are L2-normalized
     idx = np.argsort(-sims)[:limit]
-    results = []
     photo_uids = [uids[i] for i in idx]
+    photos = get_photos_batch(photo_uids)
     fav_set = favorite_uids(user_id, photo_uids)
+    results = []
     for i in idx:
-        photo = get_photo(uids[i])
+        uid = uids[i]
+        photo = photos.get(uid)
         if photo is None:
             continue
         d = _row_to_dict(photo)
-        d["favorited_by_me"] = uids[i] in fav_set
+        d["favorited_by_me"] = uid in fav_set
         d["score"] = float(sims[i])
         results.append(d)
     return {"results": results, "total": len(results)}
