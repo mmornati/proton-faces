@@ -98,3 +98,8 @@ def _reset_module_state():
         api._full_res_failure_ts.clear()
     except ImportError:
         pass
+    try:
+        import sidecar
+        sidecar.reset_state()
+    except ImportError:
+        pass

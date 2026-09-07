@@ -43,6 +43,7 @@ from compression import CompressionMiddleware
 from config import settings
 from faces import embed_query_face
 from indexer import get_indexer_state
+from sidecar import read_clip_sidecar
 from store import (
     _embedding_cache_data,
     album_photos,
@@ -1986,8 +1987,11 @@ def api_face_search(file: UploadFile = File(...), limit: int = 50,
 
 
 def _get_clip_matrix() -> tuple[list[str], np.ndarray]:
-    """Cached (uids, X) matrix of every CLIP embedding. Rebuilt only when the
-    clip row count changes or after `_CLIP_CACHE_TTL`."""
+    """Cached (uids, X) matrix of every CLIP embedding.
+
+    Prefers the mmap sidecar written by the indexer; falls back to the
+    DB-based cache when sidecar files are absent.
+    """
     global _clip_cache
     now = time.time()
     n_now = clip_count()
@@ -1995,6 +1999,13 @@ def _get_clip_matrix() -> tuple[list[str], np.ndarray]:
         ts, n_cached, uids, X = _clip_cache
         if n_cached == n_now and (now - ts) < _CLIP_CACHE_TTL:
             return uids, X
+    # Try mmap sidecar first
+    sidecar = read_clip_sidecar()
+    if sidecar is not None:
+        uids, X = sidecar
+        _clip_cache = (now, len(uids), uids, X)
+        return uids, X
+    # Fallback: build from DB
     rows = all_clips()
     if not rows:
         return [], np.empty((0, 512), dtype=np.float32)
