@@ -30,7 +30,7 @@ users fetch full-resolution Proton photos if they know a UID.
 | Status endpoint (config disclosure) | ⚠️ → ✅ with this PR | Pre-fix, `/api/status` returned `sync_interval`, `workers`, `face_sim_threshold`, `photos_dir` to anonymous callers. Post-fix, the `config` block requires a valid bearer token. |
 | VPS / SSH | ⚠️ → operator action | `PasswordAuthentication yes` is enabled at the server level. fail2ban is not installed. See §3 (operator checklist). |
 | Traefik (VPS reverse proxy) | ⚠️ → ✅ with this PR | Pre-fix, no `securityHeaders` middleware. Post-fix, `protonface-security.yaml` in `/data/coolify/proxy/dynamic/` injects HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, and a `pf-ratelimit` middleware for `/api/auth/login`. |
-| Demo mode quirks | ⚠️ → ✅ with this PR | `ensure_default_admin()` logged the demo password at WARN. Post-fix, gated by `DEMO_LOGIN_LOGS` (default OFF when `DEMO_HARDENING_MODE=1`). |
+| Demo mode quirks | ⚠️ → ✅ with this PR | `ensure_default_admin()` logged the demo password at WARN. Post-fix, `DEMO_LOGIN_LOGS` defaults to OFF, the password itself is never logged, and a loud startup warning fires when the default password is used without hardening. |
 
 ---
 

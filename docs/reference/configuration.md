@@ -45,6 +45,7 @@ Set inside `compose.yml` for each service. Most match the compose-level defaults
 | `LOG_LEVEL` | `INFO` | Logging verbosity: `DEBUG` / `INFO` / `WARNING` / `ERROR`. |
 | `DEMO_MODE` | unset | `1` enables demo mode (no real Proton account). Set automatically by the `demo` compose profile. |
 | `DEMO_ADMIN_PASSWORD` | unset → prompt | Override the demo admin password. |
+| `DEMO_LOGIN_LOGS` | `0` | Log the demo admin password source at WARN on first boot. The password itself is NEVER logged regardless of this flag. Set `1` to log whether the password came from `DEMO_ADMIN_PASSWORD` or the default. |
 | `DEMO_ALLOW_PUBLIC_THUMBS` | `0` | Binary media endpoints (`/thumb`, `/full`, `/cover`, `/crop`) are **secure by default**: they require a bearer token or a short-lived signed URL from `/api/sign`. Set `1` to make them world-readable (the `demo` compose profile does this so static `<img>` tags keep working). |
 
 ## Auth

@@ -160,11 +160,11 @@ def demo_disable_backups() -> bool:
 def demo_login_logs() -> bool:
     """True to log demo admin credentials at WARN on first boot.
 
-    Default OFF in prod; demo.py opts in via DEMO_LOGIN_LOGS=1 only when
-    the deploy template sets it. The WARN line is convenient for ops but
-    leaks the admin password to anyone with `docker compose logs` access.
+    Default OFF. The WARN line is convenient for ops but leaks the admin
+    password to anyone with `docker compose logs` access. Set
+    DEMO_LOGIN_LOGS=1 to opt in.
     """
-    return _hardening_overrides("DEMO_LOGIN_LOGS", True)
+    return _hardening_overrides("DEMO_LOGIN_LOGS", False)
 
 
 def demo_hardening_mode() -> bool:

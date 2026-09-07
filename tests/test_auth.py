@@ -380,3 +380,28 @@ class TestDemoDisableAdminUserManagement:
         monkeypatch.setenv("DEMO_DISABLE_ADMIN_USER_MANAGEMENT", "0")
         assert auth.demo_disable_admin_user_management() is False
 
+
+class TestDemoLoginLogs:
+    """DEMO_LOGIN_LOGS defaults to OFF; hardening mode keeps it OFF;
+    explicit env var wins."""
+
+    def test_default_is_false(self, monkeypatch):
+        monkeypatch.delenv("DEMO_LOGIN_LOGS", raising=False)
+        monkeypatch.delenv("DEMO_MODE", raising=False)
+        monkeypatch.delenv("DEMO_HARDENING_MODE", raising=False)
+        assert auth.demo_login_logs() is False
+
+    def test_explicit_opt_in(self, monkeypatch):
+        monkeypatch.setenv("DEMO_LOGIN_LOGS", "1")
+        assert auth.demo_login_logs() is True
+
+    def test_hardening_mode_stays_off(self, monkeypatch):
+        monkeypatch.setenv("DEMO_MODE", "1")
+        monkeypatch.delenv("DEMO_LOGIN_LOGS", raising=False)
+        assert auth.demo_login_logs() is False
+
+    def test_explicit_env_wins_over_hardening_mode(self, monkeypatch):
+        monkeypatch.setenv("DEMO_MODE", "1")
+        monkeypatch.setenv("DEMO_LOGIN_LOGS", "1")
+        assert auth.demo_login_logs() is True
+

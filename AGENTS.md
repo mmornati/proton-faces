@@ -114,7 +114,7 @@ These come from `SECURITY_HARDENING.md` (the F-01…F-14 fix matrix). Each is al
 | **F-03** | `/api/status` `config` block requires a bearer token. | `app/src/api.py::status` |
 | **F-05** | `DEMO_DISABLE_BACKUPS=1` returns 404 on `/api/admin/backup*`. | `app/src/auth.py::demo_disable_backups` |
 | **F-05b** | `demo_disable_admin_user_management()` gates every `/api/admin/users*` route (list/create/patch/delete/logout). The flag is already plumbed through `_hardening_overrides`; without enforcement the dead-code route would let anyone with admin creds mint a persistent account that survives demo resets (fix #35). Self-service routes (`/api/auth/me`, `/api/auth/logout`) stay open. | `app/src/auth.py::demo_disable_admin_user_management`, `app/src/api.py::api_admin_*` |
-| **F-06** | `DEMO_LOGIN_LOGS=1` is the only path that logs the demo admin password. Default OFF. | `app/src/auth.py::demo_login_logs` |
+| **F-06** | `DEMO_LOGIN_LOGS=1` logs the demo admin password source (never the password itself). Default OFF. | `app/src/auth.py::demo_login_logs` |
 | **F-08** | Logout revokes **both** the access and the refresh token. | `app/src/auth.py`, `app/src/store.py::revoke_all_tokens` |
 | **F-09** | `/api/search/face` is bounded by `FACE_SEARCH_MAX_UPLOAD_BYTES` (default 8 MB) and `FACE_SEARCH_MAX_IMAGE_PIXELS` (default 50 M). Decompression-bomb guard. | `app/src/api.py::search_face` |
 | **F-11** | `/api/auth/refresh` **rotates** the refresh token — the old one is revoked before a new pair is minted. | `app/src/auth.py::refresh` |
