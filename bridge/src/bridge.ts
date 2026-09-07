@@ -39,6 +39,7 @@ import { createRateLimiter, extractRetryAfter, type TokenBucket } from './rateLi
 import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseRange, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
+const BRIDGE_HOST = process.env.BRIDGE_HOST ?? '0.0.0.0';
 const DATA_DIR = process.env.DATA_DIR ?? '/data';
 const FULL_RES_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_FULL_RES_TIMEOUT_MS ?? 5 * 60_000);
 const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN ?? '';
@@ -558,7 +559,13 @@ async function main(): Promise<void> {
 
     const limiter = createRateLimiter();
 
+    const bindAddr = BRIDGE_HOST === '0.0.0.0' ? '0.0.0.0' : BRIDGE_HOST;
+    console.log(
+        `[bridge] listening on ${bindAddr}:${PORT} — set BRIDGE_HOST=127.0.0.1 for non-containerized use`,
+    );
+
     Bun.serve({
+        hostname: BRIDGE_HOST,
         port: PORT,
         // /timeline of a large library takes a while to paginate; /photo/*/full streams.
         idleTimeout: 255,

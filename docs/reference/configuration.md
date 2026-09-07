@@ -84,6 +84,7 @@ The `proton-bridge` container reads these (set in `compose.yml`):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8090` | Bridge container port (internal only). |
+| `BRIDGE_HOST` | `0.0.0.0` | Bridge bind address. Set to `127.0.0.1` when running outside Docker to avoid LAN exposure (issue #43). |
 | `DATA_DIR` | `/data` | Where the bridge caches the session + work files. |
 | `PROTON_DRIVE_CREDENTIALS_STORE` | `unsafe_file` | Required by the SDK to use a file-based session. |
 | `PROTON_DRIVE_CACHE_DIR` | `/data` | Where the SDK caches encrypted blobs. |
