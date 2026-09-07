@@ -69,6 +69,7 @@ from store import (
     find_person_by_name,
     get_person,
     get_photo,
+    get_photos_batch,
     get_tags,
     get_user_by_id,
     get_user_by_username,
@@ -1957,8 +1958,8 @@ FACE_SEARCH_MAX_IMAGE_PIXELS = int(
 
 
 @app.post("/api/search/face")
-async def api_face_search(file: UploadFile = File(...), limit: int = 50,
-                           user: CurrentUser = Depends(require_user)):
+def api_face_search(file: UploadFile = File(...), limit: int = 50,
+                     user: CurrentUser = Depends(require_user)):
     """Upload a face photo, find matching people/photos.
 
     Hardening (P-03):
@@ -1966,9 +1967,14 @@ async def api_face_search(file: UploadFile = File(...), limit: int = 50,
       exceeded — we never even allocate the buffer.
     - `FACE_SEARCH_MAX_IMAGE_PIXELS` cap on decoded pixels (PIL).
       Defense against decompression bombs.
+
+    This is a sync ``def`` so FastAPI runs it in the threadpool — the
+    PIL decode, InsightFace inference, and vector search are all CPU-bound
+    and would stall the event loop if ``async def``.
     """
     # Read with a hard cap so a 50 MB blob doesn't get fully buffered.
-    data = await file.read(FACE_SEARCH_MAX_UPLOAD_BYTES + 1)
+    # In a sync route, UploadFile.file is a SpooledTemporaryFile.
+    data = file.file.read(FACE_SEARCH_MAX_UPLOAD_BYTES + 1)
     if len(data) > FACE_SEARCH_MAX_UPLOAD_BYTES:
         raise HTTPException(
             413,
@@ -2067,10 +2073,12 @@ def _face_similarity(emb: np.ndarray, limit: int, user_id: int) -> dict:
         top_scores.append(float(scores[i]))
         if len(top_uids) >= limit:
             break
+    # Batch-fetch all photos in one query instead of N+1 get_photo calls.
+    photos = get_photos_batch(top_uids)
     fav_set = favorite_uids(user_id, top_uids)
     results = []
     for uid, score in zip(top_uids, top_scores):
-        photo = get_photo(uid)
+        photo = photos.get(uid)
         if photo is None:
             continue
         d = _row_to_dict(photo)
