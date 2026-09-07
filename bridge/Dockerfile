@@ -62,11 +62,24 @@ RUN bun build src/bridge.ts --compile --target=bun-linux-x64 --outfile=/usr/loca
 # --- runtime stage ---
 FROM debian:bookworm-slim
 
+# pass + gnupg back the SDK's encrypted credential store
+# (PROTON_DRIVE_CREDENTIALS_STORE=pass). They are only exercised when that
+# store is selected; the default unsafe_file backend does not need them.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates pass gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /usr/local/bin/proton-bridge /usr/local/bin/proton-bridge
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# /secrets holds the pass backend state: the GPG keyring (named volume) and
+# the pass store (named volume). Both are mounted only into this container.
+# Fresh named volumes inherit the ownership/mode set here, so the UID 1000
+# runtime user can write without any host-side setup.
+RUN mkdir -p /secrets/gnupg /secrets/password-store \
+    && chown -R 1000:1000 /secrets \
+    && chmod 700 /secrets/gnupg \
+    && chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
 ENV PORT=8090
 ENV DATA_DIR=/data
@@ -75,6 +88,11 @@ ENV DATA_DIR=/data
 # switch to the SDK's encrypted credential store without rebuilding the
 # image. The compose default is `unsafe_file`, matching the historical
 # behaviour (the file lives at /data/auth-session.json — see issue #32).
+# GNUPGHOME / PASSWORD_STORE_DIR are baked because the container runs as
+# UID 1000 with no /etc/passwd entry, so gpg/pass cannot derive them from
+# $HOME. They only matter when the `pass` store is selected.
+ENV GNUPGHOME=/secrets/gnupg
+ENV PASSWORD_STORE_DIR=/secrets/password-store
 ENV PROTON_DRIVE_CACHE_DIR=/data
 # PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION is intentionally NOT baked into the
 # image: it is set per-deployment in compose.yml (proton-bridge service) so the
@@ -96,4 +114,7 @@ EXPOSE 8090
 USER 1000:1000
 WORKDIR /data
 
-ENTRYPOINT ["/usr/local/bin/proton-bridge"]
+# The entrypoint bootstraps the pass credential store (GPG key + pass init +
+# one-time plaintext-session migration) when PROTON_DRIVE_CREDENTIALS_STORE=pass,
+# then execs the bridge binary as PID 1.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

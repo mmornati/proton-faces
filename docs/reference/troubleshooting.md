@@ -238,6 +238,18 @@ docker compose restart proton-bridge
 
 Proton doesn't preview HEIC / videos. The indexer handles them in the fullres loop. You should see "fullres: generated thumbnail for …" in the logs; if not, check `ffmpeg` is on PATH (it is in the published image) and that `ffprobe` works.
 
+### `Executable not found in $PATH: "pass"` on bridge startup
+
+The bridge crash-loops with `ValidationError: Failed to load session from pass … Executable not found in $PATH: "pass"` when `PROTON_DRIVE_CREDENTIALS_STORE=pass` is set but the running image has no `pass`/`gnupg` binaries. Two fixes:
+
+- **Plaintext store (default):** set `PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file` in `.env` (or delete the line), then `docker compose up -d`.
+- **Encrypted store:** `docker compose pull proton-bridge` to pick up an image with pass support, keep `=pass`, then `docker compose up -d`. The entrypoint migrates your existing session into the encrypted store automatically — see [Session file → Encrypted store](../getting-started/session-export.md#encrypted-store-pass).
+
+Two gotchas:
+
+- `docker compose restart` does **not** re-read `.env` — only `up -d` (recreate) applies env changes. Editing `.env` and restarting leaves the old container crash-looping.
+- The variable only exists since PR #129. Before that, compose hardcoded `unsafe_file`, so a stale `PROTON_DRIVE_CREDENTIALS_STORE=pass` line in an old `.env` was silently ignored and activates on upgrade.
+
 ## Upgrading
 
 ### Schema migration error

@@ -55,6 +55,15 @@ services:
       # `auth-session.json` is still excluded from the cache-clear glob in
       # helpers.ts, so a `/cache/clear` call does not delete it.
       - ${AUTH_SESSION_MOUNT:-./credentials/auth-session.json}:/data/auth-session.json
+      # Encrypted credential store (PROTON_DRIVE_CREDENTIALS_STORE=pass):
+      # the GPG keyring and the pass store live in named volumes mounted ONLY
+      # into this container — same isolation rationale as the session file
+      # above. Named volumes (not bind mounts) so a fresh setup inherits the
+      # image's UID 1000 ownership; a bind-mounted host dir would be created
+      # root-owned and `pass init` would fail. Unused with the default
+      # unsafe_file backend.
+      - bridge-gnupg:/secrets/gnupg
+      - bridge-pass-store:/secrets/password-store
     environment:
       - PORT=8090
       - DATA_DIR=/data
@@ -312,6 +321,8 @@ services:
 
 volumes:
   data:
+  bridge-gnupg:
+  bridge-pass-store:
 
 networks:
   internal:

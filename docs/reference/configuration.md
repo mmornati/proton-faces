@@ -87,7 +87,7 @@ The `proton-bridge` container reads these (set in `compose.yml`):
 | `PORT` | `8090` | Bridge container port (internal only). |
 | `BRIDGE_HOST` | `0.0.0.0` | Bridge bind address. Set to `127.0.0.1` when running outside Docker to avoid LAN exposure (issue #43). |
 | `DATA_DIR` | `/data` | Where the bridge caches the session + work files. |
-| `PROTON_DRIVE_CREDENTIALS_STORE` | `unsafe_file` | Required by the SDK to use a file-based session. |
+| `PROTON_DRIVE_CREDENTIALS_STORE` | `unsafe_file` | Session storage backend. `unsafe_file` (default) keeps the plaintext session at `/data/auth-session.json` (the `AUTH_SESSION_MOUNT` bind mount). `pass` selects the SDK's encrypted store: the bridge image ships `pass` + `gnupg`, and its entrypoint generates a container-local GPG key (in the `bridge-gnupg` volume), initializes the store (in the `bridge-pass-store` volume), and migrates an existing plaintext session on first start. See [Session file → Encrypted store](../getting-started/session-export.md#encrypted-store-pass). Live only since PR #129 — earlier compose files hardcoded `unsafe_file`. |
 | `PROTON_DRIVE_CACHE_DIR` | `/data` | Where the SDK caches encrypted blobs. |
 | `PROTON_DRIVE_BASE_URL` | `drive-api.proton.me` | Optional: point at a custom Proton API environment. |
 
