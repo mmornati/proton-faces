@@ -558,7 +558,7 @@ async function main(): Promise<void> {
 
     const limiter = createRateLimiter();
 
-    Bun.serve({
+    const server = Bun.serve({
         port: PORT,
         // /timeline of a large library takes a while to paginate; /photo/*/full streams.
         idleTimeout: 255,
@@ -592,12 +592,32 @@ async function main(): Promise<void> {
                     // policy will respawn the bridge with a fresh cache;
                     // the auth-session file is not in the cache glob so
                     // login state survives.
+                    //
+                    // Auth is required (unlike /cache GET) because this
+                    // route can DoS the pipeline — see issue #38.
                     const res = await clearCache();
+                    // Sweep stale work/*.full files before exiting so a
+                    // crash-restart loop doesn't accumulate orphans.
+                    const workDir = path.join(DATA_DIR, 'work');
+                    try {
+                        for (const name of readdirSync(workDir)) {
+                            if (!STALE_WORK_FILE_GLOB.test(name)) continue;
+                            try {
+                                await Bun.file(path.join(workDir, name)).unlink();
+                            } catch {
+                                // best-effort
+                            }
+                        }
+                    } catch {
+                        // workDir doesn't exist — nothing to sweep
+                    }
+                    // Drain in-flight requests before exiting so the
+                    // response is fully flushed and no downloads are
+                    // aborted mid-stream. Exit 0 (expected restart)
+                    // instead of 1 (crash) so monitoring stays green.
                     const body = Response.json({ ok: true, ...res });
-                    // Flush the response before exiting so the caller
-                    // gets confirmation. process.exit(1) trips
-                    // `unless-stopped` → docker restarts us.
-                    setTimeout(() => process.exit(1), 500);
+                    server.stop();
+                    process.exit(0);
                     return body;
                 }
                 if (url.pathname === '/timeline') {
