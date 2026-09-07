@@ -50,3 +50,20 @@ class TestResetPassword:
         main._reset_password("boss")
         updated = store.get_user_by_username("boss")
         assert auth.verify_password("brand-new-pass", updated["password_hash"])
+
+
+class TestUvicornWorkers:
+    def test_default_is_two(self, monkeypatch):
+        monkeypatch.delenv("RUN_INDEXER", raising=False)
+        monkeypatch.delenv("UVICORN_WORKERS", raising=False)
+        assert main._uvicorn_workers() == 2
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.delenv("RUN_INDEXER", raising=False)
+        monkeypatch.setenv("UVICORN_WORKERS", "4")
+        assert main._uvicorn_workers() == 4
+
+    def test_run_indexer_forces_single_process(self, monkeypatch):
+        monkeypatch.setenv("RUN_INDEXER", "1")
+        monkeypatch.setenv("UVICORN_WORKERS", "4")
+        assert main._uvicorn_workers() == 1

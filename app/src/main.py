@@ -36,6 +36,19 @@ def _env_bool(key: str, default: bool) -> bool:
     return os.environ.get(key, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _uvicorn_workers() -> int:
+    """Number of uvicorn workers to run.
+
+    In-process indexer mode (RUN_INDEXER=1) is always single-process so its
+    threads and the server share one process. Otherwise the count comes from
+    UVICORN_WORKERS (default 2) — kept low because each worker lazily loads
+    its own CLIP session (~838 MB RSS).
+    """
+    if _env_bool("RUN_INDEXER", False):
+        return 1
+    return int(os.environ.get("UVICORN_WORKERS", "2"))
+
+
 def _create_admin(username: str, display_name: str | None) -> int:
     store.init_db()
     if store.get_user_by_username(username) is not None:
@@ -170,12 +183,16 @@ def main() -> None:
     # cover-crop generation, /api/status) no longer blocks every other
     # page navigation. The legacy in-process indexer mode stays single-
     # process to keep its threads and the server in the same process.
+    # Worker count is env-configurable (UVICORN_WORKERS, default 2): each
+    # worker lazily loads its own CLIP session (~838 MB RSS) plus a matrix
+    # cache, so the count is the dominant term in the `app` container's
+    # memory footprint (see config.Settings.uvicorn_workers).
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=settings.port,
         log_level="info",
-        workers=1 if _env_bool("RUN_INDEXER", False) else 4,
+        workers=_uvicorn_workers(),
     )
 
 

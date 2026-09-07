@@ -25,6 +25,8 @@ These are read by `docker-compose.yml` itself, not by the containers:
 | `INDEXER_STATUS_PORT` | `8091` | Internal-only port on the `indexer` container for its `/status` endpoint. |
 | `BRIDGE_CACHE_STALE_SEC` | `21600` (6 h) | Age (seconds) at which the on-disk Proton SDK cache is flagged "stale" by the admin Server-checks panel. Only fires when full-res downloads are also failing. Lower it to surface stale caches earlier; raise it if your bridge is idle for longer than 6 h. |
 | `ORT_INTRA_OP_THREADS` | `1` | Threads per ONNX Runtime session (CLIP). Default `1` prevents the indexer's workers + CLIP sessions from oversubscribing the CPU; raise only on a box with spare cores. `OMP_NUM_THREADS=1` is set in compose for the OpenMP-backed kernels (insightface). |
+| `APP_MEM_LIMIT` | `6g` | Memory cap for the `app` container. Each uvicorn worker loads its own CLIP ONNX session (~838 MB RSS measured) + a per-worker matrix cache; 2 workers fit comfortably under 6 GiB. Lower it on small boxes if you also lower `UVICORN_WORKERS`. |
+| `APP_CPUS` | `2.0` | CPU cap for the `app` container, so CLIP/search can't starve the other containers on the host. |
 
 ## In-container
 
@@ -39,6 +41,7 @@ Set inside `compose.yml` for each service. Most match the compose-level defaults
 | `PORT` | `8080` (in-container) | Web UI port inside the `app` container. |
 | `INDEXER_STATUS_URL` | `http://indexer:8091` | Where the `app` container reads the indexer's status from. For local single-process dev with `RUN_INDEXER=1`, override to `http://127.0.0.1:8091`. |
 | `RUN_INDEXER` | `0` | Set `1` on the `app` container to start the in-process indexer. |
+| `UVICORN_WORKERS` | `2` | Number of uvicorn workers serving the API. Each worker lazily loads its own CLIP ONNX session (~838 MB RSS) + a per-worker matrix cache, so this is the dominant term in the `app` container's memory footprint. Keep low on memory-constrained hosts; raise on memory-rich ones. Ignored when `RUN_INDEXER=1` (single-process mode). |
 | `LOG_LEVEL` | `INFO` | Logging verbosity: `DEBUG` / `INFO` / `WARNING` / `ERROR`. |
 | `DEMO_MODE` | unset | `1` enables demo mode (no real Proton account). Set automatically by the `demo` compose profile. |
 | `DEMO_ADMIN_PASSWORD` | unset → prompt | Override the demo admin password. |
@@ -48,7 +51,7 @@ Set inside `compose.yml` for each service. Most match the compose-level defaults
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SIGNING_SECRET` | required (prod) | HMAC key for the short-lived signed URLs on binary media endpoints (`/thumb`, `/full`, `/cover`, `/crop`). **Required outside `DEMO_MODE`** — the app refuses to start without it (`compose.yml` fails the `app` service with `${SIGNING_SECRET:?…}`), so a known default can't be used to forge signed URLs and signed URLs stay valid across all 4 uvicorn workers. Generate with `openssl rand -hex 32`. In `DEMO_MODE` the `app-demo` compose service sets a fixed `demo-signing-secret` (demo content is public by design; the code also allows an ephemeral per-boot fallback there). |
+| `SIGNING_SECRET` | required (prod) | HMAC key for the short-lived signed URLs on binary media endpoints (`/thumb`, `/full`, `/cover`, `/crop`). **Required outside `DEMO_MODE`** — the app refuses to start without it (`compose.yml` fails the `app` service with `${SIGNING_SECRET:?…}`), so a known default can't be used to forge signed URLs and signed URLs stay valid across all uvicorn workers (default 2, see `UVICORN_WORKERS`). Generate with `openssl rand -hex 32`. In `DEMO_MODE` the `app-demo` compose service sets a fixed `demo-signing-secret` (demo content is public by design; the code also allows an ephemeral per-boot fallback there). |
 | `INDEXER_TOKEN` | required (prod) | Shared secret the `app` container sends in the `X-Indexer-Token` header when proxying to the `indexer` container's control API on `:8091` (`/status`, `/trigger-sync`, `/sync-config` — `/healthz` is intentionally auth-free for compose healthchecks). **Required outside `DEMO_MODE`** — the indexer refuses to start without it (`compose.yml` fails both `indexer` and `app` services with `${INDEXER_TOKEN:?…}`), so the control API on the compose internal network cannot be triggered by any container that doesn't already know the secret. The `app` and `indexer` services share the same env var in `compose.yml` so they cannot drift. Generate with `openssl rand -hex 32`. In `DEMO_MODE` the `indexer-demo`/`app-demo` compose services allow an unset token (each falls back to a per-boot ephemeral value and logs a warning); operators that want stable across-restart auth can still set `INDEXER_TOKEN` explicitly. |
 | `AUTH_ACCESS_TTL` | `28800` (8 hours) | Bearer access-token lifetime in seconds. Set `0` for effectively no expiry during a session (not recommended). |
 | `AUTH_REFRESH_TTL` | `2592000` (30 days) | Bearer refresh-token lifetime in seconds. |
