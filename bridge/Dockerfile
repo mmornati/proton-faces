@@ -70,7 +70,11 @@ COPY --from=build /usr/local/bin/proton-bridge /usr/local/bin/proton-bridge
 
 ENV PORT=8090
 ENV DATA_DIR=/data
-ENV PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file
+# PROTON_DRIVE_CREDENTIALS_STORE is intentionally NOT baked here — it is set
+# per-deployment in compose.yml (proton-bridge service) so operators can
+# switch to the SDK's encrypted credential store without rebuilding the
+# image. The compose default is `unsafe_file`, matching the historical
+# behaviour (the file lives at /data/auth-session.json — see issue #32).
 ENV PROTON_DRIVE_CACHE_DIR=/data
 # PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION is intentionally NOT baked into the
 # image: it is set per-deployment in compose.yml (proton-bridge service) so the

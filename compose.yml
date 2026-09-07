@@ -17,14 +17,20 @@ name: proton-faces
 # single-process layout.
 #
 # Configurable via environment (.env):
-#   PORT          host port for the web UI (default 8080)
-#   DATA_MOUNT    bind-mount target for the data volume. Defaults to the
-#                 named volume `data`; set e.g. DATA_MOUNT=/media/12tb/photos-index
-#                 to persist data on a big disk. The directory must be writable
-#                 by UID 1000 (the user both containers run as).
-#   PHOTOS_MOUNT  optional read-only bind mount of a local Google Takeout export,
-#                 used to backfill GPS/place data (see README). Unset by default;
-#                 uncomment the volume line below when you have one.
+#   PORT              host port for the web UI (default 8080)
+#   DATA_MOUNT        bind-mount target for the data volume. Defaults to the
+#                     named volume `data`; set e.g. DATA_MOUNT=/media/12tb/photos-index
+#                     to persist data on a big disk. The directory must be writable
+#                     by UID 1000 (the user both containers run as).
+#   PHOTOS_MOUNT      optional read-only bind mount of a local Google Takeout export,
+#                     used to backfill GPS/place data (see README). Unset by default;
+#                     uncomment the volume line below when you have one.
+#   AUTH_SESSION_MOUNT  bind-mount source for the bridge-only Proton session file
+#                     (issue #32). Defaults to ./credentials/auth-session.json;
+#                     the file is mounted ONLY into the proton-bridge container so
+#                     the internet-facing app / indexer containers cannot read it.
+#                     The mount is writable (the SDK refreshes tokens on disk);
+#                     see docs/getting-started/session-export.md.
 #
 # Images are pulled from GitHub Container Registry. `docker compose up` always
 # pulls the prebuilt images — there is no local build step. Local development
@@ -41,10 +47,18 @@ services:
     pids_limit: 256
     volumes:
       - ${DATA_MOUNT:-data}:/data
+      # Issue #32: the Proton session file (accessToken, refreshToken,
+      # userKeyPassword, cachePassword) is mounted ONLY into this container.
+      # It is NOT part of the shared `data` volume, so the internet-facing
+      # `app` container cannot read it even if it gets RCE / path traversal.
+      # The mount is rw because the SDK rewrites tokens on refresh;
+      # `auth-session.json` is still excluded from the cache-clear glob in
+      # helpers.ts, so a `/cache/clear` call does not delete it.
+      - ${AUTH_SESSION_MOUNT:-./credentials/auth-session.json}:/data/auth-session.json
     environment:
       - PORT=8090
       - DATA_DIR=/data
-      - PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file
+      - PROTON_DRIVE_CREDENTIALS_STORE=${PROTON_DRIVE_CREDENTIALS_STORE:-unsafe_file}
       - PROTON_DRIVE_CACHE_DIR=/data
       # Shared secret for bridge HTTP auth. All services on the internal
       # network must use the same token. Generate one with: openssl rand -hex 32

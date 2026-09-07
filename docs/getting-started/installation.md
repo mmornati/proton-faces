@@ -41,7 +41,7 @@ pass show ch.proton.drive/drive-sdk-cli/auth-session > credentials/auth-session.
 See the [Session file guide](session-export.md) for the full recipe, including the macOS Keychain variant.
 
 !!! warning "Keep this file private"
-    `auth-session.json` contains your account tokens. It is mounted read-only into the bridge container and should never be committed to git (the repo's `.gitignore` already excludes `credentials/`).
+    `auth-session.json` contains your account tokens. It is mounted **into the bridge container only** (issue #32) — the indexer and the internet-facing `app` container have no path to it, so a vulnerability in one of them cannot leak your session. The mount is writable because the SDK rewrites the file on token refresh; see [Session file](session-export.md) for the full layout. The file should never be committed to git (the repo's `.gitignore` already excludes `credentials/`).
 
 ### 2. Configure
 
