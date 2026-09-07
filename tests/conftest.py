@@ -66,6 +66,7 @@ def _reset_module_state():
     store._embedding_cache_ts = 0.0
     store._person_means_cache = None
     store._person_means_cache_ts = 0.0
+    store._close_local_conns()
     auth._signing_secret.__dict__.pop("_ephemeral", None)
     auth._login_attempts = {}
     cluster._person_means = None
