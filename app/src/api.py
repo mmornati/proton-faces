@@ -37,7 +37,7 @@ from auth import access_ttl as auth_access_ttl
 from auth import (
     refresh as refresh_tokens,
 )
-from bridge_client import BridgeTransientError, get_bridge
+from bridge_client import BridgeTransientError, get_bridge, is_valid_uid
 from clip import embed_text
 from compression import CompressionMiddleware
 from config import settings
@@ -1029,10 +1029,9 @@ def api_photo_meta(uid: str, user: CurrentUser = Depends(require_user)):
 @app.get("/api/photos/{uid}/thumb")
 def api_thumb(uid: str, request: Request,
                _: object = Depends(signed_or_token)):
-    row = get_photo(uid)
-    if row is None or not row["thumb_path"]:
+    if not is_valid_uid(uid):
         raise HTTPException(404, "no thumbnail")
-    p = settings.thumb_dir / row["thumb_path"]
+    p = settings.thumb_dir / f"{uid}.webp"
     if not p.exists():
         raise HTTPException(404, "thumbnail file missing")
     return FileResponse(p, media_type="image/webp", headers=_IMMUTABLE_HEADERS)
@@ -1234,10 +1233,9 @@ def api_person_cover(person_id: int,
         raise HTTPException(404, "person not found")
     face_id = person["cover_face_id"]
     if face_id is None:
-        photo = get_photo(person["cover_uid"]) if person["cover_uid"] else None
-        if photo is None or not photo["thumb_path"]:
+        if not person["cover_uid"] or not is_valid_uid(person["cover_uid"]):
             raise HTTPException(404, "no cover available")
-        p = settings.thumb_dir / photo["thumb_path"]
+        p = settings.thumb_dir / f"{person['cover_uid']}.webp"
         if not p.exists():
             raise HTTPException(404, "thumbnail file missing")
         return FileResponse(p, media_type="image/webp", headers=_IMMUTABLE_HEADERS)
@@ -1314,7 +1312,9 @@ def _face_crop_bytes(face_id: int) -> bytes | None:
     row = _face_row(face_id)
     if row is None:
         return None
-    thumb = settings.thumb_dir / row["thumb_path"]
+    if not is_valid_uid(row["photo_uid"]):
+        return None
+    thumb = settings.thumb_dir / f"{row['photo_uid']}.webp"
     if not thumb.exists():
         return None
     bbox = json.loads(row["bbox"])
@@ -1419,8 +1419,7 @@ def _face_row(face_id: int):
     try:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            """SELECT f.id, f.photo_uid, f.person_id, f.bbox,
-                      ph.thumb_path
+            """SELECT f.id, f.photo_uid, f.person_id, f.bbox
                FROM faces f JOIN photos ph ON ph.uid = f.photo_uid
                WHERE f.id=?""",
             (face_id,),

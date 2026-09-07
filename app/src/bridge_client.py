@@ -25,8 +25,12 @@ class BridgeError(Exception):
 _UID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
-def _is_valid_uid(uid: str) -> bool:
+def is_valid_uid(uid: str) -> bool:
+    """Validate a uid matches the expected charset and length."""
     return bool(_UID_RE.match(uid))
+
+
+_is_valid_uid = is_valid_uid  # alias for internal use
 
 
 class BridgeTransientError(BridgeError):
