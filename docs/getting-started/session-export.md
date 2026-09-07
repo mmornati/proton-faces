@@ -66,6 +66,53 @@ docker compose exec app test ! -e /data/auth-session.json   # should exit 0
 !!! danger "Treat this file like a password"
     Anyone with this file can read your encrypted Proton Drive. Never commit it (the repo's `.gitignore` already excludes `credentials/`), never share it, never paste it into a chat.
 
+## Encrypted store (`pass`)
+
+If you'd rather not keep the session as a plaintext file on the host, the SDK supports an encrypted backend backed by `pass` + GPG, and the bridge image ships both. To enable it:
+
+```bash
+# .env
+PROTON_DRIVE_CREDENTIALS_STORE=pass
+```
+
+```bash
+docker compose pull proton-bridge   # pass support needs a current image
+docker compose up -d                # recreate — `restart` does NOT apply .env changes
+```
+
+On first start the bridge entrypoint:
+
+1. Generates a container-local GPG key (no passphrase — the container must boot unattended) in the `bridge-gnupg` volume.
+2. Runs `pass init` in the `bridge-pass-store` volume.
+3. If `/data/auth-session.json` still exists, inserts it into the store, verifies the read-back, and removes the plaintext file.
+
+Both volumes are mounted **only into the bridge container** — same isolation as the session file (issue #32). Verify with:
+
+```bash
+docker compose exec proton-bridge pass show ch.proton.drive/drive-sdk-cli/auth-session
+```
+
+To update the session while in `pass` mode, insert the freshly exported file over the existing entry and restart:
+
+```bash
+docker compose exec -T proton-bridge pass insert -f -m ch.proton.drive/drive-sdk-cli/auth-session \
+    < credentials/auth-session.json
+docker compose restart proton-bridge
+```
+
+!!! note "What this does and doesn't protect"
+    The encrypted store protects the session **at rest on the host**: volume backups, stray reads, an accidental `git add credentials/`. It is **not** a boundary against an attacker already inside the bridge container — key and store are both reachable there by construction. The issue #32 isolation (app/indexer have no path to keyring or store) is unchanged.
+
+To roll back to the plaintext store, extract the session and switch the variable:
+
+```bash
+docker compose exec -T proton-bridge pass show ch.proton.drive/drive-sdk-cli/auth-session \
+    > credentials/auth-session.json
+chmod 600 credentials/auth-session.json
+# .env: PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file
+docker compose up -d
+```
+
 ## What if I revoke the session?
 
 If you sign the CLI out, the bridge's next sync fails with a 401-style error. Export a new session and `docker compose restart proton-bridge`.
