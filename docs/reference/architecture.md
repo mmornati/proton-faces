@@ -36,7 +36,7 @@ flowchart LR
 
 Three observations:
 
-1. **The bridge is the only thing that talks to Proton.** It authenticates with your session, decrypts the timeline, fetches thumbnails — and that's it. It never uploads, edits, or deletes a single byte.
+1. **The bridge is the only thing that talks to Proton.** It authenticates with your session, decrypts the timeline, fetches thumbnails — and that's it. It never uploads, edits, or deletes a single byte. **The Proton session file is mounted only into the bridge** (issue #32); the indexer and the internet-facing `app` container have no path to it.
 2. **The indexer and app share one SQLite DB.** Per-row atomic claims (`UPDATE ... WHERE status='new'`) plus WAL mode + 30s busy_timeout mean the two processes interleave cleanly without any extra coordination.
 3. **The web UI is a vanilla-JS single-page app** served as a static file. The backend is just a REST API over a SQLite file.
 
@@ -48,7 +48,7 @@ The split (issue #4) puts recognition on dedicated CPU cores:
 
 | Container | Role | Owns |
 |---|---|---|
-| `proton-bridge` | The only component that talks to Proton | Nothing on disk; fetches thumbnails into `DATA_DIR/work/` |
+| `proton-bridge` | The only component that talks to Proton; holds the session file (issue #32) | Nothing on disk; fetches thumbnails into `DATA_DIR/work/` |
 | `indexer` | Recognition pipeline + clustering + GPS | The authoritative writers of `photos`, `faces`, `clips`, `people` |
 | `app` | FastAPI search API + static web UI | Read-only against the index (except `user_favorites`/`tags`/favorites/archived/hidden metadata) |
 

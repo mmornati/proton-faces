@@ -10,6 +10,7 @@ These are read by `docker-compose.yml` itself, not by the containers:
 |----------|---------|-------------|
 | `DATA_MOUNT` | named volume `data` | Host path or `:volume` that backs `DATA_DIR`. On a server with a big disk, set `DATA_MOUNT=/srv/proton-faces/data`. The directory must be writable by UID 1000. |
 | `PHOTOS_MOUNT` | `/dev/null` | Optional read-only bind mount of a local Google Takeout export. Inside the indexer/app containers it's always mounted at `/takeout` (and `PHOTOS_DIR` is hardcoded to `/takeout`). Set e.g. `PHOTOS_MOUNT=/srv/photos-takeout` to enable GPS backfill. |
+| `AUTH_SESSION_MOUNT` | `./credentials/auth-session.json` | Host path to the Proton session file (issue #32). The file is bind-mounted **only into the proton-bridge container** at `/data/auth-session.json` — the indexer and `app` containers have no path to it. The mount is writable because the SDK refreshes the file on disk. Override if your session lives elsewhere; the directory must be readable (and writable for refresh) by UID 1000. |
 | `PORT` | `8080` | Host port the web UI binds to. |
 | `SYNC_INTERVAL` | `300` | Default seconds between timeline diffs. |
 | `SYNC_LIMIT` | `0` | Default sync limit (0 = all photos). |
