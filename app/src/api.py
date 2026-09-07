@@ -253,20 +253,15 @@ def _drop_crop_cache(face_id: int) -> None:
 
 def _drop_person_crops(person_id: int) -> None:
     """Remove cached face crops for every face belonging to a person."""
-    import sqlite3
+    from store import get_conn
 
-    from config import settings as _s
-
-    conn = sqlite3.connect(_s.db_path)
-    try:
+    with get_conn() as conn:
         face_ids = [
             r[0]
             for r in conn.execute(
                 "SELECT id FROM faces WHERE person_id=?", (person_id,)
             ).fetchall()
         ]
-    finally:
-        conn.close()
     if not face_ids:
         return
     with _crop_lock:
@@ -1367,22 +1362,18 @@ def start_crop_prewarm_worker() -> None:
     import concurrent.futures
 
     def _loop() -> None:
-        import sqlite3
         import time as _time
 
-        from config import settings as _s
+        from store import get_conn
 
         log = logging.getLogger("crop-prewarm")
         while True:
             try:
-                conn = sqlite3.connect(_s.db_path, timeout=30)
-                try:
+                with get_conn() as conn:
                     rows = conn.execute(
                         "SELECT cover_face_id FROM people "
                         "WHERE cover_face_id IS NOT NULL ORDER BY id"
                     ).fetchall()
-                finally:
-                    conn.close()
                 missing = [
                     r[0] for r in rows if not _crop_cache_path(r[0]).exists()
                 ]
@@ -1411,13 +1402,9 @@ def start_crop_prewarm_worker() -> None:
 
 
 def _face_row(face_id: int):
-    import sqlite3
+    from store import get_conn
 
-    from config import settings as _s
-
-    conn = sqlite3.connect(_s.db_path)
-    try:
-        conn.row_factory = sqlite3.Row
+    with get_conn() as conn:
         row = conn.execute(
             """SELECT f.id, f.photo_uid, f.person_id, f.bbox,
                       ph.thumb_path
@@ -1426,8 +1413,6 @@ def _face_row(face_id: int):
             (face_id,),
         ).fetchone()
         return row
-    finally:
-        conn.close()
 
 
 @app.get("/api/faces/unassigned")

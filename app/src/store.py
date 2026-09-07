@@ -132,29 +132,67 @@ CREATE INDEX IF NOT EXISTS idx_user_favorites_photo ON user_favorites(photo_uid)
 
 _lock = threading.Lock()
 
+# Thread-local persistent connections: each thread gets one connection per db
+# path and keeps it for the lifetime of the thread.  This avoids the
+# connect/PRAGMA/close cycle on every call — the ~2 MB page cache survives
+# across queries, which matters a lot on HDD-backed indexes.
+_local = threading.local()
+
+
+def _close_local_conns() -> None:
+    """Close all connections held in the current thread's local storage."""
+    conns = getattr(_local, "_conns", None)
+    if conns is None:
+        return
+    for conn in conns.values():
+        try:
+            conn.close()
+        except Exception:
+            pass
+    _local._conns = {}
+
+
+def _get_persistent_conn(db_path: str, timeout: int = 30) -> sqlite3.Connection:
+    """Return a persistent thread-local connection for *db_path*.
+
+    PRAGMAs are run once at connect time.  The connection is never closed by
+    the caller — it stays open for the lifetime of the thread.
+    """
+    conns: dict[str, sqlite3.Connection] = getattr(_local, "_conns", None)
+    if conns is None:
+        conns = {}
+        _local._conns = conns
+    conn = conns.get(db_path)
+    if conn is None:
+        conn = sqlite3.connect(db_path, timeout=timeout)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        # The index lives on a spinning HDD: synchronous=FULL makes every
+        # commit fsync the disk and the small default WAL checkpoint (4 MB)
+        # stalls readers while the indexer is draining. NORMAL keeps WAL
+        # durability for app crashes (only an OS power-loss can lose the last
+        # commits, which is acceptable for a rebuildable index) and a 64 MB
+        # checkpoint amortizes the checkpoint across many more writes.
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA wal_autocheckpoint=16000")
+        # Cache / performance pragmas — run once per connection lifetime.
+        conn.execute("PRAGMA cache_size=-64000")       # 64 MB page cache
+        conn.execute("PRAGMA mmap_size=268435456")     # 256 MB mmap
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conns[db_path] = conn
+    return conn
+
 
 @contextmanager
 def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(settings.db_path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    # The index lives on a spinning HDD: synchronous=FULL makes every commit
-    # fsync the disk and the small default WAL checkpoint (4 MB) stalls
-    # readers while the indexer is draining. NORMAL keeps WAL durability for
-    # app crashes (only an OS power-loss can lose the last commits, which is
-    # acceptable for a rebuildable index) and a 64 MB checkpoint amortizes
-    # the checkpoint across many more writes.
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA wal_autocheckpoint=16000")
+    conn = _get_persistent_conn(str(settings.db_path))
     try:
         yield conn
         conn.commit()
     except Exception:
         conn.rollback()
         raise
-    finally:
-        conn.close()
 
 
 def init_db() -> None:
