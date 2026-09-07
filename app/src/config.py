@@ -39,6 +39,7 @@ class Settings:
         self.data_dir = Path(os.environ.get("DATA_DIR", "./data")).resolve()
         self.photos_dir = os.environ.get("PHOTOS_DIR", "")  # optional local Takeout export
         self.bridge_url = os.environ.get("BRIDGE_URL", "http://proton-bridge:8090")
+        self.bridge_token = os.environ.get("BRIDGE_TOKEN", "")
         self.port = int(os.environ.get("PORT", "8080"))
         self.sync_interval = int(os.environ.get("SYNC_INTERVAL", "300"))
         self.sync_limit = int(os.environ.get("SYNC_LIMIT", "0"))  # 0 = all photos

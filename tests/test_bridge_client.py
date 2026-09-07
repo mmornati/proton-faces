@@ -238,3 +238,63 @@ class TestGetBridge:
         m._bridge = None
         bridge = m.get_bridge()
         assert isinstance(bridge, demo.DemoBridge)
+
+
+class TestBridgeAuthHeaders:
+    """Every bridge client request must include the Authorization header when BRIDGE_TOKEN is set."""
+
+    def test_health_sends_auth_header(self, client_factory, monkeypatch):
+        monkeypatch.setattr("bridge_client.settings.bridge_token", "test-token-123")
+        captured = {}
+
+        def handler(req):
+            captured["auth"] = req.headers.get("authorization")
+            return httpx.Response(200, json={"ok": True, "loggedIn": True})
+
+        bc = client_factory(handler)
+        bc._token = "test-token-123"
+        bc._auth_headers = {"Authorization": "Bearer test-token-123"}
+        bc.health()
+        assert captured["auth"] == "Bearer test-token-123"
+
+    def test_timeline_sends_auth_header(self, client_factory, monkeypatch):
+        monkeypatch.setattr("bridge_client.settings.bridge_token", "test-token-123")
+        captured = {}
+
+        def handler(req):
+            captured["auth"] = req.headers.get("authorization")
+            return httpx.Response(200, text='{"uid":"a"}\n')
+
+        bc = client_factory(handler)
+        bc._token = "test-token-123"
+        bc._auth_headers = {"Authorization": "Bearer test-token-123"}
+        bc.timeline(limit=1)
+        assert captured["auth"] == "Bearer test-token-123"
+
+    def test_full_photo_sends_auth_header(self, client_factory, monkeypatch):
+        monkeypatch.setattr("bridge_client.settings.bridge_token", "test-token-123")
+        captured = {}
+
+        def handler(req):
+            captured["auth"] = req.headers.get("authorization")
+            return httpx.Response(200, content=b"\xff\xd8\xff")
+
+        bc = client_factory(handler)
+        bc._token = "test-token-123"
+        bc._auth_headers = {"Authorization": "Bearer test-token-123"}
+        bc.full_photo("p1")
+        assert captured["auth"] == "Bearer test-token-123"
+
+    def test_no_auth_header_when_token_empty(self, client_factory, monkeypatch):
+        monkeypatch.setattr("bridge_client.settings.bridge_token", "")
+        captured = {}
+
+        def handler(req):
+            captured["auth"] = req.headers.get("authorization")
+            return httpx.Response(200, json={"ok": True, "loggedIn": True})
+
+        bc = client_factory(handler)
+        bc._token = ""
+        bc._auth_headers = {}
+        bc.health()
+        assert captured["auth"] is None

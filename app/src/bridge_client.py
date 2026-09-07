@@ -73,10 +73,20 @@ def _parse_retry_after(value: str | None) -> float:
 class BridgeClient:
     def __init__(self, base_url: str | None = None) -> None:
         self.base_url = (base_url or settings.bridge_url).rstrip("/")
+        self._token = settings.bridge_token
+        self._auth_headers: dict[str, str] = (
+            {"Authorization": f"Bearer {self._token}"} if self._token else {}
+        )
         self._client = httpx.Client(timeout=120.0)
 
+    def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        h = dict(self._auth_headers)
+        if extra:
+            h.update(extra)
+        return h
+
     def health(self) -> dict:
-        r = self._client.get(f"{self.base_url}/health")
+        r = self._client.get(f"{self.base_url}/health", headers=self._headers())
         r.raise_for_status()
         return r.json()
 
@@ -105,6 +115,7 @@ class BridgeClient:
             "GET",
             f"{self.base_url}/timeline",
             params=params,
+            headers=self._headers(),
             timeout=httpx.Timeout(3600.0, connect=30.0),
         ) as r:
             r.raise_for_status()
@@ -136,6 +147,7 @@ class BridgeClient:
             "GET",
             f"{self.base_url}/timeline/ids",
             params=params,
+            headers=self._headers(),
             timeout=httpx.Timeout(3600.0, connect=30.0),
         ) as r:
             r.raise_for_status()
@@ -166,6 +178,7 @@ class BridgeClient:
             "POST",
             f"{self.base_url}/nodes",
             json={"uids": uids},
+            headers=self._headers(),
             timeout=httpx.Timeout(3600.0, connect=30.0),
         ) as r:
             r.raise_for_status()
@@ -173,7 +186,11 @@ class BridgeClient:
 
     def albums(self) -> dict:
         """Return all albums as {uid, name} pairs (plain JSON)."""
-        r = self._client.get(f"{self.base_url}/albums", timeout=httpx.Timeout(300.0, connect=30.0))
+        r = self._client.get(
+            f"{self.base_url}/albums",
+            headers=self._headers(),
+            timeout=httpx.Timeout(300.0, connect=30.0),
+        )
         r.raise_for_status()
         return r.json()
 
@@ -183,7 +200,7 @@ class BridgeClient:
         The bridge is synchronous: by the time it responds, every `ok` uid has
         its WebP written on the shared volume.
         """
-        r = self._client.post(f"{self.base_url}/thumbnails", json={"uids": uids})
+        r = self._client.post(f"{self.base_url}/thumbnails", json={"uids": uids}, headers=self._headers())
         r.raise_for_status()
         return r.json()
 
@@ -217,7 +234,7 @@ class BridgeClient:
         # as it arrives (full-res downloads can be slow; don't buffer them).
         if not _is_valid_uid(uid):
             raise ValueError(f"invalid photo uid: {uid!r}")
-        headers = {"Range": range_header} if range_header else {}
+        headers = self._headers({"Range": range_header} if range_header else {})
         if timeout_ms:
             headers["X-Timeout-Ms"] = str(timeout_ms)
         req = self._client.build_request(
@@ -253,7 +270,7 @@ class BridgeClient:
         Short timeout (5s) — this is called from the admin checks UI; we
         don't want it to hang the whole checks panel if the bridge is wedged.
         """
-        r = self._client.get(f"{self.base_url}/cache", timeout=httpx.Timeout(5.0, connect=5.0))
+        r = self._client.get(f"{self.base_url}/cache", headers=self._headers(), timeout=httpx.Timeout(5.0, connect=5.0))
         r.raise_for_status()
         return r.json()
 
@@ -271,6 +288,7 @@ class BridgeClient:
         """
         r = self._client.post(
             f"{self.base_url}/cache/clear",
+            headers=self._headers(),
             timeout=httpx.Timeout(5.0, connect=5.0),
         )
         r.raise_for_status()
