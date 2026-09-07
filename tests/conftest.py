@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import tempfile
@@ -70,6 +71,7 @@ def _reset_module_state():
     cluster._person_means = None
     cluster._person_means_ts = 0.0
     bridge_client._bridge = None
+    bridge_client._async_client = None
     faces._app = None
     geocode._rg = None
     try:
@@ -91,5 +93,7 @@ def _reset_module_state():
         api._clip_cache = None
         api._bridge_health_cache = None
         api._indexer_proxy_cache = None
+        api._full_semaphore = asyncio.Semaphore(api._FULL_SEMAPHORE_MAX)
+        api._full_res_failure_ts.clear()
     except ImportError:
         pass

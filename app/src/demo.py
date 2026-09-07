@@ -207,6 +207,11 @@ class DemoBridge:
             return _BytesResponse(b"", "image/jpeg")  # empty body, 200 OK; indexer treats as no preview
         return _BytesResponse(src.read_bytes(), "image/jpeg")
 
+    async def full_photo_async(self, uid: str, range_header: str | None = None,
+                                timeout_ms: int | None = None) -> _BytesResponse:
+        """Async version of full_photo — same semantics, no I/O wait needed."""
+        return self.full_photo(uid, range_header=range_header, timeout_ms=timeout_ms)
+
     def close(self) -> None:
         pass  # stateless
 

@@ -1,6 +1,7 @@
 """FastAPI application: search API + static web UI."""
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -9,8 +10,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeout
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -156,13 +155,12 @@ _people_cache: tuple[str | None, float, list] | None = None  # (q, ts, full list
 # give up and return 504 to the user. The bridge's /photo/{uid}/full endpoint
 # occasionally hangs for 30+ seconds when Proton's downloader endpoint is
 # degraded; without this cap the FastAPI handler blocks indefinitely and the
-# browser's loading spinner never resolves. We run the bridge call in a worker
-# thread and timeout the future, then close the response to free the bridge
-# connection.
+# browser's loading spinner never resolves. We use an async semaphore for
+# admission control (doesn't consume a thread) and enforce the timeout via
+# asyncio.wait_for so the event loop stays responsive.
 _FULL_TIMEOUT_SEC = 30.0
-_full_executor = ThreadPoolExecutor(
-    max_workers=4, thread_name_prefix="full-photo"
-)
+_FULL_SEMAPHORE_MAX = int(os.environ.get("FULL_SEMAPHORE_MAX", "8"))
+_full_semaphore = asyncio.Semaphore(_FULL_SEMAPHORE_MAX)
 
 # Rolling log of /full proxy failures (504 timeouts + 502 bridge errors +
 # BridgeTransientErrors). The admin "Bridge cache" check consults this so
@@ -1058,68 +1056,61 @@ def _sniff_image_type(data: bytes) -> str | None:
 
 
 @app.get("/api/photos/{uid}/full")
-def api_full(uid: str, request: Request,
-              _: object = Depends(signed_or_token)):
+async def api_full(uid: str, request: Request,
+                    _: object = Depends(signed_or_token)):
     """Stream the full-resolution photo from Proton (on demand, read-only).
 
-    Runs the bridge call in a worker thread with a hard timeout so a stuck
+    Uses an async semaphore for admission control (no threadpool threads
+    consumed) and ``asyncio.wait_for`` for the hard timeout so a stuck
     Proton downloader endpoint can't hold the request open indefinitely.
-    If we timeout, the worker is left to finish in the background (we close
-    the bridge response from the main thread so the bridge connection is
-    freed), and we return a fast 504 to the browser.
+    If we timeout, the bridge response is closed from the async side and
+    we return a fast 504 to the browser.
     """
     row = get_photo(uid)
     if row is None:
         raise HTTPException(404, "photo not found")
     range_header = request.headers.get("range")
 
-    # Acquire the bridge response in a worker thread so we can apply a hard
-    # `_FULL_TIMEOUT_SEC` cap regardless of what the bridge is doing. We also
-    # forward that cap to the bridge so it aborts its SDK download shortly
-    # after we time out, freeing the SDK's download-queue slot instead of
-    # letting the request pin it until the bridge's own (5 min) ceiling.
-    future = _full_executor.submit(
-        get_bridge().full_photo, uid, range_header=range_header,
-        timeout_ms=int(_FULL_TIMEOUT_SEC * 1000),
-    )
-    try:
-        resp = future.result(timeout=_FULL_TIMEOUT_SEC)
-    except FuturesTimeout:
-        # The worker is still running trying to get the response headers.
-        # We can't kill it (no shared cancel handle), but we can give up
-        # from the FastAPI side and surface 504 to the browser.
-        log.warning(
-            "full photo timed out after %.1fs for %s; returning 504",
-            _FULL_TIMEOUT_SEC, uid,
-        )
-        _record_full_res_failure()
-        raise HTTPException(504, "full photo fetch timed out — try again later")
-    except BridgeTransientError as exc:
-        # 429/502/503 from the bridge — transient. Record for the admin
-        # cache check but don't count this against the photo's status (the
-        # indexer's fullres loop already handles its own retries).
-        log.warning(
-            "full photo bridge transient for %s: %s", uid, exc,
-        )
-        _record_full_res_failure()
-        # `exc.args[0]` carries the "{status} {message} (retry_after=Ns)"
-        # string from BridgeTransientError.__init__; use it as the detail
-        # so the client sees something more informative than a bare code.
-        detail = exc.args[0] if exc.args else "bridge transient error"
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail=detail,
-            headers={"Retry-After": str(int(exc.retry_after_sec or 1))},
-        )
-    except Exception as exc:
-        log.warning("full photo fetch failed for %s: %s", uid, exc)
-        _record_full_res_failure()
-        raise HTTPException(502, "bridge fetch failed")
+    # Acquire the semaphore before starting the timer so admission-queue
+    # wait doesn't count toward the 30s header budget.
+    async with _full_semaphore:
+        try:
+            resp = await asyncio.wait_for(
+                get_bridge().full_photo_async(
+                    uid, range_header=range_header,
+                    timeout_ms=int(_FULL_TIMEOUT_SEC * 1000),
+                ),
+                timeout=_FULL_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "full photo timed out after %.1fs for %s; returning 504",
+                _FULL_TIMEOUT_SEC, uid,
+            )
+            _record_full_res_failure()
+            raise HTTPException(504, "full photo fetch timed out — try again later")
+        except BridgeTransientError as exc:
+            log.warning(
+                "full photo bridge transient for %s: %s", uid, exc,
+            )
+            _record_full_res_failure()
+            detail = exc.args[0] if exc.args else "bridge transient error"
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=detail,
+                headers={"Retry-After": str(int(exc.retry_after_sec or 1))},
+            )
+        except Exception as exc:
+            log.warning("full photo fetch failed for %s: %s", uid, exc)
+            _record_full_res_failure()
+            raise HTTPException(502, "bridge fetch failed")
+
     if resp.status_code not in (200, 206):
         log.warning("full photo bridge error for %s: status %s", uid, resp.status_code)
         _record_full_res_failure()
-        resp.close()
+        await resp.aclose()
         raise HTTPException(resp.status_code, "bridge error")
+
     content_type = resp.headers.get("content-type", "application/octet-stream")
     headers = {"Cache-Control": "no-store"}
     for h in ("content-length", "accept-ranges", "content-range"):
@@ -1127,25 +1118,26 @@ def api_full(uid: str, request: Request,
         if v:
             headers[h] = v
 
-    chunk_iter = resp.iter_bytes(1 << 16)
+    # Sniff the first chunk for content-type if the bridge returned
+    # application/octet-stream.
     first_chunk = b""
     if content_type == "application/octet-stream":
         log.warning("full photo %s returned octet-stream; sniffing magic bytes", uid)
         try:
-            first_chunk = next(chunk_iter)
-        except StopIteration:
+            first_chunk = await resp.aread(1 << 16)
+        except Exception:
             pass
         sniffed = _sniff_image_type(first_chunk)
         headers["Content-Type"] = sniffed or "image/jpeg"
 
-    def gen():
+    async def gen():
         try:
             if first_chunk:
                 yield first_chunk
-            for chunk in chunk_iter:
+            async for chunk in resp.aiter_bytes(1 << 16):
                 yield chunk
         finally:
-            resp.close()
+            await resp.aclose()
 
     return StreamingResponse(
         gen(),
