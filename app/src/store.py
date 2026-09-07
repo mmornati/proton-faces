@@ -1,6 +1,7 @@
 """SQLite persistence layer for proton-faces."""
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -109,7 +110,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS auth_tokens (
-    token       TEXT PRIMARY KEY,                  -- 32 random bytes, hex
+    token       TEXT PRIMARY KEY,                  -- sha256(32 random bytes hex)
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     kind        TEXT NOT NULL CHECK (kind IN ('access','refresh')),
     expires_at  INTEGER NOT NULL,
@@ -239,6 +240,10 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE albums ADD COLUMN start_ts INTEGER")
     if "end_ts" not in acols:
         conn.execute("ALTER TABLE albums ADD COLUMN end_ts INTEGER")
+    # Migration for issue #34: clear all plaintext auth_tokens so they are
+    # re-issued as SHA-256 hashes on next login. Safe to run repeatedly.
+    if "auth_tokens" in tables:
+        conn.execute("DELETE FROM auth_tokens")
 
 
 # --- photos ---------------------------------------------------------------
@@ -1587,9 +1592,23 @@ def touch_last_login(user_id: int) -> None:
                      (int(time.time()), user_id))
 
 
+def _hash_token(token: str) -> str:
+    """Return the SHA-256 hex digest of *token*.
+
+    Tokens are stored as hashes so that a DB/backup disclosure does not yield
+    live bearer tokens (issue #34). SHA-256 is appropriate here because tokens
+    are 256-bit random strings — no slow KDF needed, and lookup stays O(1).
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def issue_token(user_id: int, kind: str, expires_in: int, *,
                 user_agent: str | None = None, ip: str | None = None) -> str:
-    """Mint a new opaque bearer token (32 random bytes hex-encoded)."""
+    """Mint a new opaque bearer token (32 random bytes hex-encoded).
+
+    The raw token is returned to the caller (and ultimately to the HTTP
+    response). Only its SHA-256 hash is stored in the database.
+    """
     import secrets
     token = secrets.token_hex(32)
     now = int(time.time())
@@ -1597,7 +1616,7 @@ def issue_token(user_id: int, kind: str, expires_in: int, *,
         conn.execute(
             "INSERT INTO auth_tokens (token, user_id, kind, expires_at, created_at, user_agent, ip) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (token, user_id, kind, now + expires_in, now, user_agent, ip),
+            (_hash_token(token), user_id, kind, now + expires_in, now, user_agent, ip),
         )
     return token
 
@@ -1606,6 +1625,7 @@ def lookup_token(token: str) -> sqlite3.Row | None:
     """Return the (token, user_id, kind, expires_at) row if active, else None.
 
     Joined with users so the caller can see role/disabled without a second query.
+    The input *token* is hashed before the SELECT — the DB only stores digests.
     """
     with get_conn() as conn:
         return conn.execute(
@@ -1613,13 +1633,13 @@ def lookup_token(token: str) -> sqlite3.Row | None:
                       u.username, u.display_name, u.role, u.disabled
                FROM auth_tokens t JOIN users u ON u.id = t.user_id
                WHERE t.token = ?""",
-            (token,),
+            (_hash_token(token),),
         ).fetchone()
 
 
 def revoke_token(token: str) -> bool:
     with get_conn() as conn:
-        cur = conn.execute("DELETE FROM auth_tokens WHERE token=?", (token,))
+        cur = conn.execute("DELETE FROM auth_tokens WHERE token=?", (_hash_token(token),))
         return cur.rowcount > 0
 
 
