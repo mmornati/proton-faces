@@ -22,7 +22,7 @@ class BridgeError(Exception):
 # Mirror of the bridge's isValidUid: uids are opaque base64url-ish
 # identifiers. Rejecting anything else before it lands in a URL path keeps
 # the Python side consistent with the bridge's own validation (fix #37).
-_UID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_UID_RE = re.compile(r"^[A-Za-z0-9_=~-]{1,128}$")
 
 
 def is_valid_uid(uid: str) -> bool:

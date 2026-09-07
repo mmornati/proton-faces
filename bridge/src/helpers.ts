@@ -95,7 +95,7 @@ export const MAX_UID_BATCH = 5000;
  * or probe arbitrary files.
  */
 export function isValidUid(uid: unknown): uid is string {
-    return typeof uid === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(uid);
+    return typeof uid === 'string' && /^[A-Za-z0-9_=~-]{1,128}$/.test(uid);
 }
 
 /** A successfully parsed byte range. */

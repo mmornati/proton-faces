@@ -135,7 +135,8 @@ class TestAlbumsAndThumbnails:
 
 class TestIsValidUid:
     def test_accepts_plain_uids(self):
-        for uid in ("abc123", "ABC_123-def", "0", "photo-uid_1", "a" * 128):
+        for uid in ("abc123", "ABC_123-def", "0", "photo-uid_1", "a" * 128,
+                     "PNR_abc==~def==", "uid_with=padding==", "a~b"):
             assert bridge_client._is_valid_uid(uid)
 
     def test_rejects_traversal_and_garbage(self):
