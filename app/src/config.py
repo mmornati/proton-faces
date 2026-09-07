@@ -57,6 +57,13 @@ class Settings:
         # local active count, treating that as a truncated timeline listing.
         self.sync_deletion_threshold = float(os.environ.get("SYNC_DELETION_THRESHOLD", "0.10"))
         self.workers = int(os.environ.get("WORKERS", "2"))
+        # How many uvicorn workers serve the API. Each worker lazily loads its
+        # own CLIP ONNX session (~838 MB RSS measured) + a per-worker matrix
+        # cache, so the count is the dominant term in the `app` container's
+        # memory footprint. Default 2 keeps the total under the 6 GiB default
+        # mem_limit; raising it multiplies CLIP memory accordingly. In-process
+        # indexer mode (RUN_INDEXER=1) always stays single-process.
+        self.uvicorn_workers = int(os.environ.get("UVICORN_WORKERS", "2"))
         self.cluster_interval = int(os.environ.get("CLUSTER_INTERVAL", "1800"))
         self.gps_interval = int(os.environ.get("GPS_INTERVAL", "21600"))  # 6h
         self.face_sim_threshold = float(os.environ.get("FACE_SIM_THRESHOLD", "0.45"))

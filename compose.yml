@@ -163,8 +163,22 @@ services:
     restart: unless-stopped
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
-    mem_limit: 4g
+    # Each uvicorn worker lazily loads its own CLIP ONNX session (~838 MB RSS
+    # measured) + a per-worker matrix cache. Default 6 GiB gives the default
+    # UVICORN_WORKERS=2 real headroom; tune with APP_MEM_LIMIT on small boxes.
+    # APP_CPUS caps the CLIP/search CPU so it can't starve other containers.
+    mem_limit: ${APP_MEM_LIMIT:-6g}
     pids_limit: 512
+    cpus: ${APP_CPUS:-2.0}
+    healthcheck:
+      # Lets a restart loop tell "cold-start still warming up" apart from
+      # "OOM-killed / wedged" — the container stays down-until-healthy only
+      # while it's genuinely broken instead of while it's still starting.
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/status', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
     depends_on:
       - proton-bridge
       - indexer
@@ -187,6 +201,10 @@ services:
       # RUN_INDEXER=0 -> serve API only; the `indexer` container handles
       # the pipeline. Flip to 1 to fall back to the legacy in-process layout.
       - RUN_INDEXER=${RUN_INDEXER:-0}
+      # How many uvicorn workers serve the API. Default 2. Each worker loads
+      # its own CLIP session, so keep this low on memory-constrained hosts
+      # (see APP_MEM_LIMIT / APP_CPUS above and config.uvicorn_workers).
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-2}
       # Where to read the indexer's live state from. Defaults to
       # http://indexer:8091 (internal compose network only — the
       # indexer container does NOT publish this port to the host).

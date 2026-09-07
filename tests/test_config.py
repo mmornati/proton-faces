@@ -46,6 +46,17 @@ def test_settings_env_values(monkeypatch):
     assert s.min_cluster_size == 5
 
 
+def test_settings_uvicorn_workers_default():
+    s = config.Settings()
+    assert s.uvicorn_workers == 2
+
+
+def test_settings_uvicorn_workers_override(monkeypatch):
+    monkeypatch.setenv("UVICORN_WORKERS", "4")
+    s = config.Settings()
+    assert s.uvicorn_workers == 4
+
+
 def test_settings_defaults():
     s = config.Settings()
     assert s.port == 8080
