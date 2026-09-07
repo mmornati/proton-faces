@@ -503,6 +503,21 @@ def get_photo(uid: str) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM photos WHERE uid=?", (uid,)).fetchone()
 
 
+def get_photos_batch(uids: list[str]) -> dict[str, sqlite3.Row]:
+    """Fetch multiple photos by uid in a single query.
+
+    Returns a dict keyed by uid (only uids that exist in the DB).
+    """
+    if not uids:
+        return {}
+    placeholders = ",".join("?" * len(uids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM photos WHERE uid IN ({placeholders})", uids
+        ).fetchall()
+    return {r["uid"]: r for r in rows}
+
+
 def stats() -> dict:
     with get_conn() as conn:
         total = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
