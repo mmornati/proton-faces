@@ -15,12 +15,10 @@ from sklearn.cluster import HDBSCAN
 
 from config import settings
 from store import (
-    assign_face_person,
+    assign_faces_person_bulk,
     create_person,
     faces_without_person,
     person_mean_embeddings,
-    set_person_cover_face,
-    update_person_cover,
 )
 
 log = logging.getLogger("cluster")
@@ -158,10 +156,7 @@ def cluster_once(max_faces: int = 5000) -> int:
             cover_uid=cover_row["photo_uid"],
             cover_face_id=cover_row["id"],
         )
-        update_person_cover(person_id, cover_row["photo_uid"])
-        set_person_cover_face(person_id, cover_row["id"])
-        for i in idxs:
-            assign_face_person(rows[i]["id"], person_id)
+        assign_faces_person_bulk([rows[i]["id"] for i in idxs], person_id)
         n_created += 1
         log.debug("cluster -> person %s with %d faces", person_id, len(idxs))
 
