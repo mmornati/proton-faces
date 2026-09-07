@@ -637,7 +637,11 @@ def _fetch_remote_indexer_state() -> dict:
     url = settings.indexer_status_url.rstrip("/") + "/status"
     payload: dict | None = None
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        proxy_headers = {"Accept": "application/json"}
+        token = (settings.indexer_token or "").strip()
+        if token:
+            proxy_headers["X-Indexer-Token"] = token
+        req = urllib.request.Request(url, headers=proxy_headers)
         with urllib.request.urlopen(req, timeout=_INDEXER_PROXY_TIMEOUT) as resp:
             if getattr(resp, "status", 200) != 200:
                 raise RuntimeError(f"indexer status {resp.status}")
@@ -666,14 +670,23 @@ def _indexer_proxy_json(method: str, path: str, body: dict | None = None) -> dic
 
     Used by the admin sync-control endpoints. Raises HTTPException(502) on any
     transport, HTTP or parse failure so the admin UI gets a clean error.
+    Auth: every proxied call carries the shared `INDEXER_TOKEN` in the
+    `X-Indexer-Token` header (issue #42). A missing/empty token is a
+    configuration bug — we surface it as 502 to the admin UI rather than
+    letting the indexer return 401, since the admin can't fix that without
+    a deployment fix anyway.
     """
     url = settings.indexer_status_url.rstrip("/") + path
     data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    token = (settings.indexer_token or "").strip()
+    if token:
+        headers["X-Indexer-Token"] = token
     req = urllib.request.Request(
         url,
         data=data,
         method=method,
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(req, timeout=_INDEXER_PROXY_TIMEOUT) as resp:

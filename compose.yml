@@ -67,9 +67,11 @@ services:
   indexer:
     # Runs the indexing pipeline only: sync / downloader / fullres / workers
     # / cluster / gps / albums. No public HTTP — only an internal status
-    # endpoint on 127.0.0.1:INDEXER_STATUS_PORT that the `app` container
-    # proxies to populate the footer. Same image as `app`, but a different
-    # entry point.
+    # endpoint on 0.0.0.0:INDEXER_STATUS_PORT (reachable from `app` over
+    # the compose `internal` network, no host port published) that the
+    # `app` container proxies to populate the footer. Same image as `app`,
+    # but a different entry point. Every status route except /healthz
+    # requires the shared INDEXER_TOKEN (issue #42) — set it in .env.
     image: ghcr.io/mmornati/proton-faces-app:latest
     restart: unless-stopped
     cap_drop: ["ALL"]
@@ -129,6 +131,11 @@ services:
       # the host; reachable from the `app` service over the compose
       # network via the `indexer` hostname.
       - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
+      # Shared secret required on every status route except /healthz
+      # (issue #42). Compose fails loudly if INDEXER_TOKEN is unset
+      # (`:?` syntax) so a missing token can never silently leave the
+      # control API open. Generate with:  openssl rand -hex 32
+      - INDEXER_TOKEN=${INDEXER_TOKEN:?set INDEXER_TOKEN in .env}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     networks:
       - internal
@@ -165,6 +172,11 @@ services:
       # http://indexer:8091 (internal compose network only — the
       # indexer container does NOT publish this port to the host).
       - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
+      # Same secret the indexer enforces; sent as `X-Indexer-Token` on
+      # every proxy call to /status, /trigger-sync, /sync-config
+      # (issue #42). Compose injects the same env var into both
+      # containers so they cannot drift.
+      - INDEXER_TOKEN=${INDEXER_TOKEN:?set INDEXER_TOKEN in .env}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # Bound ONNX Runtime / OpenMP thread pools to 1 (issue #79). The app
       # container runs CLIP sessions for search; keep them from oversubscribing.
@@ -208,6 +220,11 @@ services:
       - MIN_CLUSTER_SIZE=${MIN_CLUSTER_SIZE:-3}
       - MIN_SAMPLES=${MIN_SAMPLES:-2}
       - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
+      # Demo: fall back to a per-boot ephemeral token if INDEXER_TOKEN is
+      # unset, so a fresh `docker compose --profile demo up` still works
+      # without a .env file. Operators that want stable across-restart
+      # auth can still set INDEXER_TOKEN explicitly.
+      - INDEXER_TOKEN=${INDEXER_TOKEN:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEMO_ADMIN_PASSWORD=${DEMO_ADMIN_PASSWORD:-proton-faces}
       # Bound ONNX Runtime / OpenMP thread pools to 1 (issue #79).
@@ -240,6 +257,9 @@ services:
       - RUN_INDEXER=0
       - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
       - INDEXER_STATUS_URL=http://indexer-demo:8091
+      # Demo: fall back to a per-boot ephemeral token if INDEXER_TOKEN is
+      # unset (matches indexer-demo's policy — see comment above).
+      - INDEXER_TOKEN=${INDEXER_TOKEN:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEMO_ADMIN_PASSWORD=${DEMO_ADMIN_PASSWORD:-proton-faces}
       # Bound ONNX Runtime / OpenMP thread pools to 1 (issue #79).
