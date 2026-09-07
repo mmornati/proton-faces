@@ -340,7 +340,11 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
         ? Math.min(FULL_RES_TIMEOUT_MS, requestedTimeoutMs)
         : FULL_RES_TIMEOUT_MS;
 
-    const downloader = await ctx.photosSdk.getFileDownloader(uid, AbortSignal.timeout(timeoutMs));
+    // Combine the client disconnect signal with the timeout so the download
+    // aborts promptly when the client disconnects (e.g. fast grid scrolling)
+    // instead of holding a DownloadQueue slot until the timeout fires.
+    const combinedSignal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
+    const downloader = await ctx.photosSdk.getFileDownloader(uid, combinedSignal);
 
     if (!isVideo) {
         // Images stream live straight from Proton — no temp file on disk. This
@@ -373,6 +377,13 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
                 } catch (err) {
                     controller.error(err);
                 }
+            },
+            cancel() {
+                // The client disconnected (e.g. browser abandoned an <img> load
+                // while scrolling fast through the grid). The download is already
+                // aborted via request.signal → combinedSignal → getFileDownloader,
+                // but the cancel handler is a belt-and-suspenders guard in case
+                // the stream is cancelled through other paths.
             },
         });
 
