@@ -71,6 +71,8 @@ def _reset_module_state():
     auth._signing_secret.__dict__.pop("_ephemeral", None)
     auth._login_attempts = {}
     cluster._person_means = None
+    cluster._person_means_pids = None
+    cluster._person_means_mat = None
     cluster._person_means_ts = 0.0
     bridge_client._bridge = None
     bridge_client._async_client = None

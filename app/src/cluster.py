@@ -36,13 +36,22 @@ def _decode(row) -> np.ndarray:
 # of minutes without hammering SQLite per photo.
 _PERSON_MEANS_TTL = 300.0
 _person_means: dict[int, np.ndarray] | None = None
+# Parallel arrays stacked once when the cache is built so match_person can do
+# a single matrix-vector product instead of a per-person Python loop. `pids[i]`
+# holds the person_id whose mean embedding is row `i` of `mat`.
+_person_means_pids: np.ndarray | None = None
+_person_means_mat: np.ndarray | None = None
 _person_means_ts = 0.0
 _person_means_lock = threading.Lock()
 
 
-def _person_means_cached() -> dict[int, np.ndarray]:
-    """Lazily load {person_id: L2-normalized mean embedding} with a TTL."""
-    global _person_means, _person_means_ts
+def _person_means_cached():
+    """Lazily load {person_id: L2-normalized mean embedding} with a TTL.
+
+    Builds the stacked (P, 512) matrix once so match_person can vectorize.
+    Returns the dict for compatibility.
+    """
+    global _person_means, _person_means_pids, _person_means_mat, _person_means_ts
     now = time.time()
     if _person_means is not None and now - _person_means_ts < _PERSON_MEANS_TTL:
         return _person_means
@@ -51,6 +60,12 @@ def _person_means_cached() -> dict[int, np.ndarray]:
         if _person_means is not None and now - _person_means_ts < _PERSON_MEANS_TTL:
             return _person_means
         _person_means = person_mean_embeddings()
+        if _person_means:
+            _person_means_pids = np.array(list(_person_means.keys()), dtype=np.int64)
+            _person_means_mat = np.stack(list(_person_means.values())).astype(np.float32)
+        else:
+            _person_means_pids = None
+            _person_means_mat = None
         _person_means_ts = now
         return _person_means
 
@@ -68,16 +83,12 @@ def match_person(embedding: bytes, threshold: float) -> int | None:
     if not means:
         return None
     emb = np.frombuffer(embedding, dtype=np.float32)
-    best_pid = None
-    best_sim = -1.0
-    for pid, mean in means.items():
-        sim = float(mean @ emb)
-        if sim > best_sim:
-            best_sim = sim
-            best_pid = pid
-    if best_pid is None or best_sim < threshold:
+    sims = _person_means_mat @ emb
+    i = int(np.argmax(sims))
+    best_sim = float(sims[i])
+    if best_sim < threshold:
         return None
-    return best_pid
+    return int(_person_means_pids[i])
 
 
 def cluster_once(max_faces: int = 5000) -> int:
