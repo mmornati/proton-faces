@@ -1,3 +1,6 @@
+import threading
+import time
+
 import numpy as np
 
 import cluster
@@ -46,6 +49,72 @@ class TestMatchPerson:
         cluster._person_means = None
         _seed_person("carol", [_emb(0)])
         assert cluster.match_person(_emb(0), threshold=0.45) is not None
+
+
+class TestPersonMeansCacheSWR:
+    def _force_expiry(self):
+        cluster._person_means_ts -= cluster._PERSON_MEANS_TTL + 1
+
+    def _wait_refresh(self, timeout=5.0):
+        deadline = time.time() + timeout
+        while cluster._person_means_refreshing:
+            if time.time() > deadline:
+                raise AssertionError("person-means refresh did not complete")
+            time.sleep(0.01)
+
+    def test_first_load_is_synchronous(self, tmp_db):
+        _seed_person("sync", [_emb(0)])
+        means = cluster._person_means_cached()
+        assert cluster._person_means is means
+        assert cluster._person_means_refreshing is False
+
+    def test_expired_serves_stale_then_background_refresh(self, tmp_db):
+        _seed_person("alice", [_emb(0)])
+        stale = cluster._person_means_cached()
+        self._force_expiry()
+        got = cluster._person_means_cached()
+        assert got is stale
+        assert cluster._person_means_refreshing is True
+        self._wait_refresh()
+        # a new person becomes visible after the background refresh
+        _seed_person("bob", [_emb(1)])
+        self._force_expiry()
+        got = cluster._person_means_cached()
+        self._wait_refresh()
+        pid = cluster.match_person(_emb(1), threshold=0.45)
+        assert pid is not None
+        assert cluster.match_person(_emb(0), threshold=0.45) != pid
+
+    def test_concurrent_expired_callers_share_one_refresh(self, tmp_db, monkeypatch):
+        _seed_person("carol", [_emb(0)])
+        cluster._person_means_cached()
+        self._force_expiry()
+
+        real_build = cluster._build_person_means
+        counter = {"n": 0}
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_build():
+            counter["n"] += 1
+            started.set()
+            assert release.wait(5.0)
+            return real_build()
+
+        monkeypatch.setattr(cluster, "_build_person_means", slow_build)
+        results = []
+        threads = []
+        for _ in range(5):
+            t = threading.Thread(target=lambda: results.append(cluster._person_means_cached()))
+            t.start()
+            threads.append(t)
+        assert started.wait(5.0)
+        for t in threads:
+            t.join(5.0)
+        assert counter["n"] == 1
+        release.set()
+        self._wait_refresh()
+        assert cluster._person_means_refreshing is False
 
 
 class TestClusterOnce:

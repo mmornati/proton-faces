@@ -32,8 +32,10 @@ def _decode(row) -> np.ndarray:
 
 # Cache of person mean embeddings for the worker-time matching path. Only
 # person-assigned faces are loaded (small vs the API's all-face matrix), and
-# the means are tiny, so a short TTL keeps new people visible within a couple
-# of minutes without hammering SQLite per photo.
+# the means are tiny. A full reload fetches ~180 k face embeddings (~360 MB)
+# from SQLite, so it must never stall the recognition workers: once loaded we
+# serve the stale cache immediately while a single background thread refreshes
+# (stale-while-revalidate, same pattern as the API embedding cache).
 _PERSON_MEANS_TTL = 300.0
 _person_means: dict[int, np.ndarray] | None = None
 # Parallel arrays stacked once when the cache is built so match_person can do
@@ -43,31 +45,65 @@ _person_means_pids: np.ndarray | None = None
 _person_means_mat: np.ndarray | None = None
 _person_means_ts = 0.0
 _person_means_lock = threading.Lock()
+_person_means_refreshing = False
+
+
+def _build_person_means() -> dict[int, np.ndarray]:
+    """Fetch {person_id: L2-normalized mean embedding} and refresh the stacked
+    (P, 512) matrix + person-id arrays. Runs WITHOUT `_person_means_lock` so
+    the heavy SQLite fetch doesn't block concurrent readers (only the final
+    swap takes the lock in the caller)."""
+    global _person_means_pids, _person_means_mat
+    means = person_mean_embeddings()
+    if means:
+        _person_means_pids = np.array(list(means.keys()), dtype=np.int64)
+        _person_means_mat = np.stack(list(means.values())).astype(np.float32)
+    else:
+        _person_means_pids = None
+        _person_means_mat = None
+    return means
+
+
+def _background_refresh_person_means() -> None:
+    global _person_means, _person_means_ts, _person_means_refreshing
+    try:
+        means = _build_person_means()
+    except Exception:
+        log.exception("background person-means refresh failed")
+        _person_means_refreshing = False
+        return
+    with _person_means_lock:
+        _person_means = means
+        _person_means_ts = time.time()
+        _person_means_refreshing = False
 
 
 def _person_means_cached():
     """Lazily load {person_id: L2-normalized mean embedding} with a TTL.
 
     Builds the stacked (P, 512) matrix once so match_person can vectorize.
-    Returns the dict for compatibility.
+    Returns the dict for compatibility. Expired caches are served stale while
+    a single background thread refreshes, so workers never stall.
     """
-    global _person_means, _person_means_pids, _person_means_mat, _person_means_ts
+    global _person_means, _person_means_ts, _person_means_refreshing
     now = time.time()
     if _person_means is not None and now - _person_means_ts < _PERSON_MEANS_TTL:
         return _person_means
-    with _person_means_lock:
-        now = time.time()
-        if _person_means is not None and now - _person_means_ts < _PERSON_MEANS_TTL:
-            return _person_means
-        _person_means = person_mean_embeddings()
-        if _person_means:
-            _person_means_pids = np.array(list(_person_means.keys()), dtype=np.int64)
-            _person_means_mat = np.stack(list(_person_means.values())).astype(np.float32)
-        else:
-            _person_means_pids = None
-            _person_means_mat = None
-        _person_means_ts = now
+    if _person_means is None:
+        # First load: synchronous, we have nothing to serve stale.
+        with _person_means_lock:
+            now = time.time()
+            if _person_means is None:
+                _person_means = _build_person_means()
+                _person_means_ts = now
         return _person_means
+    # Expired but we have a stale cache: serve it and refresh in the background.
+    with _person_means_lock:
+        if _person_means_refreshing:
+            return _person_means
+        _person_means_refreshing = True
+    threading.Thread(target=_background_refresh_person_means, daemon=True).start()
+    return _person_means
 
 
 def match_person(embedding: bytes, threshold: float) -> int | None:
