@@ -678,6 +678,22 @@ def assign_face_person(face_id: int, person_id: int) -> None:
         conn.execute("UPDATE faces SET person_id=? WHERE id=?", (person_id, face_id))
 
 
+def assign_faces_person_bulk(face_ids: list[int], person_id: int) -> None:
+    """Assign many faces to `person_id` in a single transaction.
+
+    Chunked so each generated `UPDATE ... IN (...)` stays under SQLite's 999
+    placeholder limit. Runs on one connection/commit instead of one per face.
+    """
+    for start in range(0, len(face_ids), _SQL_CHUNK):
+        chunk = face_ids[start : start + _SQL_CHUNK]
+        qmarks = ",".join("?" * len(chunk))
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE faces SET person_id=? WHERE id IN (" + qmarks + ")",
+                (person_id, *chunk),
+            )
+
+
 def unassign_face(face_id: int) -> None:
     with get_conn() as conn:
         conn.execute("UPDATE faces SET person_id=NULL WHERE id=?", (face_id,))

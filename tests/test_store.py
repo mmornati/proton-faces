@@ -244,6 +244,25 @@ class TestFaces:
         store.unassign_face(fid)
         assert len(store.faces_without_person()) == 1
 
+    def test_assign_faces_person_bulk(self, tmp_db):
+        self._seed_photo_done()
+        fids = [
+            store.insert_face("p1", None, 0.9, json.dumps([0, i, 10, i + 10]), EMB.tobytes())
+            for i in range(3)
+        ]
+        pid = store.create_person("Bulk", "p1", fids[0])
+        store.assign_faces_person_bulk(fids, pid)
+        assert store.faces_without_person() == []
+        from store import faces_for_photo
+
+        assert {f["person_id"] for f in faces_for_photo("p1")} == {pid}
+
+    def test_assign_faces_person_bulk_empty(self, tmp_db):
+        self._seed_photo_done()
+        pid = store.create_person("Bulk", "p1", None)
+        store.assign_faces_person_bulk([], pid)
+        assert store.get_person(pid) is not None
+
     def test_create_and_get_person(self, tmp_db):
         self._seed_photo_done()
         fid = store.insert_face("p1", None, 0.9, "[]", EMB.tobytes())
