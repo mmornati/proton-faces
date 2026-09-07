@@ -78,6 +78,9 @@ describe('isValidUid', () => {
         'a'.repeat(128),
         '0',
         'photo-uid_1',
+        'PNR_abc==~def==',
+        'uid_with=padding==',
+        'a~b',
     ];
     for (const uid of valid) {
         test(`accepts ${JSON.stringify(uid.length > 20 ? uid.slice(0, 20) + '…' : uid)}`, () => {
