@@ -80,6 +80,57 @@ class TestEnsureDefaultAdmin:
         user = store.get_user_by_username("demo")
         assert auth.verify_password("custom-secret", user["password_hash"])
 
+    def test_no_password_in_logs_by_default(self, tmp_db, monkeypatch, caplog):
+        """Default DEMO_LOGIN_LOGS=0: password must never appear in logs."""
+        monkeypatch.delenv("DEMO_ADMIN_PASSWORD", raising=False)
+        monkeypatch.delenv("DEMO_LOGIN_LOGS", raising=False)
+        monkeypatch.delenv("DEMO_HARDENING_MODE", raising=False)
+        monkeypatch.delenv("DEMO_MODE", raising=False)
+        import logging
+        caplog.set_level(logging.WARNING)
+        demo.ensure_default_admin()
+        for record in caplog.records:
+            msg = record.getMessage()
+            assert "proton-faces" not in msg, f"password leaked in log: {msg}"
+            assert "default password" not in msg or "the default password" in msg, (
+                f"password value leaked in log: {msg}"
+            )
+
+    def test_password_logged_when_opt_in(self, tmp_db, monkeypatch, caplog):
+        """DEMO_LOGIN_LOGS=1: log the password source, never the password itself."""
+        monkeypatch.delenv("DEMO_ADMIN_PASSWORD", raising=False)
+        monkeypatch.setenv("DEMO_LOGIN_LOGS", "1")
+        import logging
+        caplog.set_level(logging.WARNING)
+        demo.ensure_default_admin()
+        combined = " ".join(r.getMessage() for r in caplog.records)
+        assert "password source" in combined
+        assert "proton-faces" not in combined, "password value leaked in log"
+
+    def test_loud_warning_when_default_password_and_no_hardening(self, tmp_db, monkeypatch, caplog):
+        """Loud SECURITY warning when default password is used without hardening."""
+        monkeypatch.delenv("DEMO_ADMIN_PASSWORD", raising=False)
+        monkeypatch.delenv("DEMO_HARDENING_MODE", raising=False)
+        monkeypatch.delenv("DEMO_MODE", raising=False)
+        import logging
+        caplog.set_level(logging.WARNING)
+        demo.ensure_default_admin()
+        combined = " ".join(r.getMessage() for r in caplog.records)
+        assert "SECURITY" in combined
+        assert "default password" in combined
+        assert "proton-faces" not in combined, "password value leaked in log"
+
+    def test_no_loud_warning_when_custom_password(self, tmp_db, monkeypatch, caplog):
+        """No SECURITY warning when DEMO_ADMIN_PASSWORD is explicitly set."""
+        monkeypatch.setenv("DEMO_ADMIN_PASSWORD", "custom-secret")
+        monkeypatch.delenv("DEMO_HARDENING_MODE", raising=False)
+        monkeypatch.delenv("DEMO_MODE", raising=False)
+        import logging
+        caplog.set_level(logging.WARNING)
+        demo.ensure_default_admin()
+        combined = " ".join(r.getMessage() for r in caplog.records)
+        assert "SECURITY" not in combined
+
 
 class TestApplyDemoGps:
     def test_applies_gps_once(self, tmp_db):

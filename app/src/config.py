@@ -23,7 +23,7 @@ def demo_hardening_mode() -> bool:
       DEMO_ALLOW_PUBLIC_THUMBS=0       (require signed URLs for /thumb /full /cover /crop)
       DEMO_DISABLE_BACKUPS=1           (404 /api/admin/backup*)
       DEMO_DISABLE_ADMIN_USER_MGMT=1   (hide /api/admin/users from /docs)
-      DEMO_LOGIN_LOGS=0                (don't log demo admin password)
+      DEMO_LOGIN_LOGS=0                (don't log demo admin password source)
 
     Individual flags still take precedence — set them explicitly to override.
     """

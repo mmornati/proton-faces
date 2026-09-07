@@ -250,6 +250,7 @@ def ensure_default_admin() -> None:
             return
 
     password = os.environ.get("DEMO_ADMIN_PASSWORD", "proton-faces")
+    using_default = "DEMO_ADMIN_PASSWORD" not in os.environ
     store.create_user(
         username="demo",
         password_hash=hash_password(password),
@@ -257,18 +258,29 @@ def ensure_default_admin() -> None:
         display_name="Demo Admin",
     )
     # DEMO_LOGIN_LOGS controls whether the password is logged at WARN.
-    # Default ON in pure-demo mode; OFF in DEMO_HARDENING_MODE / public demo.
-    from auth import demo_login_logs
+    # Default OFF. Never log the password itself — only log whether it
+    # came from DEMO_ADMIN_PASSWORD or the default.
+    from auth import demo_hardening_mode, demo_login_logs
     if demo_login_logs():
+        source = "DEMO_ADMIN_PASSWORD" if not using_default else "default"
         log.warning("=" * 60)
         log.warning("DEMO_MODE: created default admin user")
         log.warning("  username: demo")
-        log.warning("  password: %s", password)
+        log.warning("  password source: %s", source)
         log.warning("  (set DEMO_ADMIN_PASSWORD=... to override)")
         log.warning("=" * 60)
     else:
         log.warning("DEMO_MODE: created default admin user (username=demo, "
-                    "password hidden — set DEMO_LOGIN_LOGS=1 to log it)")
+                    "password hidden — set DEMO_LOGIN_LOGS=1 to log source)")
+    # When the default password is in use and hardening is off, emit a
+    # loud startup warning so the operator knows to set DEMO_ADMIN_PASSWORD.
+    if using_default and not demo_hardening_mode():
+        log.warning("=" * 60)
+        log.warning("SECURITY: demo admin using the default password")
+        log.warning("  Set DEMO_ADMIN_PASSWORD=... in your environment to")
+        log.warning("  override. Anyone with network access to this instance")
+        log.warning("  can sign in as 'demo' with the default password.")
+        log.warning("=" * 60)
 
 
 # --- Inject demo-only metadata after sync --------------------------------
