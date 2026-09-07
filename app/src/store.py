@@ -777,52 +777,90 @@ _EMBEDDING_CACHE_TTL = 120.0
 _embedding_cache: dict | None = None
 _embedding_cache_ts = 0.0
 _embedding_cache_lock = threading.Lock()
+_embedding_cache_refreshing = False
 
 
-def _embedding_cache_data() -> dict:
-    """Lazily load all face embeddings into a single matrix + aligned arrays.
+def _build_embedding_cache() -> dict:
+    """Build the face-embedding matrix from the mmap sidecar or the DB.
 
     Prefers the mmap sidecar written by the indexer; falls back to the
     DB-based cache when sidecar files are absent (first run before indexer
-    upgrade).
+    upgrade). Runs without holding `_embedding_cache_lock` so concurrent
+    callers keep serving the stale cache while a refresh builds.
     """
-    global _embedding_cache, _embedding_cache_ts
+    sidecar = read_face_sidecar()
+    if sidecar is not None:
+        return sidecar
+    ids: list[int] = []
+    photo_uids: list[str] = []
+    person_ids: list[int | None] = []
+    vecs: list[np.ndarray] = []
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, photo_uid, person_id, embedding FROM faces ORDER BY id"
+        ).fetchall()
+    for r in rows:
+        ids.append(r["id"])
+        photo_uids.append(r["photo_uid"])
+        person_ids.append(r["person_id"])
+        vecs.append(np.frombuffer(r["embedding"], dtype=np.float32))
+    mat = np.stack(vecs) if vecs else np.zeros((0, 512), dtype=np.float32)
+    return {
+        "ids": np.asarray(ids, dtype=np.int64),
+        "photo_uids": photo_uids,
+        "person_ids": person_ids,
+        "mat": mat,
+    }
+
+
+def _embedding_cache_data() -> dict:
+    """Face-embedding matrix with stale-while-revalidate semantics.
+
+    Returns the cached matrix immediately when fresh. On expiry it serves the
+    stale matrix and, guarded against duplication, starts a background thread
+    that rebuilds and swaps it — so a ~13 s reload never blocks callers. The
+    very first load (empty cache) is synchronous because there is no stale
+    copy to serve. The lock is held only for the pointer/flag swap, not for
+    the build.
+    """
+    global _embedding_cache, _embedding_cache_ts, _embedding_cache_refreshing
     now = time.time()
     if _embedding_cache is not None and now - _embedding_cache_ts < _EMBEDDING_CACHE_TTL:
         return _embedding_cache
+    if _embedding_cache is None:
+        # First-ever load: no stale copy to serve yet, build synchronously.
+        with _embedding_cache_lock:
+            now = time.time()
+            if _embedding_cache is not None and now - _embedding_cache_ts < _EMBEDDING_CACHE_TTL:
+                return _embedding_cache
+            if _embedding_cache is None:
+                _embedding_cache = _build_embedding_cache()
+                _embedding_cache_ts = time.time()
+        return _embedding_cache
+    # Expired but a stale copy exists: return it and kick off one background
+    # refresh. The refreshing flag (set/cleared under the short lock) prevents
+    # a thundering herd of concurrent reloads.
     with _embedding_cache_lock:
         now = time.time()
         if _embedding_cache is not None and now - _embedding_cache_ts < _EMBEDDING_CACHE_TTL:
             return _embedding_cache
-        # Try mmap sidecar first
-        sidecar = read_face_sidecar()
-        if sidecar is not None:
-            _embedding_cache = sidecar
-            _embedding_cache_ts = now
+        if _embedding_cache_refreshing:
             return _embedding_cache
-        # Fallback: build from DB
-        ids: list[int] = []
-        photo_uids: list[str] = []
-        person_ids: list[int | None] = []
-        vecs: list[np.ndarray] = []
-        with get_conn() as conn:
-            rows = conn.execute(
-                "SELECT id, photo_uid, person_id, embedding FROM faces ORDER BY id"
-            ).fetchall()
-        for r in rows:
-            ids.append(r["id"])
-            photo_uids.append(r["photo_uid"])
-            person_ids.append(r["person_id"])
-            vecs.append(np.frombuffer(r["embedding"], dtype=np.float32))
-        mat = np.stack(vecs) if vecs else np.zeros((0, 512), dtype=np.float32)
-        _embedding_cache = {
-            "ids": np.asarray(ids, dtype=np.int64),
-            "photo_uids": photo_uids,
-            "person_ids": person_ids,
-            "mat": mat,
-        }
-        _embedding_cache_ts = now
-        return _embedding_cache
+        _embedding_cache_refreshing = True
+    threading.Thread(target=_background_refresh_embedding, daemon=True).start()
+    return _embedding_cache
+
+
+def _background_refresh_embedding() -> None:
+    """Rebuild the embedding cache off the caller's thread and swap it in."""
+    global _embedding_cache, _embedding_cache_ts, _embedding_cache_refreshing
+    try:
+        built = _build_embedding_cache()
+        with _embedding_cache_lock:
+            _embedding_cache = built
+            _embedding_cache_ts = time.time()
+    finally:
+        _embedding_cache_refreshing = False
 
 
 def similar_faces(embedding: bytes, threshold: float, limit: int = 200) -> list[sqlite3.Row]:

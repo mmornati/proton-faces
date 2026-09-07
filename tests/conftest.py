@@ -64,6 +64,7 @@ def _reset_module_state():
     yield
     store._embedding_cache = None
     store._embedding_cache_ts = 0.0
+    store._embedding_cache_refreshing = False
     store._person_means_cache = None
     store._person_means_cache_ts = 0.0
     store._close_local_conns()

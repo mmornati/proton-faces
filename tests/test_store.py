@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -328,6 +330,87 @@ class TestSimilarFaces:
         store.set_photo_done("p1", "t.webp", None, None)
         store.insert_face("p1", None, 0.9, "[]", v.tobytes())
         assert store.similar_faces(v.tobytes(), threshold=1.5) == []
+
+
+class TestEmbeddingCacheSWR:
+    def _seed_face(self, uid, seed):
+        store.upsert_photos([_photo(uid)])
+        store.set_photo_done(uid, f"thumbs/{uid}.webp", None, None)
+        return store.insert_face(uid, None, 0.9, "[]", _embedding(seed).tobytes())
+
+    def _force_expiry(self):
+        store._embedding_cache_ts -= store._EMBEDDING_CACHE_TTL + 1
+
+    def _wait_refresh(self, timeout=5.0):
+        deadline = time.time() + timeout
+        while store._embedding_cache_refreshing and time.time() < deadline:
+            time.sleep(0.01)
+
+    def test_first_load_is_synchronous(self, tmp_db):
+        self._seed_face("p1", 0.1)
+        assert not store._embedding_cache_refreshing
+        data = store._embedding_cache_data()
+        assert data["mat"].shape[0] == 1
+        assert not store._embedding_cache_refreshing
+
+    def test_expired_serves_stale_then_background_refresh_swaps(self, tmp_db):
+        self._seed_face("p1", 0.1)
+        first = store._embedding_cache_data()
+        assert first["mat"].shape[0] == 1
+        self._force_expiry()
+        stale = store._embedding_cache_data()
+        # The expired call must return the existing object immediately (no
+        # blocking rebuild), and kick off a background refresh.
+        assert stale is first
+        assert store._embedding_cache_refreshing
+        self._wait_refresh()
+        # A new face added after expiry is picked up by the swap.
+        self._seed_face("p2", 0.2)
+        self._force_expiry()
+        store._embedding_cache_data()
+        self._wait_refresh()
+        assert store._embedding_cache["mat"].shape[0] == 2
+
+    def test_concurrent_expired_callers_share_one_refresh(self, tmp_db, monkeypatch):
+        self._seed_face("p1", 0.1)
+        store._embedding_cache_data()
+        self._force_expiry()
+        real_build = store._build_embedding_cache
+        started = threading.Event()
+        release = threading.Event()
+        builds = {"n": 0}
+
+        def slow_build():
+            builds["n"] += 1
+            started.set()
+            release.wait(5)
+            return real_build()
+
+        monkeypatch.setattr(store, "_build_embedding_cache", slow_build)
+        results = []
+        errors = []
+
+        def call():
+            try:
+                results.append(store._embedding_cache_data())
+            except Exception as exc:  # pragma: no cover - failure surface
+                errors.append(exc)
+
+        threads = [threading.Thread(target=call) for _ in range(5)]
+        for t in threads:
+            t.start()
+        # Wait until the single background refresh is in-flight and blocked.
+        assert started.wait(5)
+        for t in threads:
+            t.join()
+        assert not errors
+        # Every caller got the stale cache and only one refresh was launched.
+        assert all(r is store._embedding_cache for r in results)
+        assert builds["n"] == 1
+        # Let the refresh finish and swap in the rebuilt cache.
+        release.set()
+        self._wait_refresh()
+        assert store._embedding_cache["mat"].shape[0] == 1
 
 
 class TestPersonMeans:
