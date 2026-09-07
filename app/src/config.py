@@ -106,6 +106,14 @@ class Settings:
         self.indexer_status_url = os.environ.get(
             "INDEXER_STATUS_URL", f"http://indexer:{self.indexer_status_port}"
         )
+        # Shared secret the `app` container sends in `X-Indexer-Token` when
+        # proxying /status, /trigger-sync and /sync-config to the indexer
+        # (issue #42). Must be the same value as the indexer's env var;
+        # compose injects both from a single `INDEXER_TOKEN` host var so
+        # they cannot drift. Empty in tests (the test fixture sets it
+        # explicitly on the indexer side; the app proxy reads it on every
+        # call so monkeypatch.setattr takes effect without a reload).
+        self.indexer_token = os.environ.get("INDEXER_TOKEN", "")
 
         # Derived paths
         self.work_dir = self.data_dir / "work"

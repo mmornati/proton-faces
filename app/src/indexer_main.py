@@ -70,9 +70,18 @@ def main() -> None:
     # 0.0.0.0 so the `app` service on the compose `internal` network can
     # reach it at http://indexer:8091/status. There is no host port
     # mapping for 8091 in compose.yml, so this is still not reachable
-    # from outside the compose network. Daemon thread so it never blocks
-    # shutdown.
+    # from outside the compose network. Every route except /healthz is
+    # gated on the shared `INDEXER_TOKEN` secret (issue #42); missing
+    # token outside DEMO_MODE raises RuntimeError below.
     status_port = settings.indexer_status_port
+
+    # Fail closed if the operator forgot to set INDEXER_TOKEN — never
+    # silently leave the control API open. _indexer_token() in
+    # indexer_status does the same check, but validating here surfaces
+    # the misconfig in the main process's log at startup instead of as
+    # a 500 from the status server thread.
+    import indexer_status  # local import to avoid pulling fastapi on the CLI helpers
+    indexer_status._indexer_token()
 
     def _run_status_server() -> None:
         cfg = uvicorn.Config(
