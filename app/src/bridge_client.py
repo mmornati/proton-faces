@@ -255,6 +255,37 @@ class BridgeClient:
             raise BridgeTransientError(resp.status_code, msg or "upstream transient error", retry_after)
         return resp
 
+    async def full_photo_async(self, uid: str, range_header: str | None = None,
+                                timeout_ms: int | None = None) -> httpx.Response:
+        """Async version of ``full_photo`` — streams via ``httpx.AsyncClient``.
+
+        Same semantics, timeouts, and transient-error handling as the sync
+        version, but uses a module-level ``AsyncClient`` singleton so the
+        caller can ``await`` without blocking a threadpool thread.
+
+        The 30s header timeout is enforced via ``asyncio.wait_for`` so it
+        doesn't consume a thread; the body read timeout is ``None`` (stream).
+        """
+        if not _is_valid_uid(uid):
+            raise ValueError(f"invalid photo uid: {uid!r}")
+        headers = self._headers({"Range": range_header} if range_header else {})
+        if timeout_ms:
+            headers["X-Timeout-Ms"] = str(timeout_ms)
+        client = _get_async_client()
+        req = client.build_request(
+            "GET",
+            f"{self.base_url}/photo/{uid}/full",
+            headers=headers,
+            timeout=httpx.Timeout(30.0, connect=10.0, read=None, write=None),
+        )
+        resp = await client.send(req, stream=True)
+        if resp.status_code in (429, 502, 503):
+            retry_after = _parse_retry_after(resp.headers.get("Retry-After") or resp.headers.get("retry-after"))
+            await resp.aclose()
+            msg = resp.headers.get("X-Error-Message", "")
+            raise BridgeTransientError(resp.status_code, msg or "upstream transient error", retry_after)
+        return resp
+
     def close(self) -> None:
         self._client.close()
 
@@ -296,6 +327,18 @@ class BridgeClient:
 
 
 _bridge: BridgeClient | "DemoBridge" | None = None  # noqa: F821
+
+# Module-level AsyncClient singleton for the async full_photo path.
+# Uses the same timeouts as the sync client (120s default, overridden
+# per-request in full_photo_async). Tests reset this to None.
+_async_client: httpx.AsyncClient | None = None
+
+
+def _get_async_client() -> httpx.AsyncClient:
+    global _async_client
+    if _async_client is None:
+        _async_client = httpx.AsyncClient(timeout=120.0)
+    return _async_client
 
 
 def get_bridge():

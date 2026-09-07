@@ -45,7 +45,17 @@ class FakeResp:
         for i in range(0, len(self._data), chunk_size):
             yield self._data[i:i + chunk_size]
 
+    async def aiter_bytes(self, chunk_size: int = 65536):
+        for i in range(0, len(self._data), chunk_size):
+            yield self._data[i:i + chunk_size]
+
+    async def aread(self, max_bytes: int = -1) -> bytes:
+        return self._data[:max_bytes]
+
     def close(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
         pass
 
 
@@ -78,6 +88,9 @@ class FakeBridge:
     def full_photo(self, uid, range_header=None, timeout_ms=None):
         return FakeResp(self._full_data)
 
+    async def full_photo_async(self, uid, range_header=None, timeout_ms=None):
+        return FakeResp(self._full_data)
+
     def cache_status(self):
         return {"ok": True, "files": [], "uptimeSec": 0}
 
@@ -91,6 +104,9 @@ class FailingFullBridge(FakeBridge):
         self._exc = exc
 
     def full_photo(self, uid, range_header=None, timeout_ms=None):
+        raise self._exc
+
+    async def full_photo_async(self, uid, range_header=None, timeout_ms=None):
         raise self._exc
 
 
