@@ -61,8 +61,11 @@ CREATE TABLE IF NOT EXISTS people (
     name          TEXT,
     cover_uid     TEXT,          -- representative photo uid
     cover_face_id INTEGER,       -- representative face id (for face-crop covers)
-    created       INTEGER
+    created       INTEGER,
+    face_count    INTEGER NOT NULL DEFAULT 0,   -- denormalized: COUNT(faces.person_id)
+    photo_count   INTEGER NOT NULL DEFAULT 0    -- denormalized: COUNT(DISTINCT photo_uid)
 );
+CREATE INDEX IF NOT EXISTS idx_people_photo_count ON people(photo_count DESC);
 
 CREATE TABLE IF NOT EXISTS faces (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -273,6 +276,24 @@ def migrate(conn: sqlite3.Connection) -> None:
            )
            WHERE cover_face_id IS NULL
              AND EXISTS (SELECT 1 FROM faces f WHERE f.person_id = people.id)"""
+    )
+    # Denormalized face/photo counts (issue #81). One-time backfill; idempotent
+    # because we only recount people whose cached counts are 0 while they still
+    # own faces, plus people who own faces but have a 0 count. The columns
+    # default to 0 on new rows, so this only fixes pre-existing data.
+    if "face_count" not in cols:
+        conn.execute("ALTER TABLE people ADD COLUMN face_count INTEGER NOT NULL DEFAULT 0")
+    if "photo_count" not in cols:
+        conn.execute("ALTER TABLE people ADD COLUMN photo_count INTEGER NOT NULL DEFAULT 0")
+    if "idx_people_photo_count" not in {r["name"] for r in conn.execute("PRAGMA index_list(people)")}:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_people_photo_count ON people(photo_count DESC)")
+    conn.execute(
+        """UPDATE people
+           SET face_count = (SELECT COUNT(*) FROM faces f WHERE f.person_id = people.id),
+               photo_count = (SELECT COUNT(DISTINCT f.photo_uid) FROM faces f
+                              WHERE f.person_id = people.id AND f.photo_uid IS NOT NULL)
+           WHERE face_count = 0
+              OR photo_count = 0"""
     )
     acols = {r["name"] for r in conn.execute("PRAGMA table_info(albums)")}
     if "start_ts" not in acols:
@@ -628,13 +649,34 @@ def stats() -> dict:
 
 # --- faces & people -------------------------------------------------------
 
+def _recount_person(person_id: int) -> None:
+    """Refresh the denormalized face_count / photo_count for one person.
+
+    Cheap per-person correlated recount, used at every face<->person write
+    site so `all_people()` and `get_person()` can read cached counts instead
+    of running an expensive join + COUNT(DISTINCT) on every request.
+    """
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE people
+               SET face_count = (SELECT COUNT(*) FROM faces f WHERE f.person_id = people.id),
+                   photo_count = (SELECT COUNT(DISTINCT f.photo_uid) FROM faces f
+                                  WHERE f.person_id = people.id AND f.photo_uid IS NOT NULL)
+               WHERE id = ?""",
+            (person_id,),
+        )
+
+
 def insert_face(photo_uid: str, person_id: int | None, confidence: float, bbox: list, embedding: bytes) -> int:
     with get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO faces (photo_uid, person_id, confidence, bbox, embedding) VALUES (?,?,?,?,?)",
             (photo_uid, person_id, confidence, json.dumps(bbox), sqlite3.Binary(embedding)),
         )
-        return cur.lastrowid
+        fid = cur.lastrowid
+    if person_id is not None:
+        _recount_person(person_id)
+    return fid
 
 
 def count_faces_for_photo(photo_uid: str) -> int:
@@ -675,7 +717,12 @@ def faces_without_person(limit: int = 5000) -> list[sqlite3.Row]:
 
 def assign_face_person(face_id: int, person_id: int) -> None:
     with get_conn() as conn:
+        row = conn.execute("SELECT person_id FROM faces WHERE id=?", (face_id,)).fetchone()
+        old = row["person_id"] if row else None
         conn.execute("UPDATE faces SET person_id=? WHERE id=?", (person_id, face_id))
+    if old is not None and old != person_id:
+        _recount_person(old)
+    _recount_person(person_id)
 
 
 def assign_faces_person_bulk(face_ids: list[int], person_id: int) -> None:
@@ -692,11 +739,17 @@ def assign_faces_person_bulk(face_ids: list[int], person_id: int) -> None:
                 "UPDATE faces SET person_id=? WHERE id IN (" + qmarks + ")",
                 (person_id, *chunk),
             )
+    if face_ids:
+        _recount_person(person_id)
 
 
 def unassign_face(face_id: int) -> None:
     with get_conn() as conn:
+        row = conn.execute("SELECT person_id FROM faces WHERE id=?", (face_id,)).fetchone()
+        old = row["person_id"] if row else None
         conn.execute("UPDATE faces SET person_id=NULL WHERE id=?", (face_id,))
+    if old is not None:
+        _recount_person(old)
 
 
 def create_person(name: str | None, cover_uid: str | None, cover_face_id: int | None = None) -> int:
@@ -723,11 +776,7 @@ def set_person_cover_face(person_id: int, cover_face_id: int) -> None:
 
 def get_person(person_id: int) -> sqlite3.Row | None:
     with get_conn() as conn:
-        return conn.execute(
-            "SELECT p.*, COUNT(f.id) AS face_count, COUNT(DISTINCT f.photo_uid) AS photo_count "
-            "FROM people p LEFT JOIN faces f ON f.person_id = p.id WHERE p.id=? GROUP BY p.id",
-            (person_id,),
-        ).fetchone()
+        return conn.execute("SELECT p.* FROM people p WHERE p.id=?", (person_id,)).fetchone()
 
 
 def people_by_ids(person_ids: list[int]) -> list[sqlite3.Row]:
@@ -744,9 +793,7 @@ def people_by_ids(person_ids: list[int]) -> list[sqlite3.Row]:
     qmarks = ",".join("?" * len(person_ids))
     with get_conn() as conn:
         return conn.execute(
-            "SELECT p.*, COUNT(f.id) AS face_count, COUNT(DISTINCT f.photo_uid) AS photo_count "
-            "FROM people p LEFT JOIN faces f ON f.person_id = p.id "
-            f"WHERE p.id IN ({qmarks}) GROUP BY p.id",
+            f"SELECT p.* FROM people p WHERE p.id IN ({qmarks})",
             person_ids,
         ).fetchall()
 
@@ -949,6 +996,7 @@ def merge_person(source_id: int, target_id: int) -> None:
             "UPDATE faces SET person_id=? WHERE person_id=?", (target_id, source_id)
         )
         conn.execute("DELETE FROM people WHERE id=?", (source_id,))
+    _recount_person(target_id)
 
 
 # SQLite caps parameter placeholders at 999; keep the chunk small enough that
@@ -1017,7 +1065,8 @@ def merge_people_bulk(source_ids: list[int], target_id: int) -> int:
             chunk = ids[start : start + _SQL_CHUNK]
             qmarks = ",".join("?" * len(chunk))
             conn.execute("DELETE FROM people WHERE id IN (" + qmarks + ")", chunk)
-        return merged
+    _recount_person(target_id)
+    return merged
 
 
 def face_ids_for_people(person_ids: list[int]) -> list[int]:
@@ -1149,15 +1198,14 @@ def all_people(q: str | None = None, limit: int | None = None, offset: int = 0) 
     """
     sql = (
         "SELECT p.id, p.name, p.cover_uid, p.cover_face_id, "
-        "       COUNT(f.id) AS face_count, "
-        "       COUNT(DISTINCT f.photo_uid) AS photo_count "
-        "FROM people p LEFT JOIN faces f ON f.person_id = p.id "
+        "       p.face_count, p.photo_count "
+        "FROM people p "
     )
     params: list = []
     if q:
         sql += "WHERE LOWER(p.name) LIKE LOWER(?) "
         params.append(f"%{q}%")
-    sql += "GROUP BY p.id ORDER BY photo_count DESC, p.id ASC"
+    sql += "ORDER BY p.photo_count DESC, p.id ASC"
     if limit is not None:
         sql += " LIMIT ? OFFSET ?"
         params += [limit, offset]

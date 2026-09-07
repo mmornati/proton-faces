@@ -54,6 +54,25 @@ class TestInitAndUpsert:
             }
         assert {"photos", "people", "faces", "clips", "albums", "users", "auth_tokens"} <= tables
 
+    def test_migrate_backfills_denormalized_counts(self, tmp_db):
+        # Simulate a pre-#81 row whose counts were never populated (or were
+        # zeroed). migrate() must recount it and create the sort index.
+        store.upsert_photos([_photo("p1"), _photo("p2")])
+        store.set_photo_done("p1", "t1.webp", None, None)
+        store.set_photo_done("p2", "t2.webp", None, None)
+        pid = store.create_person("Bob", "p1", None)
+        store.insert_face("p1", pid, 0.9, "[]", EMB.tobytes())
+        store.insert_face("p2", pid, 0.9, "[]", EMB.tobytes())
+        with store.get_conn() as conn:
+            conn.execute("UPDATE people SET face_count=0, photo_count=0 WHERE id=?", (pid,))
+            store.migrate(conn)
+            row = conn.execute(
+                "SELECT face_count, photo_count FROM people WHERE id=?", (pid,)
+            ).fetchone()
+            assert (row["face_count"], row["photo_count"]) == (2, 2)
+            idx = {r[1] for r in conn.execute("PRAGMA index_list(people)")}
+        assert "idx_people_photo_count" in idx
+
     def test_upsert_new_photo(self, tmp_db):
         assert store.upsert_photos([_photo()]) == 1
         row = store.get_photo("p1")
@@ -326,6 +345,91 @@ class TestFaces:
         rows = store.unassigned_faces()
         assert len(rows) == 1
         assert rows[0]["thumb_path"] == "thumbs/p1.webp"
+
+
+class TestDenormalizedCounts:
+    """Denormalized people.face_count / photo_count (issue #81) stay correct
+    across every face<->person write site."""
+
+    def _seed_photo_done(self, uid):
+        store.upsert_photos([_photo(uid)])
+        store.set_photo_done(uid, f"thumbs/{uid}.webp", None, None)
+
+    def test_counts_follow_insert_assign_unassign(self, tmp_db):
+        self._seed_photo_done("p1")
+        self._seed_photo_done("p2")
+        pid = store.create_person("Carol", "p1", None)
+        assert (store.get_person(pid)["face_count"], store.get_person(pid)["photo_count"]) == (0, 0)
+        f1 = store.insert_face("p1", pid, 0.9, "[]", EMB.tobytes())
+        store.insert_face("p2", pid, 0.9, "[]", EMB.tobytes())
+        # same person, same photo -> 2 faces, 1 distinct photo
+        store.insert_face("p1", pid, 0.9, "[]", EMB.tobytes())
+        assert (store.get_person(pid)["face_count"], store.get_person(pid)["photo_count"]) == (3, 2)
+        store.unassign_face(f1)
+        assert (store.get_person(pid)["face_count"], store.get_person(pid)["photo_count"]) == (2, 2)
+        store.assign_face_person(f1, pid)
+        assert (store.get_person(pid)["face_count"], store.get_person(pid)["photo_count"]) == (3, 2)
+
+    def test_counts_follow_assign_bulk(self, tmp_db):
+        self._seed_photo_done("p1")
+        self._seed_photo_done("p2")
+        pid = store.create_person("Bulk", "p1", None)
+        fids = []
+        for uid in ["p1", "p1", "p2"]:
+            fids.append(store.insert_face(uid, None, 0.9, "[]", EMB.tobytes()))
+        store.assign_faces_person_bulk(fids, pid)
+        assert (store.get_person(pid)["face_count"], store.get_person(pid)["photo_count"]) == (3, 2)
+
+    def test_counts_follow_assign_move_between_people(self, tmp_db):
+        self._seed_photo_done("p1")
+        a = store.create_person("A", "p1", None)
+        b = store.create_person("B", "p1", None)
+        f1 = store.insert_face("p1", a, 0.9, "[]", EMB.tobytes())
+        store.insert_face("p1", b, 0.9, "[]", EMB.tobytes())
+        assert (store.get_person(a)["face_count"], store.get_person(a)["photo_count"]) == (1, 1)
+        assert (store.get_person(b)["face_count"], store.get_person(b)["photo_count"]) == (1, 1)
+        # move f1 from a -> b: a drops to 0, b rises to 2
+        store.assign_face_person(f1, b)
+        assert (store.get_person(a)["face_count"], store.get_person(a)["photo_count"]) == (0, 0)
+        assert (store.get_person(b)["face_count"], store.get_person(b)["photo_count"]) == (2, 1)
+
+    def test_counts_follow_merge_person(self, tmp_db):
+        self._seed_photo_done("p1")
+        self._seed_photo_done("p2")
+        f1 = store.insert_face("p1", None, 0.9, "[]", EMB.tobytes())
+        f2 = store.insert_face("p2", None, 0.9, "[]", EMB.tobytes())
+        a = store.create_person("A", "p1", f1)
+        b = store.create_person("B", "p2", f2)
+        store.assign_face_person(f1, a)
+        store.assign_face_person(f2, b)
+        store.merge_person(b, a)
+        assert store.get_person(b) is None
+        assert (store.get_person(a)["face_count"], store.get_person(a)["photo_count"]) == (2, 2)
+
+    def test_counts_follow_merge_people_bulk(self, tmp_db):
+        self._seed_photo_done("p1")
+        self._seed_photo_done("p2")
+        self._seed_photo_done("p3")
+        target = store.create_person("T", "p1", None)
+        sources = []
+        for uid in ["p1", "p2", "p3"]:
+            pid = store.create_person(uid, uid, None)
+            sources.append(pid)
+            store.insert_face(uid, pid, 0.9, "[]", EMB.tobytes())
+        merged = store.merge_people_bulk(sources, target)
+        assert merged == 3
+        assert (store.get_person(target)["face_count"], store.get_person(target)["photo_count"]) == (3, 3)
+
+    def test_all_people_uses_denormalized_counts(self, tmp_db):
+        self._seed_photo_done("p1")
+        self._seed_photo_done("p2")
+        pid = store.create_person("Zed", "p1", None)
+        store.insert_face("p1", pid, 0.9, "[]", EMB.tobytes())
+        store.insert_face("p1", pid, 0.9, "[]", EMB.tobytes())
+        store.insert_face("p2", pid, 0.9, "[]", EMB.tobytes())
+        rows = store.all_people()
+        row = next(r for r in rows if r["id"] == pid)
+        assert (row["face_count"], row["photo_count"]) == (3, 2)
 
 
 class TestSimilarFaces:
