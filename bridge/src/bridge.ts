@@ -41,6 +41,29 @@ import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseRange, STA
 const PORT = Number(process.env.PORT ?? 8090);
 const DATA_DIR = process.env.DATA_DIR ?? '/data';
 const FULL_RES_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_FULL_RES_TIMEOUT_MS ?? 5 * 60_000);
+const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN ?? '';
+
+// Constant-time comparison to prevent timing attacks on the bridge token.
+// Returns true when both strings are equal, false otherwise.
+function timingSafeEqual(a: string, b: string): boolean {
+    if (a.length !== b.length) return false;
+    let result = 0;
+    for (let i = 0; i < a.length; i++) {
+        result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return result === 0;
+}
+
+// Validate the BRIDGE_TOKEN on every request except GET /health (needed for
+// compose healthchecks). Returns true when the request is authorized.
+function isAuthorized(request: Request, url: URL): boolean {
+    // /health is always open for compose healthchecks
+    if (url.pathname === '/health') return true;
+    // No token configured = auth disabled (backward compat for dev setups)
+    if (!BRIDGE_TOKEN) return true;
+    const header = request.headers.get('authorization') ?? '';
+    return timingSafeEqual(header, `Bearer ${BRIDGE_TOKEN}`);
+}
 
 // SDK writes its on-disk caches into DATA_DIR (PROTON_DRIVE_CACHE_DIR=/data
 // in the Dockerfile). Two known files today — crypto keys and encrypted
@@ -544,6 +567,10 @@ async function main(): Promise<void> {
         maxRequestBodySize: 1 << 20,
         async fetch(request: Request) {
             const url = new URL(request.url);
+            // Auth check on every route except GET /health (compose healthcheck).
+            if (!isAuthorized(request, url)) {
+                return Response.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+            }
             try {
                 if (url.pathname === '/health') {
                     if (request.method !== 'GET') {

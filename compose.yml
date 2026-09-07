@@ -46,6 +46,9 @@ services:
       - DATA_DIR=/data
       - PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file
       - PROTON_DRIVE_CACHE_DIR=/data
+      # Shared secret for bridge HTTP auth. All services on the internal
+      # network must use the same token. Generate one with: openssl rand -hex 32
+      - BRIDGE_TOKEN=${BRIDGE_TOKEN:-}
       # E2E manifest/address-key verification is DISABLED by default: the patched
       # addresses.ts imports the armored public key without verifying its key token,
       # and fileDownloader.ts skips verifyManifest(). Deliberate workaround for a
@@ -96,6 +99,7 @@ services:
       - MODELS_DIR=/models
       - PHOTOS_DIR=/takeout
       - BRIDGE_URL=http://proton-bridge:8090
+      - BRIDGE_TOKEN=${BRIDGE_TOKEN:-}
       # Bumped 300s → 600s while Proton Drive recovers from the Sep 1 partial
       # outage. Revert to 300 once stable if you want faster sync.
       - SYNC_INTERVAL=${SYNC_INTERVAL:-600}
@@ -157,6 +161,7 @@ services:
       - MODELS_DIR=/models
       - PHOTOS_DIR=/takeout
       - BRIDGE_URL=http://proton-bridge:8090
+      - BRIDGE_TOKEN=${BRIDGE_TOKEN:-}
       - PORT=8080
       # RUN_INDEXER=0 -> serve API only; the `indexer` container handles
       # the pipeline. Flip to 1 to fall back to the legacy in-process layout.
