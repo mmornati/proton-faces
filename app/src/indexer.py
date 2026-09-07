@@ -31,6 +31,7 @@ from cluster import cluster_once, match_person
 from config import settings
 from faces import detect_faces
 from geocode import reverse_geocode_many
+from sidecar import write_clip_sidecar, write_face_sidecar
 from store import (
     backfill_fullres_images,
     claim_photo_for_download,
@@ -98,6 +99,73 @@ _SYNC_CONFIG_KEYS = (
     "deletion_threshold",
     "last_full_scan",
 )
+
+# --- debounced sidecar writer ----------------------------------------------
+# The indexer rewrites the mmap sidecar files after face insert batches and
+# cluster runs. A debounce timer prevents redundant writes when many faces
+# are inserted in quick succession.
+
+_sidcar_dirty = False
+_sidcar_last_write = 0.0
+_sidcar_debounce_sec = 60.0
+_sidcar_lock = threading.Lock()
+
+
+def _sidcar_mark_dirty() -> None:
+    """Mark the sidecar as needing a rewrite."""
+    global _sidcar_dirty
+    with _sidcar_lock:
+        _sidcar_dirty = True
+
+
+def _sidcar_flush() -> None:
+    """Rewrite sidecar files if dirty and debounce period has elapsed."""
+    global _sidcar_dirty, _sidcar_last_write
+    now = time.time()
+    with _sidcar_lock:
+        if not _sidcar_dirty:
+            return
+        if now - _sidcar_last_write < _sidcar_debounce_sec:
+            return
+        _sidcar_dirty = False
+        _sidcar_last_write = now
+    try:
+        _sidcar_write_face()
+        _sidcar_write_clip()
+    except Exception:
+        log.warning("sidecar write failed", exc_info=True)
+
+
+def _sidcar_write_face() -> None:
+    """Write face embedding sidecar from the current DB state."""
+    from store import all_face_rows
+
+    rows = all_face_rows()
+    if not rows:
+        return
+    ids: list[int] = []
+    photo_uids: list[str] = []
+    person_ids: list[int | None] = []
+    vecs: list[np.ndarray] = []
+    for r in rows:
+        ids.append(r["id"])
+        photo_uids.append(r["photo_uid"])
+        person_ids.append(r["person_id"])
+        vecs.append(np.frombuffer(r["embedding"], dtype=np.float32))
+    mat = np.stack(vecs)
+    write_face_sidecar(ids, photo_uids, person_ids, mat)
+
+
+def _sidcar_write_clip() -> None:
+    """Write CLIP matrix sidecar from the current DB state."""
+    from store import all_clips
+
+    rows = all_clips()
+    if not rows:
+        return
+    uids = [r["photo_uid"] for r in rows]
+    X = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
+    write_clip_sidecar(uids, X)
 
 
 def _sync_config_path() -> Path:
@@ -554,6 +622,10 @@ def _process_one(uid: str) -> None:
     if clip_vec is not None:
         insert_clip(uid, clip_vec.tobytes())
 
+    # Mark sidecar dirty when new faces or clips were added
+    if not existing_faces or clip_vec is not None:
+        _sidcar_mark_dirty()
+
     set_photo_done(uid, final.name, gps, place)
     log.debug(
         "processed %s: %d faces (kept=%d, matched=%d), clip=%s",
@@ -775,6 +847,7 @@ def _cluster_loop() -> None:
         try:
             cluster_once()
             _runtime["last_cluster"] = time.time()
+            _sidcar_mark_dirty()
         except Exception as exc:  # pragma: no cover
             log.exception("cluster loop error: %s", exc)
 
@@ -949,6 +1022,9 @@ def _sync_loop() -> None:
             else:
                 set_sync_config({"last_full_scan": time.time()})
         # else: nothing new — loop around and sleep until the next wakeup.
+
+        # Flush sidecar if dirty (debounced)
+        _sidcar_flush()
 
 
 # --- GPS enrichment (local Takeout sidecars) ------------------------------

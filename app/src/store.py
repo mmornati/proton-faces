@@ -11,6 +11,7 @@ from contextlib import contextmanager
 import numpy as np
 
 from config import settings
+from sidecar import read_face_sidecar
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS photos (
@@ -779,7 +780,12 @@ _embedding_cache_lock = threading.Lock()
 
 
 def _embedding_cache_data() -> dict:
-    """Lazily load all face embeddings into a single matrix + aligned arrays."""
+    """Lazily load all face embeddings into a single matrix + aligned arrays.
+
+    Prefers the mmap sidecar written by the indexer; falls back to the
+    DB-based cache when sidecar files are absent (first run before indexer
+    upgrade).
+    """
     global _embedding_cache, _embedding_cache_ts
     now = time.time()
     if _embedding_cache is not None and now - _embedding_cache_ts < _EMBEDDING_CACHE_TTL:
@@ -788,6 +794,13 @@ def _embedding_cache_data() -> dict:
         now = time.time()
         if _embedding_cache is not None and now - _embedding_cache_ts < _EMBEDDING_CACHE_TTL:
             return _embedding_cache
+        # Try mmap sidecar first
+        sidecar = read_face_sidecar()
+        if sidecar is not None:
+            _embedding_cache = sidecar
+            _embedding_cache_ts = now
+            return _embedding_cache
+        # Fallback: build from DB
         ids: list[int] = []
         photo_uids: list[str] = []
         person_ids: list[int | None] = []
