@@ -150,6 +150,7 @@ _STATIC = Path(__file__).parent / "static"
 # TTL cache for the (expensive) duplicates computation.
 _DUP_CACHE_TTL = 30.0
 _dups_cache: tuple[float, dict] | None = None
+_dups_cache_lock = threading.Lock()
 
 # TTL caches (cheap, frequently re-requested on navigation).
 _ANCHORS_CACHE_TTL = 60.0
@@ -157,6 +158,7 @@ _anchors_cache: tuple[float, dict] | None = None
 
 _PEOPLE_CACHE_TTL = 10.0
 _people_cache: tuple[str | None, float, list] | None = None  # (q, ts, full list)
+_people_cache_lock = threading.Lock()
 
 # Hard cap on how long `/api/photos/{uid}/full` is allowed to take before we
 # give up and return 504 to the user. The bridge's /photo/{uid}/full endpoint
@@ -205,9 +207,11 @@ _CLIP_CACHE_TTL = 60.0
 # doesn't re-pay for 4× COUNT(*) + GROUP BY + a 44 k stat() walk every 15 s.
 _STATS_CACHE_TTL = 5.0
 _stats_cache: tuple[float, dict] | None = None
+_stats_cache_lock = threading.Lock()
 _DIRSIZE_CACHE_TTL = 300.0
 _dirsize_cache: dict[str, tuple[float, int]] = {}
 _clip_cache: tuple[float, int, list[str], np.ndarray] | None = None
+_clip_cache_lock = threading.Lock()
 
 # Disk + lock for face crops (computed lazily, then served as plain files).
 _crop_lock = threading.Lock()
@@ -547,15 +551,20 @@ def _cached_stats() -> dict:
     now = time.time()
     if _stats_cache is not None and now - _stats_cache[0] < _STATS_CACHE_TTL:
         return _stats_cache[1]
-    payload = stats()
-    _stats_cache = (now, payload)
-    return payload
+    with _stats_cache_lock:
+        now = time.time()
+        if _stats_cache is not None and now - _stats_cache[0] < _STATS_CACHE_TTL:
+            return _stats_cache[1]
+        payload = stats()
+        _stats_cache = (now, payload)
+        return payload
 
 
 # Cached bridge health so the periodic /api/status poll doesn't pay a
 # bridge HTTP round-trip (measured ~100-300 ms) on every request.
 _BRIDGE_HEALTH_CACHE_TTL = 30.0
 _bridge_health_cache: tuple[float, tuple[bool, bool]] | None = None
+_bridge_health_cache_lock = threading.Lock()
 
 
 def _cached_bridge_health() -> tuple[bool, bool]:
@@ -564,14 +573,18 @@ def _cached_bridge_health() -> tuple[bool, bool]:
     now = time.time()
     if _bridge_health_cache is not None and now - _bridge_health_cache[0] < _BRIDGE_HEALTH_CACHE_TTL:
         return _bridge_health_cache[1]
-    try:
-        b = get_bridge().health()
-        state = (bool(b.get("ok")), bool(b.get("loggedIn")))
-    except Exception as exc:
-        log.warning("bridge health failed: %s", exc)
-        state = (False, False)
-    _bridge_health_cache = (now, state)
-    return state
+    with _bridge_health_cache_lock:
+        now = time.time()
+        if _bridge_health_cache is not None and now - _bridge_health_cache[0] < _BRIDGE_HEALTH_CACHE_TTL:
+            return _bridge_health_cache[1]
+        try:
+            b = get_bridge().health()
+            state = (bool(b.get("ok")), bool(b.get("loggedIn")))
+        except Exception as exc:
+            log.warning("bridge health failed: %s", exc)
+            state = (False, False)
+        _bridge_health_cache = (now, state)
+        return state
 
 
 # Proxy cache for the indexer container's live runtime state. The API
@@ -1164,23 +1177,29 @@ def _people_all_cached() -> list:
         cached_q, ts, full = _people_cache
         if cached_q is None and now - ts < _PEOPLE_CACHE_TTL:
             return full
-    rows = all_people()
-    full = [
-        {
-            "id": r["id"],
-            "name": r["name"],
-            "cover_uid": r["cover_uid"],
-            "cover_face_id": r["cover_face_id"],
-            "face_count": r["face_count"],
-            "photo_count": r["photo_count"],
-            "cover_url": _sign_if_needed(
-                f"/api/people/{r['id']}/cover" if r["cover_face_id"] else None
-            ),
-        }
-        for r in rows
-    ]
-    _people_cache = (None, now, full)
-    return full
+    with _people_cache_lock:
+        now = time.time()
+        if _people_cache is not None:
+            cached_q, ts, full = _people_cache
+            if cached_q is None and now - ts < _PEOPLE_CACHE_TTL:
+                return full
+        rows = all_people()
+        full = [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "cover_uid": r["cover_uid"],
+                "cover_face_id": r["cover_face_id"],
+                "face_count": r["face_count"],
+                "photo_count": r["photo_count"],
+                "cover_url": _sign_if_needed(
+                    f"/api/people/{r['id']}/cover" if r["cover_face_id"] else None
+                ),
+            }
+            for r in rows
+        ]
+        _people_cache = (None, now, full)
+        return full
 
 
 @app.get("/api/people")
@@ -1206,25 +1225,32 @@ def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
             page = full[offset : offset + limit]
             return {"people": page, "total": len(full), "limit": limit, "offset": offset}
 
-    rows = all_people(q=q)
-    total = len(rows)
-    full = [
-        {
-            "id": r["id"],
-            "name": r["name"],
-            "cover_uid": r["cover_uid"],
-            "cover_face_id": r["cover_face_id"],
-            "face_count": r["face_count"],
-            "photo_count": r["photo_count"],
-            "cover_url": _sign_if_needed(
-                f"/api/people/{r['id']}/cover" if r["cover_face_id"] else None
-            ),
-        }
-        for r in rows
-    ]
-    _people_cache = (q, now, full)
-    page = full[offset : offset + limit]
-    return {"people": page, "total": total, "limit": limit, "offset": offset}
+    with _people_cache_lock:
+        now = time.time()
+        if _people_cache is not None:
+            cached_q, ts, full = _people_cache
+            if cached_q == q and now - ts < _PEOPLE_CACHE_TTL:
+                page = full[offset : offset + limit]
+                return {"people": page, "total": len(full), "limit": limit, "offset": offset}
+        rows = all_people(q=q)
+        total = len(rows)
+        full = [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "cover_uid": r["cover_uid"],
+                "cover_face_id": r["cover_face_id"],
+                "face_count": r["face_count"],
+                "photo_count": r["photo_count"],
+                "cover_url": _sign_if_needed(
+                    f"/api/people/{r['id']}/cover" if r["cover_face_id"] else None
+                ),
+            }
+            for r in rows
+        ]
+        _people_cache = (q, now, full)
+        page = full[offset : offset + limit]
+        return {"people": page, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/people/{person_id}/cover")
@@ -1796,12 +1822,22 @@ def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
     the naive single matmul. Cached for a few seconds so reloads are cheap.
     """
     global _dups_cache
+    if limit < 1:
+        limit = 50
     now = time.time()
     if _dups_cache is not None and now - _dups_cache[0] < _DUP_CACHE_TTL:
         return _dups_cache[1]
-    if limit < 1:
-        limit = 50
+    with _dups_cache_lock:
+        now = time.time()
+        if _dups_cache is not None and now - _dups_cache[0] < _DUP_CACHE_TTL:
+            return _dups_cache[1]
+        resp = _dups_payload(threshold, limit)
+        _dups_cache = (now, resp)
+        return resp
 
+
+def _dups_payload(threshold: float, limit: int) -> dict:
+    """Walk the blockwise similarity matrix and build the duplicates payload."""
     people = _people_all_cached()  # avoids re-running the expensive GROUP-BY query
     if len(people) < 2:
         return {"duplicates": []}
@@ -1863,9 +1899,7 @@ def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
                 },
             }
         )
-    resp = {"duplicates": dups}
-    _dups_cache = (now, resp)
-    return resp
+    return {"duplicates": dups}
 
 
 @app.get("/api/people/{person_id}/photos")
@@ -2009,20 +2043,27 @@ def _get_clip_matrix() -> tuple[list[str], np.ndarray]:
         ts, n_cached, uids, X = _clip_cache
         if n_cached == n_now and (now - ts) < _CLIP_CACHE_TTL:
             return uids, X
-    # Try mmap sidecar first
-    sidecar = read_clip_sidecar()
-    if sidecar is not None:
-        uids, X = sidecar
-        _clip_cache = (now, len(uids), uids, X)
+    with _clip_cache_lock:
+        now = time.time()
+        n_now = clip_count()
+        if _clip_cache is not None:
+            ts, n_cached, uids, X = _clip_cache
+            if n_cached == n_now and (now - ts) < _CLIP_CACHE_TTL:
+                return uids, X
+        # Try mmap sidecar first
+        sidecar = read_clip_sidecar()
+        if sidecar is not None:
+            uids, X = sidecar
+            _clip_cache = (now, len(uids), uids, X)
+            return uids, X
+        # Fallback: build from DB
+        rows = all_clips()
+        if not rows:
+            return [], np.empty((0, 512), dtype=np.float32)
+        uids = [r["photo_uid"] for r in rows]
+        X = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
+        _clip_cache = (now, n_now, uids, X)
         return uids, X
-    # Fallback: build from DB
-    rows = all_clips()
-    if not rows:
-        return [], np.empty((0, 512), dtype=np.float32)
-    uids = [r["photo_uid"] for r in rows]
-    X = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
-    _clip_cache = (now, n_now, uids, X)
-    return uids, X
 
 
 def _semantic_search(vec: np.ndarray, limit: int, user_id: int) -> dict:
