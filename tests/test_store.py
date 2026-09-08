@@ -71,6 +71,35 @@ class TestInitAndUpsert:
             idx = {r[1] for r in conn.execute("PRAGMA index_list(photos)")}
         assert "idx_photos_status_time" in idx
 
+    def test_migrate_backfills_issue85_join_tables(self, tmp_db):
+        # Simulate a pre-#85 database: photos still carry JSON tags/albums, but
+        # the normalized join tables are empty (or didn't exist). init_db()
+        # must backfill them so tagged/album lookups stay sargable.
+        store.upsert_photos([_photo("p1"), _photo("p2", capture_time=2000)])
+        store.set_photo_done("p1", "t1.webp", None, None)
+        store.set_photo_done("p2", "t2.webp", None, None)
+        with store.get_conn() as conn:
+            conn.execute("UPDATE photos SET tags=? WHERE uid='p1'", (json.dumps(["sunset"]),))
+            conn.execute("UPDATE photos SET tags=? WHERE uid='p2'", (json.dumps(["sunset", "sea"]),))
+            conn.execute("UPDATE photos SET albums=? WHERE uid='p1'", (json.dumps(["al1"]),))
+            conn.execute("UPDATE photos SET albums=? WHERE uid='p2'", (json.dumps(["al1", "al2"]),))
+            conn.execute("DELETE FROM photo_tags")
+            conn.execute("DELETE FROM photo_albums")
+            conn.execute("PRAGMA user_version = 0")
+        store.init_db()  # idempotent migrate + _SCHEMA + one-time backfill
+        assert [r["uid"] for r in store.photos_by_tag("sunset")] == ["p2", "p1"]
+        assert store.all_tags() == [("sunset", 2), ("sea", 1)]
+        assert [r["uid"] for r in store.album_photos("al1")] == ["p2", "p1"]
+        assert [r["uid"] for r in store.album_photos("al2")] == ["p2"]
+        with store.get_conn() as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == store._SCHEMA_VERSION
+
+    def test_init_db_is_idempotent(self, tmp_db):
+        store.upsert_photos([_photo("p1")])
+        store.init_db()
+        store.init_db()  # second run must not clobber anything
+        assert store.get_photo("p1")["status"] == "new"
+
     def test_migrate_backfills_denormalized_counts(self, tmp_db):
         # Simulate a pre-#81 row whose counts were never populated (or were
         # zeroed). migrate() must recount it and create the sort index.
@@ -709,6 +738,76 @@ class TestTags:
         store.set_photo_done("p1", "t.webp", None, None)
         store.set_tags("p1", ["cat"])
         assert store.photos_by_tag("car") == []
+
+
+class TestSargableQueries:
+    """Issue #85: filters on tags/albums/memories/anchors must not scan the
+    whole photo set. These assert the query planner chooses an index."""
+
+    def _plans(self, sql: str, params: tuple = ()) -> list[str]:
+        with store.get_conn() as conn:
+            return [r["detail"] for r in conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
+
+    def test_tags_join_uses_index(self, tmp_db):
+        store.upsert_photos([_photo("p1"), _photo("p2")])
+        store.set_photo_done("p1", "t1.webp", None, None)
+        store.set_photo_done("p2", "t2.webp", None, None)
+        store.set_tags("p1", ["sunset"])
+        store.set_tags("p2", ["sunset"])
+        plans = self._plans(
+            "SELECT p.* FROM photo_tags pt "
+            "CROSS JOIN photos p ON p.uid = pt.photo_uid "
+            "WHERE p.status='done' AND p.thumb_path IS NOT NULL AND p.thumb_path != '' "
+            "AND p.hidden = 0 AND pt.tag = ? "
+            "ORDER BY p.capture_time DESC LIMIT ? OFFSET ?",
+            ("sunset", 200, 0),
+        )
+        assert any("SEARCH pt USING COVERING INDEX idx_photo_tags_tag" in p for p in plans)
+        # No full scan of the photos table for the tag match.
+        assert not any("SCAN photos" in p or "SCAN photo_tags" in p for p in plans)
+
+    def test_album_join_uses_index(self, tmp_db):
+        store.upsert_photos([_photo("p1")])
+        store.set_photo_done("p1", "t1.webp", None, None)
+        with store.get_conn() as conn:
+            conn.execute("UPDATE photos SET albums=? WHERE uid='p1'", (json.dumps(["al1"]),))
+        store.sync_albums([{"uid": "al1", "name": "Trip"}])
+        plans = self._plans(
+            "SELECT p.* FROM photo_albums pa "
+            "CROSS JOIN photos p ON p.uid = pa.photo_uid "
+            "WHERE p.status='done' AND p.thumb_path IS NOT NULL AND p.thumb_path != '' "
+            "AND pa.album_uid = ? "
+            "ORDER BY p.capture_time DESC LIMIT ? OFFSET ?",
+            ("al1", 200, 0),
+        )
+        assert any("SEARCH pa USING COVERING INDEX idx_photo_albums_album" in p for p in plans)
+        assert not any("SCAN photos" in p or "SCAN photo_albums" in p for p in plans)
+
+    def test_memories_uses_index(self, tmp_db):
+        store.upsert_photos([_photo("p1", capture_time=1609459200)])
+        store.set_photo_done("p1", "t.webp", None, None)
+        plans = self._plans(
+            "SELECT * FROM photos INDEXED BY idx_photos_month_day "
+            "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
+            "AND hidden = 0 AND strftime('%m-%d', capture_time, 'unixepoch') = ? "
+            "AND capture_time IS NOT NULL "
+            "ORDER BY capture_time DESC LIMIT ?",
+            ("01-01", 200),
+        )
+        assert any("SEARCH photos USING INDEX idx_photos_month_day" in p for p in plans)
+
+    def test_anchors_uses_index(self, tmp_db):
+        store.upsert_photos([_photo("p1", capture_time=1609459200)])
+        store.set_photo_done("p1", "t.webp", None, None)
+        plans = self._plans(
+            "SELECT substr(date(capture_time, 'unixepoch'), 1, 7) AS ym, "
+            "MAX(capture_time) AS first_ts FROM photos INDEXED BY idx_photos_ym "
+            "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
+            "AND capture_time IS NOT NULL "
+            "GROUP BY ym ORDER BY ym DESC LIMIT ?",
+            (500,),
+        )
+        assert any("USING INDEX idx_photos_ym" in p for p in plans)
 
 
 class TestPlacesAndMap:
