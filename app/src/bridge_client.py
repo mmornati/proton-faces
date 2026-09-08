@@ -7,12 +7,15 @@ the real bridge and the demo expose the same method surface.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 
 import httpx
 
 from config import settings
+
+log = logging.getLogger("bridge_client")
 
 
 class BridgeError(Exception):
@@ -22,12 +25,30 @@ class BridgeError(Exception):
 # Mirror of the bridge's isValidUid: uids are opaque base64url-ish
 # identifiers. Rejecting anything else before it lands in a URL path keeps
 # the Python side consistent with the bridge's own validation (fix #37).
-_UID_RE = re.compile(r"^[A-Za-z0-9_=~-]{1,128}$")
+# Real Proton uids are ~177 chars ({shareId}==~--{linkId}==); the cap is a
+# generous abuse ceiling, not an exact length.
+_UID_RE = re.compile(r"^[A-Za-z0-9_=~-]{1,512}$")
 
 
 def is_valid_uid(uid: str) -> bool:
     """Validate a uid matches the expected charset and length."""
     return bool(_UID_RE.match(uid))
+
+
+def uid_invalid_reason(uid: str) -> str | None:
+    """Return a human-readable reason a uid is rejected, or None if valid.
+
+    Keeps the "why" of a rejected uid close to the regex so a future regex
+    change is easier to debug (e.g. a too-long uid silently 404ing a photo).
+    """
+    if not isinstance(uid, str) or not uid:
+        return "empty or non-string uid"
+    if len(uid) > 512:
+        return f"uid length {len(uid)} exceeds the {512}-char cap"
+    if not re.fullmatch(r"[A-Za-z0-9_=~-]+", uid):
+        bad = next((c for c in uid if not re.match(r"[A-Za-z0-9_=~-]", c)), None)
+        return f"uid contains disallowed character {bad!r}"
+    return None
 
 
 _is_valid_uid = is_valid_uid  # alias for internal use

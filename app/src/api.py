@@ -37,7 +37,12 @@ from auth import access_ttl as auth_access_ttl
 from auth import (
     refresh as refresh_tokens,
 )
-from bridge_client import BridgeTransientError, get_bridge, is_valid_uid
+from bridge_client import (
+    BridgeTransientError,
+    get_bridge,
+    is_valid_uid,
+    uid_invalid_reason,
+)
 from clip import embed_text
 from compression import CompressionMiddleware
 from config import settings
@@ -1026,6 +1031,7 @@ def api_photo_meta(uid: str, user: CurrentUser = Depends(require_user)):
 def api_thumb(uid: str, request: Request,
                _: object = Depends(signed_or_token)):
     if not is_valid_uid(uid):
+        log.warning("discarding media request: invalid uid %r (%s)", uid, uid_invalid_reason(uid))
         raise HTTPException(404, "no thumbnail")
     p = settings.thumb_dir / f"{uid}.webp"
     if not p.exists():
@@ -1230,6 +1236,8 @@ def api_person_cover(person_id: int,
     face_id = person["cover_face_id"]
     if face_id is None:
         if not person["cover_uid"] or not is_valid_uid(person["cover_uid"]):
+            log.warning("discarding cover request: invalid uid %r (%s)",
+                        person["cover_uid"], uid_invalid_reason(person["cover_uid"]))
             raise HTTPException(404, "no cover available")
         p = settings.thumb_dir / f"{person['cover_uid']}.webp"
         if not p.exists():
@@ -1309,6 +1317,8 @@ def _face_crop_bytes(face_id: int) -> bytes | None:
     if row is None:
         return None
     if not is_valid_uid(row["photo_uid"]):
+        log.warning("discarding face crop: invalid photo uid %r (%s)",
+                    row["photo_uid"], uid_invalid_reason(row["photo_uid"]))
         return None
     thumb = settings.thumb_dir / f"{row['photo_uid']}.webp"
     if not thumb.exists():
