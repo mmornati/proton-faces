@@ -54,6 +54,23 @@ class TestInitAndUpsert:
             }
         assert {"photos", "people", "faces", "clips", "albums", "users", "auth_tokens"} <= tables
 
+    def test_init_db_creates_poll_composite_index(self, tmp_db):
+        # Composite (status, capture_time) serves the indexer poll query
+        # WHERE status=? ORDER BY capture_time.
+        with store.get_conn() as conn:
+            idx = {r[1] for r in conn.execute("PRAGMA index_list(photos)")}
+        assert "idx_photos_status_time" in idx
+
+    def test_migrate_creates_poll_composite_index(self, tmp_db):
+        # Simulate a DB that predates idx_photos_status_time: drop the one from
+        # _SCHEMA and confirm migrate() recreates it for existing installs.
+        with store.get_conn() as conn:
+            conn.execute("DROP INDEX idx_photos_status_time")
+        with store.get_conn() as conn:
+            store.migrate(conn)
+            idx = {r[1] for r in conn.execute("PRAGMA index_list(photos)")}
+        assert "idx_photos_status_time" in idx
+
     def test_migrate_backfills_denormalized_counts(self, tmp_db):
         # Simulate a pre-#81 row whose counts were never populated (or were
         # zeroed). migrate() must recount it and create the sort index.
