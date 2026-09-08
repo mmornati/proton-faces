@@ -13,6 +13,12 @@ import numpy as np
 from config import settings
 from sidecar import read_face_sidecar
 
+# Bumped whenever `migrate()` adds one-time data backfills or creates new
+# schema objects that old DBs must also gain. init_db() records this in
+# `PRAGMA user_version` once migrations have run, so each backfill runs at
+# most once per database.
+_SCHEMA_VERSION = 1
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS photos (
     uid          TEXT PRIMARY KEY,
@@ -54,6 +60,35 @@ CREATE INDEX IF NOT EXISTS idx_photos_sha1     ON photos(sha1);
 -- ms on 79 k-row DBs (see issue #5). Tiny, write-time-only-maintained index.
 CREATE INDEX IF NOT EXISTS idx_photos_done_time
   ON photos(capture_time DESC)
+  WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '';
+
+-- Normalized tag/album membership (issue #85). photos.tags / photos.albums
+-- remain the JSON source of truth; these join tables are maintained by
+-- set_tags() and upsert_photos()/sync_albums() so tag and album lookups can
+-- be sargable indexed JOINs instead of LIKE scans on the whole photo set.
+CREATE TABLE IF NOT EXISTS photo_tags (
+    photo_uid TEXT NOT NULL REFERENCES photos(uid) ON DELETE CASCADE,
+    tag       TEXT NOT NULL COLLATE NOCASE,
+    PRIMARY KEY (photo_uid, tag)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_photo_tags_tag ON photo_tags(tag, photo_uid);
+
+CREATE TABLE IF NOT EXISTS photo_albums (
+    photo_uid TEXT NOT NULL REFERENCES photos(uid) ON DELETE CASCADE,
+    album_uid TEXT NOT NULL,
+    PRIMARY KEY (photo_uid, album_uid)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_photo_albums_album ON photo_albums(album_uid, photo_uid);
+
+-- Expression indexes (issue #85). These match the exact expressions used by
+-- memories_for_today() (strftime '%m-%d' equality is sargable) and
+-- photo_anchors() (GROUP BY ym + MAX(capture_time) is an index-only scan).
+-- Partial to the done+thumb rows those hot paths query.
+CREATE INDEX IF NOT EXISTS idx_photos_month_day
+  ON photos(strftime('%m-%d', capture_time, 'unixepoch'))
+  WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '';
+CREATE INDEX IF NOT EXISTS idx_photos_ym
+  ON photos(substr(date(capture_time, 'unixepoch'), 1, 7), capture_time)
   WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '';
 
 CREATE TABLE IF NOT EXISTS people (
@@ -205,6 +240,45 @@ def init_db() -> None:
         # _SCHEMA block runs CREATE INDEX against those new columns.
         migrate(conn)
         conn.executescript(_SCHEMA)
+        # After _SCHEMA ran, finish any version-gated backfills that need the
+        # new tables to exist (CREATE TABLE IF NOT EXISTS is idempotent).
+        _backfill_issue85(conn)
+        conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+
+
+def _backfill_issue85(conn: sqlite3.Connection) -> None:
+    """One-time backfill of photo_tags / photo_albums from the JSON columns.
+
+    Runs only when the database predates issue #85's join tables (detected via
+    the join table + a source photo still carrying JSON that isn't yet
+    mirrored). The write paths keep the tables in sync from here on.
+    """
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= _SCHEMA_VERSION:
+        return
+    if "photo_tags" not in {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    )}:
+        return  # fresh DB: _SCHEMA just created the (empty) tables
+    rows = conn.execute("SELECT uid, tags, albums FROM photos").fetchall()
+    for uid, tags, albums in rows:
+        try:
+            tag_list = json.loads(tags) if tags else []
+        except (ValueError, TypeError):
+            tag_list = []
+        try:
+            album_list = json.loads(albums) if albums else []
+        except (ValueError, TypeError):
+            album_list = []
+        if tag_list:
+            conn.executemany(
+                "INSERT OR IGNORE INTO photo_tags (photo_uid, tag) VALUES (?, ?)",
+                [(uid, t) for t in tag_list],
+            )
+        if album_list:
+            conn.executemany(
+                "INSERT OR IGNORE INTO photo_albums (photo_uid, album_uid) VALUES (?, ?)",
+                [(uid, a) for a in album_list],
+            )
 
 
 def migrate(conn: sqlite3.Connection) -> None:
@@ -353,6 +427,15 @@ def upsert_photos(rows: list[dict]) -> int:
                     r.get("size"),
                 ),
             )
+            # Mirror album membership into the normalized join table so
+            # album_photos() can use a sargable indexed JOIN (issue #85).
+            membership = r.get("albums") or []
+            conn.execute("DELETE FROM photo_albums WHERE photo_uid=?", (r["uid"],))
+            if membership:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO photo_albums (photo_uid, album_uid) VALUES (?, ?)",
+                    [(r["uid"], a) for a in membership],
+                )
     return new
 
 
@@ -1480,35 +1563,51 @@ def set_tags(uid: str, tags: list[str]) -> list[str]:
             "UPDATE photos SET tags=? WHERE uid=?",
             (json.dumps(clean) if clean else None, uid),
         )
+        # Keep the normalized join table in sync so photos_by_tag() stays a
+        # sargable indexed JOIN instead of a LIKE scan (issue #85).
+        conn.execute("DELETE FROM photo_tags WHERE photo_uid=?", (uid,))
+        if clean:
+            conn.executemany(
+                "INSERT OR IGNORE INTO photo_tags (photo_uid, tag) VALUES (?, ?)",
+                [(uid, t) for t in clean],
+            )
     return clean
 
 
 def all_tags() -> list[tuple[str, int]]:
     """Distinct user tags with counts (photos tagged with them)."""
     with get_conn() as conn:
+        # CROSS JOIN pins the scan order so the planner drives from the tiny
+        # photo_tags table (covering idx_photo_tags_tag scan) instead of
+        # scanning every done photo through idx_photos_status (issue #85).
         rows = conn.execute(
-            "SELECT tags FROM photos WHERE status='done' AND tags IS NOT NULL AND tags != ''"
+            "SELECT pt.tag, COUNT(*) AS n "
+            "FROM photo_tags pt CROSS JOIN photos p ON p.uid = pt.photo_uid "
+            "WHERE p.status='done' "
+            "GROUP BY pt.tag "
+            "ORDER BY n DESC, pt.tag ASC"
         ).fetchall()
-    counts: dict[str, int] = {}
-    for r in rows:
-        try:
-            for t in json.loads(r["tags"]):
-                counts[t] = counts.get(t, 0) + 1
-        except Exception:
-            pass
-    return [(t, n) for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    return [(r["tag"], r["n"]) for r in rows]
 
 
 def photos_by_tag(tag: str, limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
-    """Photos that carry the given tag (case-insensitive)."""
-    needle = json.dumps([tag.lower()])[1:-1]  # exact-match the JSON substring
+    """Photos that carry the given tag (case-insensitive).
+
+    Sargable via the photo_tags join table (issue #85): the tag equality is
+    resolved with an index instead of a LIKE scan over every done photo.
+    """
     with get_conn() as conn:
+        # CROSS JOIN pins the join order: drive from the tag equality on the
+        # covering idx_photo_tags_tag index, then rowid-probe photos. Without
+        # it the planner picks idx_photos_hidden/status and scans every done
+        # photo probing photo_tags per row (issue #85).
         return conn.execute(
-            "SELECT * FROM photos "
-            "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
-            "AND hidden = 0 AND tags LIKE ? "
-            "ORDER BY capture_time DESC LIMIT ? OFFSET ?",
-            (f"%{needle}%", limit, offset),
+            "SELECT p.* FROM photo_tags pt "
+            "CROSS JOIN photos p ON p.uid = pt.photo_uid "
+            "WHERE p.status='done' AND p.thumb_path IS NOT NULL AND p.thumb_path != '' "
+            "AND p.hidden = 0 AND pt.tag = ? "
+            "ORDER BY p.capture_time DESC LIMIT ? OFFSET ?",
+            (tag.lower(), limit, offset),
         ).fetchall()
 
 
@@ -1580,11 +1679,10 @@ def memories_for_today(month: int, day: int, limit: int = 200) -> list[sqlite3.R
             "FROM photos "
             "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
             "AND hidden = 0 "
-            "AND strftime('%m', capture_time, 'unixepoch') = ? "
-            "AND strftime('%d', capture_time, 'unixepoch') = ? "
+            "AND strftime('%m-%d', capture_time, 'unixepoch') = ? "
             "AND capture_time IS NOT NULL "
             "ORDER BY capture_time DESC LIMIT ?",
-            (f"{int(month):02d}", f"{int(day):02d}", limit),
+            (f"{int(month):02d}-{int(day):02d}", limit),
         ).fetchall()
 
 
@@ -1598,7 +1696,7 @@ def photo_anchors(limit: int = 500) -> list[sqlite3.Row]:
         return conn.execute(
             "SELECT substr(date(capture_time, 'unixepoch'), 1, 7) AS ym, "
             "       MAX(capture_time) AS first_ts "
-            "FROM photos "
+            "FROM photos INDEXED BY idx_photos_ym "
             "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
             "  AND capture_time IS NOT NULL "
             "GROUP BY ym ORDER BY ym DESC LIMIT ?",
@@ -1633,11 +1731,13 @@ def sync_albums(albums: list[dict]) -> int:
         counts: dict[str, int] = {}
         covers: dict[str, tuple[int, str]] = {}
         spans: dict[str, tuple[int | None, int | None]] = {}
+        membership: dict[str, list[str]] = {}
         for r in rows:
             try:
                 uids = json.loads(r["albums"])
             except Exception:
                 continue
+            membership.setdefault(r["uid"], []).extend(uids)
             for u in uids:
                 counts[u] = counts.get(u, 0) + 1
                 # Track newest capture_time per album to pick the cover, and
@@ -1652,6 +1752,15 @@ def sync_albums(albums: list[dict]) -> int:
                         ts if lo is None or ts < lo else lo,
                         ts if hi is None or ts > hi else hi,
                     )
+        # Rebuild the normalized join table so album_photos() can use a
+        # sargable indexed JOIN (issue #85). photos.albums stays the source of
+        # truth; this mirrors it after each sync.
+        conn.execute("DELETE FROM photo_albums")
+        for uid, uids in membership.items():
+            conn.executemany(
+                "INSERT OR IGNORE INTO photo_albums (photo_uid, album_uid) VALUES (?, ?)",
+                [(uid, u) for u in uids],
+            )
         for u, n in counts.items():
             lo, hi = spans.get(u, (None, None))
             conn.execute(
@@ -1674,11 +1783,12 @@ def album_photos(album_uid: str, limit: int = 200, offset: int = 0) -> list[sqli
     """Done-with-thumb photos in an album, newest first."""
     with get_conn() as conn:
         return conn.execute(
-            "SELECT * FROM photos "
-            "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
-            "  AND albums LIKE ? "
-            "ORDER BY capture_time DESC LIMIT ? OFFSET ?",
-            (f'%"{album_uid}"%', limit, offset),
+            "SELECT p.* FROM photo_albums pa "
+            "CROSS JOIN photos p ON p.uid = pa.photo_uid "
+            "WHERE p.status='done' AND p.thumb_path IS NOT NULL AND p.thumb_path != '' "
+            "AND pa.album_uid = ? "
+            "ORDER BY p.capture_time DESC LIMIT ? OFFSET ?",
+            (album_uid, limit, offset),
         ).fetchall()
 
 
