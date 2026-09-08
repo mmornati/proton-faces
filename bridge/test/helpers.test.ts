@@ -75,7 +75,7 @@ describe('isValidUid', () => {
     const valid = [
         'abc123',
         'ABC_123-def',
-        'a'.repeat(128),
+        'a'.repeat(177),
         '0',
         'photo-uid_1',
         'PNR_abc==~def==',
@@ -97,7 +97,7 @@ describe('isValidUid', () => {
         ['a\nb', 'newline'],
         ['a\u0000b', 'nul byte'],
         ['', 'empty string'],
-        ['a'.repeat(129), 'too long'],
+        ['a'.repeat(513), 'too long'],
         [42, 'non-string number'],
         [null, 'null'],
         [undefined, 'undefined'],

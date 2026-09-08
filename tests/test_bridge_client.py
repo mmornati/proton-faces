@@ -135,13 +135,20 @@ class TestAlbumsAndThumbnails:
 
 class TestIsValidUid:
     def test_accepts_plain_uids(self):
-        for uid in ("abc123", "ABC_123-def", "0", "photo-uid_1", "a" * 128,
+        for uid in ("abc123", "ABC_123-def", "0", "photo-uid_1", "a" * 177,
                      "PNR_abc==~def==", "uid_with=padding==", "a~b"):
             assert bridge_client._is_valid_uid(uid)
 
     def test_rejects_traversal_and_garbage(self):
-        for uid in ("../../etc/passwd", "..", "a/b", "a\\b", "a b", "a\nb", "", "a" * 129):
+        for uid in ("../../etc/passwd", "..", "a/b", "a\\b", "a b", "a\nb", "", "a" * 513):
             assert not bridge_client._is_valid_uid(uid)
+
+    def test_uid_invalid_reason(self):
+        assert bridge_client.uid_invalid_reason("PNR_abc==~def==") is None
+        assert bridge_client.uid_invalid_reason("a" * 177) is None
+        assert "length" in bridge_client.uid_invalid_reason("a" * 513)
+        assert "character" in bridge_client.uid_invalid_reason("a/b")
+        assert "empty" in bridge_client.uid_invalid_reason("")
 
 
 class TestFullPhoto:
