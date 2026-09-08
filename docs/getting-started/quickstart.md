@@ -1,103 +1,126 @@
 # Quickstart
 
-This guide walks you from a fresh `docker compose up` to your first search and your first named person, using real screenshots captured from the built-in demo instance.
+Get from a fresh machine to your **first real search** in ~10 minutes.
+
+!!! tip "Prefer to try it before you install anything?"
+    Run [demo mode](demo-mode.md) first — zero Proton credentials, one command, and you can click through the whole UI against a curated library of 82 CC0 photos. When you're ready for your own library, come back here.
 
 ## What you'll do
 
-1. Start the demo with one command.
-2. Sign in.
-3. Search for *dog*.
-4. Open the **People** tab and name a face.
-5. Watch look-alikes auto-tag.
-6. Open the **Places** map.
+1. Install the Proton Drive CLI and sign in once (browser sign-in).
+2. Export your session for the bridge.
+3. Configure `.env` and start the stack.
+4. Create your admin account.
+5. Run your first search and name your first person.
 
-Each step has a screenshot so you can compare against your own instance.
+The screenshots below were captured against the demo instance; the flows on your own library look exactly the same.
 
-## 0. Start the demo
+## 1. Install the CLI and sign in
+
+Download `proton-drive` (the official Proton Drive CLI) for your platform from the
+[Proton Drive CLI download page](https://proton.me/download/drive/cli). The page publishes
+SHA-512 checksums for every binary — verify the download before running it. On NAS or embedded
+x86-64 CPUs, pick `linux/x64-baseline` if the default build crashes at startup with
+`Illegal instruction`.
+
+Sign in once — the CLI opens a browser tab (no password on the command line):
 
 ```bash
-docker compose --profile demo up -d
+proton-drive auth login
 ```
 
-That's it. After ~60 seconds, open **http://localhost:8080**.
+Keep the terminal open until it reports `Authentication successful`. No browser on the machine?
+The CLI prints a sign-in URL instead — open it on any phone or desktop, and the session lands on
+the machine that ran the command.
 
-!!! info "What just happened?"
-    Two containers came up (`indexer-demo`, `app-demo`) with `DEMO_MODE=1`. They skipped the real Proton bridge and instead loaded `app/src/demo_assets/` — a curated fixture of 82 CC0 photos from Picsum and randomuser.me. The indexer processed all of them in well under a minute.
+## 2. Export the session
 
-The default credentials are `demo` / `proton-faces`. Override the password with `DEMO_ADMIN_PASSWORD=...` in `.env` if you're sharing the host.
+```bash
+scripts/export-session.sh    # writes ./credentials/auth-session.json (chmod 600)
+```
+
+The helper runs a fresh, throwaway CLI login in a temp dir, so your real keychain or `pass`
+store is never touched. Already have the CLI session in `pass`? One-liner:
+
+```bash
+pass show ch.proton.drive/drive-sdk-cli/auth-session > credentials/auth-session.json
+```
+
+!!! warning "Treat this file like a password"
+    It contains your access token, refresh token, and decryption keys. `.gitignore` already
+    excludes `credentials/`, and compose mounts it **only** into the `proton-bridge` container —
+    never commit it, never share it. To encrypt it at rest on the host, set
+    `PROTON_DRIVE_CREDENTIALS_STORE=pass` in `.env` (see [Encrypted store](session-export.md#encrypted-store-pass)).
+
+## 3. Configure and start
+
+```bash
+cp .env.example .env
+docker compose up -d
+```
+
+Prebuilt images are pulled from the GitHub Container Registry, so there's nothing to build. To
+build from source instead: `docker compose up -d --build`. To store data on a specific host
+disk, set `DATA_MOUNT=` (defaults to the named `data` volume); to index a Google Takeout export,
+set `PHOTOS_MOUNT=`.
+
+Within about a minute the app answers on **http://localhost:8080**. The indexer starts
+immediately against your real Proton Drive, is fully resumable, and processes roughly 1–2 s per
+photo (a 100 k-photo library takes about a day). The UI becomes useful right away as results
+stream in.
+
+## 4. Create your admin account
+
+```bash
+scripts/create-admin.sh admin          # prompts for a password, or:
+ADMIN_PASSWORD=... scripts/create-admin.sh admin
+```
+
+Then open **http://localhost:8080** and sign in.
 
 ![Login screen](../assets/screenshots/login.png)
 
-## 1. Sign in
+## 5. Your first search
 
-Type the username and password, click **Sign in**. The page reloads, and the main app appears.
-
-## 2. The photos grid
-
-You land on the **Photos** tab — an infinite scroll of all 82 demo photos, with the **"On this day"** strip hidden because nothing matches today (the dates are randomized 2024 dates).
-
-![Photos grid](../assets/screenshots/photos.png){ loading=lazy }
-
-Notice the small badges:
-
-- The **place label** (e.g. *Paris, France*) is shown for any photo with a GPS-tagged city.
-- The **"faces" pill** (blue) marks photos where the face detector found one or more faces.
-- The **★ favorite button** in the top-right of each card.
-
-## 3. Search for *dog*
-
-Click the search bar at the top-right (placeholder: *Search: "dog", "car", "Lille", "beach"...*). Type `dog` and press **Search** (or hit <kbd>Enter</kbd>).
+The search bar (top-right) matches by **zero-shot CLIP**: your text is embedded into the same
+512-d vector space as every photo, then ranked by cosine similarity. No per-photo tagging, no
+training step.
 
 ![Search for dog](../assets/screenshots/search-dog.png){ loading=lazy }
 
-The grid re-ranks immediately. The query is matched by **zero-shot CLIP**: the text *dog* is embedded into the same 512-d vector space as every photo, then ranked by cosine similarity. You can type anything — *beach*, *car*, *Lille*, *sunset*, *cat* — and it works the same way. There's no per-photo tagging and no training step.
+Type `dog`, `beach`, `sunset`, `cat` — anything. It re-ranks the whole library instantly. Type a
+place name (e.g. `Lille`) and GPS reverse-geocoding narrows it to photos taken there.
 
-Type `Lille` next to see how it handles place names via GPS reverse-geocoding.
+## 6. Name your first person
 
-## 4. Open the People tab
-
-Click **People** in the top navigation. You'll see a grid of unknown-person cards with face-crop covers.
+Open the **People** tab. Faces were grouped automatically by HDBSCAN into **person clusters**
+(similar ArcFace embeddings), and the clusters keep updating every `CLUSTER_INTERVAL` seconds
+(30 min by default).
 
 ![People grid](../assets/screenshots/people.png){ loading=lazy }
 
-Each card represents a **person cluster** — a group of faces that HDBSCAN grouped together by ArcFace embedding similarity. The cluster was built automatically and incrementally, and it runs again every `CLUSTER_INTERVAL` seconds (30 min by default).
+Type a name into a card's **Name** field and press <kbd>Enter</kbd> — the cluster, its cover
+face-crop, and every photo it appears in all carry the name.
 
-To rename a cluster, type a name in the **Name** field on the card and press <kbd>Enter</kbd>. The card immediately updates with the new name and the cluster's representative face-crop.
-
-## 5. Click into a person
-
-Click any of the person cards to see the photos that contain their face.
+Click a card to see that person's photos; **Map** on the card shows every place they were
+photographed. Open a photo and hover a face to tag it directly — every unassigned look-alike is
+auto-tagged in the same step (face tagging with propagation).
 
 ![Person detail](../assets/screenshots/person-detail.png){ loading=lazy }
 
-Click **Map** on the card to see every place that person has been photographed in (a Leaflet map filtered to that person's photos).
+## 7. Browse the rest
 
-## 6. Open a photo and use face tagging
-
-Click any photo to open the detail view. Hover over a face — a blue outline appears.
-
-The face boxes are clickable. Click one, type a name in the popover (or pick an existing person from the dropdown), and the face is named. Crucially, **every unassigned face that looks like the same person is auto-tagged** — that's the "propagation" that makes tagging 100 photos take a minute instead of an afternoon.
-
-## 7. Open the Places map
-
-Click **Places** in the top navigation. The Leaflet world map loads with one clustered marker per city you've photographed.
-
-![Places map](../assets/screenshots/places.png){ loading=lazy }
-
-Click any marker or any of the city chips below the map to filter the photos grid to that place.
-
-## 8. Browse the rest
-
-Other tabs you might want to poke at:
-
-- **Albums** — Proton albums (read-only).
-- **Tags** — your free-form lowercase labels (set them on a photo's detail panel).
+- **Places** — a Leaflet map with one clustered marker per city you've photographed.
+- **Albums** — your Proton albums (read-only).
+- **Tags** — free-form labels you set on a photo's detail panel.
 - **Duplicates** — content-hash matches; hide any you don't want.
-- **Unassigned** — every face that didn't cluster into a person; the queue to clean up.
-- **Favorites / Archive** — your starred and hidden photos.
+- **Unassigned** — faces that didn't cluster into a person; your cleanup queue.
+- **Favorites / Archive** — starred and hidden photos.
 
 ## What's next?
 
-- Read the [full User guide](../user-guide/index.md) for every feature, every shortcut, and the admin area.
-- When you're ready to point at your real Proton Drive, follow the [Installation guide](installation.md) and the [Session file guide](session-export.md).
-- If anything looks weird, the [Troubleshooting](../reference/troubleshooting.md) page covers the usual gotchas.
+- [Installation](installation.md) — production concerns: single process, volumes, updates.
+- [Session file](session-export.md) — macOS Keychain, Windows Credential Manager, and the
+  encrypted `pass` store.
+- [User guide](../user-guide/index.md) — every feature, shortcut, and the admin area.
+- [Troubleshooting](../reference/troubleshooting.md) — the usual gotchas.

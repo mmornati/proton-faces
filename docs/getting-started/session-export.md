@@ -1,31 +1,73 @@
 # Session file
 
-The `proton-bridge` container authenticates against Proton Drive with the same session file the Proton Drive CLI uses. If you already have the CLI set up, this is a one-liner. If not, you'll need to log into the CLI once and capture the session.
+The `proton-bridge` container authenticates against Proton Drive with the same session file the Proton Drive CLI uses. If you already have the CLI set up, this is a one-liner. If not, you'll need to install the CLI, sign in once, and export the session (about 5 minutes).
 
 ## Why a session file?
 
 Proton doesn't publish an OAuth provider for third-party apps, so the bridge speaks the same protocol the CLI does — same auth flow, same session format, same tokens. The session is encrypted at rest and mounted **only into the bridge container** (issue #32): the indexer and the internet-facing `app` container have no path to it, so a vulnerability in one of them cannot leak your session.
 
-## Where the file lives
+## First time: install the CLI and sign in
 
-The Proton Drive CLI normally keeps the session in your platform's secret store:
+The bridge reuses a session created by the official **Proton Drive CLI** (`proton-drive`).
+
+**1. Download the CLI** for your platform from the [official Proton Drive CLI page](https://proton.me/download/drive/cli). The page lists SHA-512 checksums; verify the archive before running it. On NAS or embedded x86-64 CPUs (most home servers), use the `linux/x64-baseline` build if the default `linux/x64` one crashes at startup with `Illegal instruction`, and `linux/arm64` on ARM hardware.
+
+**2. Sign in once** — browser-based, no password on the command line:
+
+```bash
+proton-drive auth login
+```
+
+A browser tab opens to sign in with your Proton account. Keep the terminal open until it prints `Authentication successful` — the session is stored in your OS secret store as soon as login completes. On a machine without a browser (e.g. a headless server), the CLI prints a URL instead; open it on any phone or desktop, and the session is delivered to the machine that ran the command.
+
+**3. Export it for the bridge** with the [bundled helper](#export-with-the-bundled-helper-recommended):
+
+```bash
+scripts/export-session.sh
+```
+
+This produces `credentials/auth-session.json` with `chmod 600` and prints the path. That's it — continue with the [Installation guide](installation.md#1-get-a-proton-session-file).
+
+If you already completed these steps on another machine, you don't need to log in again — export from the store you used (below) and copy the file over.
+
+## Where the CLI keeps the session
+
+After `auth login`, the Proton Drive CLI stores the session in your OS secret store (or `pass`, if you configured `PROTON_DRIVE_CREDENTIALS_STORE=pass`).
 
 | Platform | Storage |
 |---|---|
-| Linux (with `pass`) | `pass show ch.proton.drive/drive-sdk-cli/auth-session` |
-| macOS (Keychain) | Keychain entry `ch.proton.drive/drive-sdk-cli` |
-| Windows (Credential Manager) | `cmdkey /list:ch.proton.drive` |
+| Linux (default) | libsecret — GNOME Keyring / KWallet |
+| macOS (default) | Keychain entry `ch.proton.drive/drive-sdk-cli` |
+| Windows (default) | Credential Manager (`cmdkey /list:ch.proton.drive`) |
+| Any + `pass` | GPG-encrypted `pass show ch.proton.drive/drive-sdk-cli/auth-session` |
 
-`scripts/export-session.sh` (bundled) handles all three. You just need the CLI installed and logged in once.
+`scripts/export-session.sh` (bundled) handles every case for you — it runs a fresh, throwaway CLI login in `unsafe_file` mode so it never touches your real keychain. You just need the CLI installed. The one-liners below only matter if you want to export a session that's **already** in a specific store.
 
-## Export with `pass` (Linux)
+## Export with the bundled helper (recommended)
+
+```bash
+scripts/export-session.sh
+```
+
+The script:
+
+1. Runs `proton-drive auth login` once, with the credential store forced to a throwaway
+   plaintext temp dir (`PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file` + a `mktemp -d` cache dir),
+   so your real keychain or `pass` store is never touched.
+2. Copies the freshly created session into `./credentials/auth-session.json` (overridable via
+   `AUTH_SESSION_OUT=`) and applies `chmod 600`.
+
+If a browser cannot open on the machine (headless server), the script prints the sign-in URL —
+open it on any phone or desktop.
+
+## Export with `pass` (if the session is already there)
 
 ```bash
 pass show ch.proton.drive/drive-sdk-cli/auth-session > credentials/auth-session.json
 chmod 600 credentials/auth-session.json
 ```
 
-## Export with the macOS Keychain
+## Export with the macOS Keychain (if the session is already there)
 
 ```bash
 security find-generic-password -s "ch.proton.drive/drive-sdk-cli" -w \
@@ -34,14 +76,6 @@ chmod 600 credentials/auth-session.json
 ```
 
 If you have multiple accounts, `-a <account>` selects which one.
-
-## Export with the bundled helper
-
-```bash
-scripts/export-session.sh
-```
-
-The script writes to `./credentials/auth-session.json` by default (overridable via `AUTH_SESSION_OUT=`). chmod 600 is applied automatically.
 
 ## Where it goes
 
