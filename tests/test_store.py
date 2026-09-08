@@ -54,6 +54,23 @@ class TestInitAndUpsert:
             }
         assert {"photos", "people", "faces", "clips", "albums", "users", "auth_tokens"} <= tables
 
+    def test_init_db_creates_poll_composite_index(self, tmp_db):
+        # Composite (status, capture_time) serves the indexer poll query
+        # WHERE status=? ORDER BY capture_time.
+        with store.get_conn() as conn:
+            idx = {r[1] for r in conn.execute("PRAGMA index_list(photos)")}
+        assert "idx_photos_status_time" in idx
+
+    def test_migrate_creates_poll_composite_index(self, tmp_db):
+        # Simulate a DB that predates idx_photos_status_time: drop the one from
+        # _SCHEMA and confirm migrate() recreates it for existing installs.
+        with store.get_conn() as conn:
+            conn.execute("DROP INDEX idx_photos_status_time")
+        with store.get_conn() as conn:
+            store.migrate(conn)
+            idx = {r[1] for r in conn.execute("PRAGMA index_list(photos)")}
+        assert "idx_photos_status_time" in idx
+
     def test_migrate_backfills_issue85_join_tables(self, tmp_db):
         # Simulate a pre-#85 database: photos still carry JSON tags/albums, but
         # the normalized join tables are empty (or didn't exist). init_db()
@@ -770,7 +787,7 @@ class TestSargableQueries:
         store.upsert_photos([_photo("p1", capture_time=1609459200)])
         store.set_photo_done("p1", "t.webp", None, None)
         plans = self._plans(
-            "SELECT * FROM photos "
+            "SELECT * FROM photos INDEXED BY idx_photos_month_day "
             "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
             "AND hidden = 0 AND strftime('%m-%d', capture_time, 'unixepoch') = ? "
             "AND capture_time IS NOT NULL "

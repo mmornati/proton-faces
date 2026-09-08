@@ -32,13 +32,19 @@ Install requirements, run `python main.py`. See [reference/configuration.md](../
 
 ### 1. Get a Proton session file
 
-The bridge authenticates with the same session file the Proton Drive CLI uses. If you have the CLI session in your keychain (`pass`), export it:
+First-time user? Install the [Proton Drive CLI](https://proton.me/download/drive/cli), run `proton-drive auth login` once (browser-based, ~2 minutes), then export the session:
+
+```bash
+scripts/export-session.sh    # writes credentials/auth-session.json (chmod 600)
+```
+
+Already have the CLI session in `pass`? The one-liner works too:
 
 ```bash
 pass show ch.proton.drive/drive-sdk-cli/auth-session > credentials/auth-session.json
 ```
 
-See the [Session file guide](session-export.md) for the full recipe, including the macOS Keychain variant.
+See the [Session file guide](session-export.md) for the full recipe, including the macOS Keychain variant, the Windows Credential Manager, and the most secure option — the SDK's GPG-encrypted `pass` store (`PROTON_DRIVE_CREDENTIALS_STORE=pass`).
 
 !!! warning "Keep this file private"
     `auth-session.json` contains your account tokens. It is mounted **into the bridge container only** (issue #32) — the indexer and the internet-facing `app` container have no path to it, so a vulnerability in one of them cannot leak your session. The mount is writable because the SDK rewrites the file on token refresh; see [Session file](session-export.md) for the full layout. The file should never be committed to git (the repo's `.gitignore` already excludes `credentials/`).

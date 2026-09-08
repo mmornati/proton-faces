@@ -49,8 +49,16 @@ EOF
     echo "[entrypoint] migrating $PLAINTEXT_SESSION into the pass store" >&2
     pass insert -f -m "$SESSION_ENTRY" < "$PLAINTEXT_SESSION"
     if pass show "$SESSION_ENTRY" >/dev/null 2>&1; then
-      rm -f "$PLAINTEXT_SESSION"
-      echo "[entrypoint] migration complete; removed plaintext $PLAINTEXT_SESSION" >&2
+      echo "[entrypoint] migration complete" >&2
+      # Best-effort cleanup only: the plaintext path is usually a compose bind
+      # mount, which cannot be unlinked (EBUSY). The pass entry is the
+      # authoritative copy, so leaving the file behind is harmless; don't let
+      # a failed rm abort the boot under `set -eu` (the misleading "removed"
+      # echo below used to mask that failure via its own exit status).
+      rm -f "$PLAINTEXT_SESSION" || true
+      if [ -e "$PLAINTEXT_SESSION" ]; then
+        echo "[entrypoint] note: kept plaintext $PLAINTEXT_SESSION (bind mount cannot be removed)" >&2
+      fi
     else
       echo "[entrypoint] ERROR: migration verification failed; keeping $PLAINTEXT_SESSION" >&2
       exit 1

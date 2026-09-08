@@ -6,6 +6,9 @@ a tmp sqlite DB, with `bridge_client._bridge` swapped for a fake bridge and
 module-level ML functions (embed_text / embed_query_face) monkeypatched.
 """
 
+import threading
+import time
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -1299,3 +1302,127 @@ class TestCompression:
         assert messages[0]["type"] == "http.response.start"
         assert messages[1]["type"] == "http.response.pathsend"
         assert b"content-encoding" not in dict(messages[0]["headers"])
+
+
+class TestTTLCacheSingleFlight:
+    """TTL caches use double-checked locking: when N threads hit an expired
+    cache at once, exactly one of them runs the expensive compute."""
+
+    def _run_concurrent(self, fn, n: int = 20) -> None:
+        barrier = threading.Barrier(n)
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                barrier.wait(timeout=10)
+                fn()
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        assert errors == []
+
+    def test_cached_stats_single_flight(self, monkeypatch):
+        api._stats_cache = (time.time() - 1000, {})
+        calls = 0
+
+        def fake_stats() -> dict:
+            nonlocal calls
+            calls += 1
+            time.sleep(0.05)
+            return {"ok": True}
+
+        monkeypatch.setattr(api, "stats", fake_stats)
+        self._run_concurrent(api._cached_stats)
+        assert calls == 1
+        assert api._stats_cache[1] == {"ok": True}
+
+    def test_cached_bridge_health_single_flight(self, monkeypatch):
+        api._bridge_health_cache = (time.time() - 1000, (False, False))
+        calls = 0
+
+        class FakeBridge:
+            def health(self):
+                nonlocal calls
+                calls += 1
+                time.sleep(0.05)
+                return {"ok": True, "loggedIn": True}
+
+        monkeypatch.setattr(api, "get_bridge", lambda: FakeBridge())
+        self._run_concurrent(api._cached_bridge_health)
+        assert calls == 1
+        assert api._bridge_health_cache[1] == (True, True)
+
+    def test_people_all_cached_single_flight(self, monkeypatch):
+        api._people_cache = (None, time.time() - 1000, [])
+        calls = 0
+
+        def fake_all_people(q=None):
+            nonlocal calls
+            calls += 1
+            time.sleep(0.05)
+            return []
+
+        monkeypatch.setattr(api, "all_people", fake_all_people)
+        self._run_concurrent(api._people_all_cached)
+        assert calls == 1
+        assert api._people_cache is not None and api._people_cache[0] is None
+
+    def test_people_filtered_single_flight(self, monkeypatch):
+        api._people_cache = ("foo", time.time() - 1000, [])
+        calls = 0
+
+        def fake_all_people(q=None):
+            nonlocal calls
+            calls += 1
+            time.sleep(0.05)
+            return []
+
+        monkeypatch.setattr(api, "all_people", fake_all_people)
+        self._run_concurrent(lambda: api.api_people(limit=10, offset=0, q="foo"))
+        assert calls == 1
+        assert api._people_cache is not None and api._people_cache[0] == "foo"
+
+    def test_duplicates_single_flight(self, monkeypatch):
+        api._dups_cache = (time.time() - 1000, {})
+        people = [
+            {"id": 1, "name": "A", "cover_uid": "p1", "cover_face_id": None,
+             "face_count": 1, "photo_count": 1, "cover_url": None},
+            {"id": 2, "name": "B", "cover_uid": "p2", "cover_face_id": None,
+             "face_count": 1, "photo_count": 1, "cover_url": None},
+        ]
+        calls = 0
+        monkeypatch.setattr(api, "_people_all_cached", lambda: people)
+
+        def fake_means():
+            nonlocal calls
+            calls += 1
+            time.sleep(0.05)
+            return {1: _emb(0), 2: np.zeros(512, dtype=np.float32)}
+
+        monkeypatch.setattr(api, "person_mean_embeddings_from_cache", fake_means)
+        self._run_concurrent(api.api_people_duplicates)
+        assert calls == 1
+        assert api._dups_cache[1] == {"duplicates": []}
+
+    def test_clip_matrix_single_flight(self, monkeypatch):
+        api._clip_cache = (time.time() - 1000, 1, ["p1"], np.zeros((1, 512), dtype=np.float32))
+        sidecar_calls = 0
+
+        def fake_clip_count() -> int:
+            return 2
+
+        def fake_sidecar():
+            nonlocal sidecar_calls
+            sidecar_calls += 1
+            time.sleep(0.05)
+            return ["p1", "p2"], np.zeros((2, 512), dtype=np.float32)
+
+        monkeypatch.setattr(api, "clip_count", fake_clip_count)
+        monkeypatch.setattr(api, "read_clip_sidecar", fake_sidecar)
+        self._run_concurrent(api._get_clip_matrix)
+        assert sidecar_calls == 1

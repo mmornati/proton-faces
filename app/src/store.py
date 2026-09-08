@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS photos (
     retry_count  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(status);
+-- Composite for the indexer poll query WHERE status=? ORDER BY capture_time
+-- (downloader/worker/fullres loops run it every few seconds). Turns a scan +
+-- temp sort into a single ordered range walk.
+CREATE INDEX IF NOT EXISTS idx_photos_status_time ON photos(status, capture_time);
 CREATE INDEX IF NOT EXISTS idx_photos_place  ON photos(place);
 CREATE INDEX IF NOT EXISTS idx_photos_time   ON photos(capture_time);
 CREATE INDEX IF NOT EXISTS idx_photos_favorited ON photos(favorited);
@@ -326,6 +330,13 @@ def migrate(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_photos_status_pending "
             "ON photos(status, processed_at) "
             "WHERE status='pending_removal'"
+        )
+    if "idx_photos_status_time" not in idx:
+        # Composite for the indexer poll query (WHERE status=? ORDER BY
+        # capture_time). One-time CREATE INDEX, safe on existing DBs.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_photos_status_time "
+            "ON photos(status, capture_time)"
         )
     # Partial index for done_photos() — added in issue #5. Idempotent: if the
     # index already exists (current _SCHEMA branch), the IF NOT EXISTS is a
@@ -1676,7 +1687,7 @@ def memories_for_today(month: int, day: int, limit: int = 200) -> list[sqlite3.R
     with get_conn() as conn:
         return conn.execute(
             "SELECT *, CAST((julianday('now') - julianday(capture_time, 'unixepoch')) AS INTEGER) AS age_days "
-            "FROM photos "
+            "FROM photos INDEXED BY idx_photos_month_day "
             "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
             "AND hidden = 0 "
             "AND strftime('%m-%d', capture_time, 'unixepoch') = ? "

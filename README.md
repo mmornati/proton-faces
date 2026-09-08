@@ -69,7 +69,7 @@ The full user guide is published at **[mmornati.github.io/proton-faces](https://
 
 Highlights:
 
-- [Quickstart](https://mmornati.github.io/proton-faces/getting-started/quickstart/) — 5 minutes from `docker compose up` to your first search
+- [Quickstart](https://mmornati.github.io/proton-faces/getting-started/quickstart/) — install to your first real search in ~10 minutes
 - [Demo mode](https://mmornati.github.io/proton-faces/getting-started/demo-mode/) — run the full app **with zero Proton credentials** (a curated fixture of CC0 photos)
 - [People & face tagging](https://mmornati.github.io/proton-faces/user-guide/face-tagging/) — name one face, auto-tag every look-alike
 - [REST API](https://mmornati.github.io/proton-faces/reference/api/) — every endpoint
@@ -202,18 +202,54 @@ never need to clone it yourself; the Docker build does it automatically.
 
 ### 1. Get a Proton session file
 
-`proton-faces` authenticates with the session file the Proton Drive CLI normally keeps in your
-keyring / `pass` store:
+`proton-faces` authenticates with a session from the official **Proton Drive CLI**. There is no
+OAuth — you sign into the CLI once with your Proton account, and the bridge reuses that session
+strictly **read-only** against your Photos.
+
+**Install the CLI** (one-time). Download the binary for your platform from the official
+[Proton Drive CLI download page](https://proton.me/download/drive/cli) — SHA-512 checksums are
+listed there. On NAS / embedded CPUs, pick `linux/x64-baseline` if the default build crashes at
+startup with `Illegal instruction`.
+
+**Sign in once:**
 
 ```bash
-# If you have the CLI session in `pass`:
-pass show ch.proton.drive/drive-sdk-cli/auth-session > credentials/auth-session.json
+proton-drive auth login
 ```
 
-> The file contains your account tokens. Keep it private — it is mounted read-only into the
-> bridge container and should never be committed to git (see `.gitignore`).
+A browser tab opens to sign in with your Proton account — keep the terminal open until it says
+`Authentication successful`. No browser on the machine? Open the URL it prints from any phone or
+desktop to complete the login.
 
-### 2. Configure
+**Export the session for the bridge:**
+
+```bash
+scripts/export-session.sh    # writes credentials/auth-session.json
+# Already keep the CLI session in `pass`? One-liner:
+#   pass show ch.proton.drive/drive-sdk-cli/auth-session > credentials/auth-session.json
+```
+
+> The file contains your account tokens (access token, refresh token, decryption keys) — treat
+> it like a password. It is mounted **only** into the `proton-bridge` container: the `app` and
+> `indexer` containers have no path to it (issue #32), and `.gitignore` already excludes
+> `credentials/`. The mount is **writable** because the SDK rewrites the file when it refreshes
+> tokens.
+
+### 2. (Recommended) Encrypt the session at rest
+
+By default the session sits on disk as plaintext. For the most secure setup, store it
+GPG-encrypted with the SDK's `pass` backend — keyring and store live in Docker named volumes
+mounted **only** into the bridge container:
+
+```bash
+echo "PROTON_DRIVE_CREDENTIALS_STORE=pass" >> .env
+```
+
+On first start the bridge generates a container-local GPG key, initializes the store, and
+migrates your `auth-session.json` into it. See [Session file → Encrypted
+store](docs/getting-started/session-export.md#encrypted-store-pass) for details.
+
+### 3. Configure
 
 ```bash
 cp .env.example .env
@@ -225,18 +261,25 @@ cp .env.example .env
 # PHOTOS_MOUNT=/srv/photos-takeout
 ```
 
-### 3. Start
+### 4. Start
 
 ```bash
 docker compose up -d
 ```
 
-Then open **http://localhost:8080**.
-
 Prebuilt images are published to the GitHub Container Registry, so `docker compose up` pulls
 them — no building on the server. To build from source instead, use
 `docker compose up -d --build`. On a shared box, `scripts/build.sh` shows how to cap BuildKit's
 CPU usage so a build never starves your other services.
+
+### 5. Create your admin account
+
+```bash
+scripts/create-admin.sh admin          # prompts for a password, or:
+ADMIN_PASSWORD=... scripts/create-admin.sh admin
+```
+
+Then open **http://localhost:8080** and sign in with that account.
 
 The indexer starts immediately and is fully resumable. The first run processes your whole
 library (roughly 1–2 s per photo on a modern CPU — a 100k-photo library takes about a day), and

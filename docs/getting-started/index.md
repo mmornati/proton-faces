@@ -8,7 +8,7 @@ Proton Faces runs as three Docker containers: a Proton bridge that talks to your
 
 <div class="pf-card" markdown>
 ### 🚀 [Quickstart](quickstart.md)
-Five minutes from `docker compose up` to searching for *dog*. Read this first.
+Install the CLI, sign in once, and reach your first real search in ~10 minutes. Read this first.
 </div>
 
 <div class="pf-card" markdown>
@@ -44,8 +44,9 @@ No GPU is required — InsightFace and CLIP both run on CPU through ONNX Runtime
 
 | Step | Time |
 |---|---|
+| Download the CLI + sign in once (browser) | 2–5 min |
+| Export the session to `credentials/` | 30 s |
 | Pull images and bring up containers | 30–60 s |
-| Export a Proton session file | 1 min |
 | First sync against a 1000-photo library | ~5 min |
 | First sync against a 100 000-photo library | ~1 day (background, resumable) |
 | Reading the docs (skim) | 15 min |
