@@ -869,7 +869,7 @@ def _albums_loop() -> None:
 
 
 def _sync_albums_once() -> int:
-    """Fetch album names from the bridge and recompute local covers/counts."""
+    """Fetch album names from the bridge and reconcile local covers/counts."""
     try:
         data = get_bridge().albums()
         albums = data.get("albums", []) if isinstance(data, dict) else data
@@ -878,8 +878,9 @@ def _sync_albums_once() -> int:
         return 0
     if not albums:
         return 0
+    t0 = time.monotonic()
     n = sync_albums(albums)
-    log.info("albums: synced %d albums", n)
+    log.info("albums: synced %d albums in %.2fs", n, time.monotonic() - t0)
     return n
 
 

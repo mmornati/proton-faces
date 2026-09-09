@@ -6,6 +6,7 @@ import time
 import numpy as np
 import pytest
 
+import config
 import store
 from conftest import APP_SRC  # noqa: F401  (ensures sys.path wiring)
 
@@ -994,6 +995,111 @@ class TestAlbums:
             "al2": "al2",
         }
         assert store.album_names([]) == {}
+
+    def _seed_albums(self):
+        """Seeds one album each with (p1) and (p1, p2) and a lone photo in al3,
+        so al3 is a *counted* album that must never be recomputed by an
+        incremental pass touching only al1/al2."""
+        store.upsert_photos(
+            [
+                _photo("p1", capture_time=1000, albums=["al1"]),
+                _photo("p2", capture_time=2000, albums=["al1", "al2"]),
+                _photo("p3", capture_time=3000, albums=["al3"]),
+            ]
+        )
+        store.set_photo_done("p1", "t1.webp", None, None)
+        store.set_photo_done("p2", "t2.webp", None, None)
+        store.set_photo_done("p3", "t3.webp", None, None)
+        store.sync_albums(
+            [
+                {"uid": "al1", "name": "Trip", "cover_uid": "p1"},
+                {"uid": "al2", "name": "Empty", "cover_uid": None},
+                {"uid": "al3", "name": "Untouched", "cover_uid": None},
+            ]
+        )
+
+    @staticmethod
+    def _assert_dirty(expect: set[str]) -> None:
+        with store.get_conn() as conn:
+            dirty = {r[0] for r in conn.execute("SELECT uid FROM albums WHERE dirty=1")}
+        assert dirty == expect
+
+    def test_albums_incremental_nochange_does_not_rescan(self, tmp_db):
+        """A second consecutive sync with no changes recomputes ~nothing:
+        the dirty set is empty, so no album recount runs."""
+        self._seed_albums()
+        self._assert_dirty(set())
+        # No dirty flags, and the periodic full rescan is far away — this pass
+        # must be a no-op apart from the name upsert.
+        store.sync_albums([{"uid": "al1", "name": "Trip"}])
+        self._assert_dirty(set())
+        by_uid = {a["uid"]: a for a in store.all_albums()}
+        assert by_uid["al1"]["photo_count"] == 2
+        assert by_uid["al2"]["photo_count"] == 1
+        assert by_uid["al3"]["photo_count"] == 1
+
+    def test_albums_incremental_recounts_only_dirty(self, tmp_db):
+        """Moving a photo between albums flags both albums; the next sync
+        recounts them and leaves untouched albums alone."""
+        self._seed_albums()
+        store.upsert_photos([_photo("p1", capture_time=1000, albums=["al2"])])
+        self._assert_dirty({"al1", "al2"})
+        store.sync_albums([])
+        by_uid = {a["uid"]: a for a in store.all_albums()}
+        assert by_uid["al1"]["photo_count"] == 1  # p2 only
+        assert by_uid["al2"]["photo_count"] == 2  # p1 + p2
+        # al3 was never flagged and must not have been recalculated.
+        self._assert_dirty(set())
+        assert by_uid["al3"]["photo_count"] == 1
+        assert [r["uid"] for r in store.album_photos("al1")] == ["p2"]
+
+    def test_albums_incremental_counts_newly_done_photo(self, tmp_db):
+        """A photo that becomes done-with-thumb after the last sync is picked
+        up without a full rescan (set_photo_done flags its albums)."""
+        self._seed_albums()
+        store.upsert_photos([_photo("p4", capture_time=4000, albums=["al1"])])
+        store.set_photo_done("p4", "t4.webp", None, None)
+        self._assert_dirty({"al1"})
+        store.sync_albums([])
+        by_uid = {a["uid"]: a for a in store.all_albums()}
+        assert by_uid["al1"]["photo_count"] == 3
+        assert by_uid["al1"]["cover_uid"] == "p4"
+        assert [r["uid"] for r in store.album_photos("al1")] == ["p4", "p2", "p1"]
+
+    def test_albums_incremental_deletion_drops_count(self, tmp_db):
+        """Photos that leave the counted set (deleted) flag their albums; the
+        next sync drops the count without a full rescan."""
+        self._seed_albums()
+        store.mark_deleted(["p1"])
+        self._assert_dirty({"al1"})
+        store.sync_albums([])
+        by_uid = {a["uid"]: a for a in store.all_albums()}
+        assert by_uid["al1"]["photo_count"] == 1  # p2 only
+        assert by_uid["al1"]["cover_uid"] == "p2"
+        assert by_uid["al2"]["photo_count"] == 1  # untouched
+        assert [r["uid"] for r in store.album_photos("al1")] == ["p2"]
+
+    def test_albums_full_rescan_repairs_raw_sql_edits(self, tmp_db, monkeypatch):
+        """Edits that bypass the dirty-flag hooks (raw SQL) are reconciled the
+        next time the periodic full rescan is due."""
+        self._seed_albums()
+        with store.get_conn() as conn:
+            conn.execute(
+                "UPDATE photos SET albums=? WHERE uid='p2'", (json.dumps(["al3"]),)
+            )
+        # Incremental pass sees no dirty flags and must not recompute p2's old
+        # album — counts stay stale, as designed.
+        store.sync_albums([])
+        by_uid = {a["uid"]: a for a in store.all_albums()}
+        assert by_uid["al1"]["photo_count"] == 2
+        assert by_uid["al3"]["photo_count"] == 1  # p3 only, still missing p2
+        # Force the full rescan to become due; the repair pass reconciles.
+        monkeypatch.setattr(config.settings, "albums_full_rescan_sec", 0)
+        store.sync_albums([])
+        by_uid = {a["uid"]: a for a in store.all_albums()}
+        assert by_uid["al1"]["photo_count"] == 1
+        assert by_uid["al3"]["photo_count"] == 2  # p2 + p3
+        assert [r["uid"] for r in store.album_photos("al3")] == ["p3", "p2"]
 
 
 class TestDuplicatesAndMemories:

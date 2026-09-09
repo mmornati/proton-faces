@@ -67,6 +67,11 @@ class Settings:
         self.cluster_interval = int(os.environ.get("CLUSTER_INTERVAL", "1800"))
         self.cluster_max_faces = int(os.environ.get("CLUSTER_MAX_FACES", "5000"))
         self.gps_interval = int(os.environ.get("GPS_INTERVAL", "21600"))  # 6h
+        # How often (seconds) the albums sync runs a full rescan of the photos
+        # table as a repair pass. The incremental path (issue #95) flags only
+        # changed albums between rescans, so this bounds how long out-of-band
+        # edits (raw SQL, pre-upgrade rows) can skew album counts.
+        self.albums_full_rescan_sec = int(os.environ.get("ALBUM_FULL_RESCAN_SEC", "21600"))
         self.face_sim_threshold = float(os.environ.get("FACE_SIM_THRESHOLD", "0.45"))
         self.min_cluster_size = int(os.environ.get("MIN_CLUSTER_SIZE", "3"))
         self.log_level = os.environ.get("LOG_LEVEL", "INFO")

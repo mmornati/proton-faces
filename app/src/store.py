@@ -17,7 +17,7 @@ from sidecar import read_face_sidecar
 # schema objects that old DBs must also gain. init_db() records this in
 # `PRAGMA user_version` once migrations have run, so each backfill runs at
 # most once per database.
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS photos (
@@ -134,7 +134,21 @@ CREATE TABLE IF NOT EXISTS albums (
     photo_count  INTEGER,
     start_ts     INTEGER,         -- earliest capture_time in the album (sort key)
     end_ts       INTEGER,         -- latest capture_time in the album
-    synced_at    INTEGER
+    synced_at    INTEGER,
+    -- Set by the membership write hooks (upsert_photos / set_photo_done /
+    -- deletion paths); cleared by sync_albums() once the aggregates for this
+    -- album have been refreshed. Lets the albums sync skip untouched albums
+    -- instead of rescaming every done photo on every cycle (issue #95).
+    dirty        INTEGER NOT NULL DEFAULT 0
+);
+
+-- Sparse key/value state for the albums sync (issue #95): the dirty-flag scheme
+-- refreshes only changed albums, plus a periodic full rescan boundary that
+-- repairs drift from edits the hooks missed. Tracked in the DB (not module
+-- state) so it survives restarts and is covered by the normal transaction.
+CREATE TABLE IF NOT EXISTS albums_sync_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
 );
 
 -- --- multi-user auth + per-user favorites ----------------------------------
@@ -393,6 +407,12 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE albums ADD COLUMN start_ts INTEGER")
     if "end_ts" not in acols:
         conn.execute("ALTER TABLE albums ADD COLUMN end_ts INTEGER")
+    # Issue #95: incremental albums sync relies on per-album dirty flags that
+    # the membership write hooks set. Older DBs get the column here; the flag
+    # itself is backfilled implicitly by the first full rescan (triggered when
+    # albums_sync_state has no marking for `last_full_album_rescan`).
+    if "dirty" not in acols:
+        conn.execute("ALTER TABLE albums ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0")
     # Migration for issue #34: clear all plaintext auth_tokens so they are
     # re-issued as SHA-256 hashes on next login. Safe to run repeatedly.
     if "auth_tokens" in tables:
@@ -411,7 +431,7 @@ def upsert_photos(rows: list[dict]) -> int:
     new = 0
     with get_conn() as conn:
         for r in rows:
-            existing = conn.execute("SELECT status FROM photos WHERE uid=?", (r["uid"],)).fetchone()
+            existing = conn.execute("SELECT status, albums FROM photos WHERE uid=?", (r["uid"],)).fetchone()
             if existing is None:
                 new += 1
             conn.execute(
@@ -455,6 +475,18 @@ def upsert_photos(rows: list[dict]) -> int:
                     "INSERT OR IGNORE INTO photo_albums (photo_uid, album_uid) VALUES (?, ?)",
                     [(r["uid"], a) for a in membership],
                 )
+            # Issue #95: whenever a photo's album membership actually changed,
+            # flag the affected albums so the next incremental albums sync
+            # recounts only them instead of rescanning every done photo.
+            if existing and existing["albums"]:
+                try:
+                    prev = set(json.loads(existing["albums"]))
+                except ValueError:
+                    prev = set()
+            else:
+                prev = set()
+            if prev != set(membership):
+                _mark_albums_dirty(conn, prev | set(membership))
     return new
 
 
@@ -476,6 +508,9 @@ def mark_pending_removal(uids: list[str]) -> int:
     now = int(time.time())
     placeholders = ",".join("?" * len(uids))
     with get_conn() as conn:
+        # Issue #95: photos leaving the counted set must drop their albums'
+        # aggregates before the incremental sync allows the next cycle.
+        _mark_dirty_for_photos(conn, uids)
         cur = conn.execute(
             f"""UPDATE photos
                    SET status='pending_removal',
@@ -497,6 +532,17 @@ def confirm_deletions(grace_seconds: int, now: int | None = None) -> int:
     """
     now = int(time.time()) if now is None else now
     with get_conn() as conn:
+        # Issue #95: photos leaving the counted set must drop their albums'
+        # aggregates before the incremental sync allows the next cycle.
+        target = [
+            r[0]
+            for r in conn.execute(
+                "SELECT uid FROM photos WHERE status='pending_removal' "
+                "AND processed_at IS NOT NULL AND processed_at <= ?",
+                (now - grace_seconds,),
+            )
+        ]
+        _mark_dirty_for_photos(conn, target)
         cur = conn.execute(
             """UPDATE photos
                   SET status='deleted',
@@ -554,6 +600,7 @@ def mark_deleted(uids: list[str]) -> None:
         return
     now = int(time.time())
     with get_conn() as conn:
+        _mark_dirty_for_photos(conn, uids)
         conn.execute(
             f"""UPDATE photos
                    SET status='deleted',
@@ -604,6 +651,23 @@ def set_photo_done(uid: str, thumb_path: str, gps: tuple[float, float] | None, p
                 uid,
             ),
         )
+        # A photo just joined the counted set (done + thumbnail). Keep the
+        # photo_albums mirror complete and flag its albums so the next
+        # incremental albums sync counts it (issue #95).
+        row = conn.execute("SELECT albums FROM photos WHERE uid=?", (uid,)).fetchone()
+        uids = set()
+        if row and row["albums"]:
+            try:
+                uids = set(json.loads(row["albums"]))
+            except ValueError:
+                pass
+        conn.execute("DELETE FROM photo_albums WHERE photo_uid=?", (uid,))
+        if uids:
+            conn.executemany(
+                "INSERT OR IGNORE INTO photo_albums (photo_uid, album_uid) VALUES (?, ?)",
+                [(uid, u) for u in uids],
+            )
+        _mark_albums_dirty(conn, uids)
 
 
 def set_photo_full(uid: str) -> None:
@@ -662,6 +726,7 @@ def set_photo_error(uid: str, error: str) -> None:
 
 def set_photo_deleted(uid: str) -> None:
     with get_conn() as conn:
+        _mark_dirty_for_photos(conn, [uid])
         conn.execute("UPDATE photos SET status='deleted' WHERE uid=?", (uid,))
 
 
@@ -1784,67 +1849,202 @@ def photo_anchors(limit: int = 500) -> list[sqlite3.Row]:
 
 # --- albums ---------------------------------------------------------------
 
+_ALBUM_RESCAN_STATE_KEY = "last_full_album_rescan"
+
+
+def _mark_albums_dirty(conn: sqlite3.Connection, album_uids: set[str]) -> None:
+    """Flag albums as needing a recount at the next albums sync (issue #95).
+
+    Runs inside an existing transaction (no new connection). Idempotent — an
+    album that is already dirty is left alone.
+    """
+    if not album_uids:
+        return
+    for uid in album_uids:
+        conn.execute("UPDATE albums SET dirty=1 WHERE uid=? AND dirty=0", (uid,))
+
+
+def _mark_dirty_for_photos(conn: sqlite3.Connection, photo_uids: list[str]) -> None:
+    """Flag every album referenced by the given photos as needing a recount.
+
+    Used when photos leave the counted set (deletion paths), where the albums
+    column stays authoritative but the aggregates must be recomputed.
+    """
+    if not photo_uids:
+        return
+    marks = ",".join("?" * len(photo_uids))
+    album_uids: set[str] = set()
+    for row in conn.execute(
+        f"SELECT albums FROM photos WHERE uid IN ({marks})", photo_uids
+    ):
+        if not row["albums"]:
+            continue
+        try:
+            album_uids.update(json.loads(row["albums"]))
+        except ValueError:
+            continue
+    _mark_albums_dirty(conn, album_uids)
+
+
+def _get_album_sync_state(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute(
+        "SELECT value FROM albums_sync_state WHERE key=?", (key,)
+    ).fetchone()
+    return row["value"] if row else None
+
+
+def _set_album_sync_state(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO albums_sync_state (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+
+
+def _recalc_album(conn: sqlite3.Connection, album_uid: str) -> None:
+    """Recompute one album's count/cover/span and its join-table membership.
+
+    Scans only the rows of `photo_albums` for this album (indexed), so a single
+    album recount is a handful of rows — the payload of the incremental sync.
+    """
+    rows = conn.execute(
+        """SELECT p.uid AS photo_uid, p.capture_time
+           FROM photo_albums pa
+           JOIN photos p ON p.uid = pa.photo_uid
+           WHERE pa.album_uid = ?
+             AND p.status='done' AND p.thumb_path IS NOT NULL AND p.thumb_path != ''""",
+        (album_uid,),
+    ).fetchall()
+    # Rebuild this album's join-table rows from exactly what we counted, so
+    # deletions and status changes in the hooks fall out naturally.
+    conn.execute("DELETE FROM photo_albums WHERE album_uid=?", (album_uid,))
+    if not rows:
+        # All photos left the counted set; reset the aggregates to empty so the
+        # album disappears from all_albums() instead of keeping a stale count.
+        conn.execute(
+            "UPDATE albums SET photo_count=0, cover_uid=NULL, start_ts=NULL, end_ts=NULL, dirty=0 "
+            "WHERE uid=?",
+            (album_uid,),
+        )
+        return
+    n = 0
+    cover_ts = 0
+    cover_uid: str | None = None
+    lo: int | None = None
+    hi: int | None = None
+    photo_uids: list[str] = []
+    for r in rows:
+        photo_uids.append(r["photo_uid"])
+        n += 1
+        ts = r["capture_time"] or 0
+        if ts >= cover_ts:
+            cover_ts = ts
+            cover_uid = r["photo_uid"]
+        if ts:
+            lo = ts if lo is None or ts < lo else lo
+            hi = ts if hi is None or ts > hi else hi
+    conn.executemany(
+        "INSERT OR IGNORE INTO photo_albums (photo_uid, album_uid) VALUES (?, ?)",
+        [(uid, album_uid) for uid in photo_uids],
+    )
+    conn.execute(
+        """UPDATE albums SET photo_count=?, cover_uid=?, start_ts=?, end_ts=?, dirty=0
+           WHERE uid=?""",
+        (n, cover_uid, lo, hi, album_uid),
+    )
+
+
+def _rescan_albums(conn: sqlite3.Connection) -> None:
+    """Full recompute: recount every album referenced by a done-with-thumb photo.
+
+    This is the pre-#95 behaviour (a complete rescan of the photos table),
+    kept as a periodic repair pass so edits that bypass the dirty-flag hooks
+    (raw SQL, pre-upgrade rows) get reconciled eventually. It clears the dirty
+    flags for every album it touches because they are being recomputed here.
+    """
+    rows = conn.execute(
+        """SELECT p.uid, p.capture_time, p.albums FROM photos p
+           WHERE p.status='done' AND p.thumb_path IS NOT NULL AND p.thumb_path != ''
+             AND p.albums IS NOT NULL AND p.albums != ''"""
+    ).fetchall()
+    counts: dict[str, int] = {}
+    covers: dict[str, tuple[int, str]] = {}
+    spans: dict[str, tuple[int | None, int | None]] = {}
+    membership: dict[str, list[str]] = {}
+    for r in rows:
+        try:
+            uids = json.loads(r["albums"])
+        except Exception:
+            continue
+        for u in uids:
+            if u not in membership:
+                membership[u] = []
+            membership[u].append(r["uid"])
+            counts[u] = counts.get(u, 0) + 1
+            # Track newest capture_time per album to pick the cover, and the
+            # min/max span to order albums chronologically.
+            cur = covers.get(u)
+            ts = r["capture_time"] or 0
+            if cur is None or ts >= cur[0]:
+                covers[u] = (ts, r["uid"])
+            lo, hi = spans.get(u, (None, None))
+            if ts:
+                spans[u] = (
+                    ts if lo is None or ts < lo else lo,
+                    ts if hi is None or ts > hi else hi,
+                )
+    for u, n in counts.items():
+        conn.execute("DELETE FROM photo_albums WHERE album_uid=?", (u,))
+        conn.executemany(
+            "INSERT OR IGNORE INTO photo_albums (photo_uid, album_uid) VALUES (?, ?)",
+            [(uid, u) for uid in membership[u]],
+        )
+        lo, hi = spans.get(u, (None, None))
+        conn.execute(
+            """UPDATE albums SET photo_count=?, cover_uid=?, start_ts=?, end_ts=?, dirty=0
+               WHERE uid=?""",
+            (n, covers.get(u, (None, None))[1], lo, hi, u),
+        )
+
+
 def sync_albums(albums: list[dict]) -> int:
-    """Upsert album names from the bridge, then recompute local counts/covers.
+    """Upsert album names from the bridge, then reconcile local counts/covers.
 
     `albums` is [{uid, name}]. Covers and photo counts are derived from the
     local index (newest done-with-thumb photo per album), so no extra Proton
     downloads are needed.
+
+    Incremental (issue #95): photo write paths flag the albums they touch on
+    the `albums.dirty` column, so a typical cycle only recounts the albums that
+    actually changed instead of rescanning every done photo (~79k rows today).
+    A periodic full rescan (albums_full_rescan_sec, default 6 h) reconciles any
+    drift from edits that bypassed the hooks.
     """
     now = int(time.time())
     with get_conn() as conn:
-        for a in albums:
-            conn.execute(
-                """INSERT INTO albums (uid, name, cover_uid, photo_count, synced_at)
-                   VALUES (?, ?, NULL, NULL, ?)
-                   ON CONFLICT(uid) DO UPDATE SET name=excluded.name, synced_at=excluded.synced_at""",
-                (a["uid"], a.get("name"), now),
-            )
-        # Recompute cover + count for every album from the local index.
-        rows = conn.execute(
-            """SELECT p.uid, p.capture_time, p.albums FROM photos p
-               WHERE p.status='done' AND p.thumb_path IS NOT NULL AND p.thumb_path != ''
-                 AND p.albums IS NOT NULL AND p.albums != ''"""
-        ).fetchall()
-        counts: dict[str, int] = {}
-        covers: dict[str, tuple[int, str]] = {}
-        spans: dict[str, tuple[int | None, int | None]] = {}
-        membership: dict[str, list[str]] = {}
-        for r in rows:
-            try:
-                uids = json.loads(r["albums"])
-            except Exception:
-                continue
-            membership.setdefault(r["uid"], []).extend(uids)
-            for u in uids:
-                counts[u] = counts.get(u, 0) + 1
-                # Track newest capture_time per album to pick the cover, and
-                # the min/max span to order albums chronologically.
-                cur = covers.get(u)
-                ts = r["capture_time"] or 0
-                if cur is None or ts >= cur[0]:
-                    covers[u] = (ts, r["uid"])
-                lo, hi = spans.get(u, (None, None))
-                if ts:
-                    spans[u] = (
-                        ts if lo is None or ts < lo else lo,
-                        ts if hi is None or ts > hi else hi,
-                    )
-        # Rebuild the normalized join table so album_photos() can use a
-        # sargable indexed JOIN (issue #85). photos.albums stays the source of
-        # truth; this mirrors it after each sync.
-        conn.execute("DELETE FROM photo_albums")
-        for uid, uids in membership.items():
-            conn.executemany(
-                "INSERT OR IGNORE INTO photo_albums (photo_uid, album_uid) VALUES (?, ?)",
-                [(uid, u) for u in uids],
-            )
-        for u, n in counts.items():
-            lo, hi = spans.get(u, (None, None))
-            conn.execute(
-                "UPDATE albums SET photo_count=?, cover_uid=?, start_ts=?, end_ts=? WHERE uid=?",
-                (n, covers.get(u, (None, None))[1], lo, hi, u),
-            )
+        conn.executemany(
+            """INSERT INTO albums (uid, name, cover_uid, photo_count, synced_at)
+               VALUES (?, ?, NULL, NULL, ?)
+               ON CONFLICT(uid) DO UPDATE SET name=excluded.name, synced_at=excluded.synced_at""",
+            [(a["uid"], a.get("name"), now) for a in albums],
+        )
+
+        last_rescan = _get_album_sync_state(conn, _ALBUM_RESCAN_STATE_KEY)
+        full_due = (
+            last_rescan is None
+            or now - int(last_rescan) >= settings.albums_full_rescan_sec
+        )
+        if full_due:
+            _rescan_albums(conn)
+            _set_album_sync_state(conn, _ALBUM_RESCAN_STATE_KEY, str(now))
+            return len(albums)
+
+        # Incremental: recount only the albums the write hooks flagged.
+        dirty = {
+            r[0] for r in conn.execute("SELECT uid FROM albums WHERE dirty=1")
+        }
+        for uid in dirty:
+            _recalc_album(conn, uid)
     return len(albums)
 
 
