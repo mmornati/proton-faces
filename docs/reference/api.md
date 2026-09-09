@@ -121,6 +121,7 @@ Authentication is via `Authorization: Bearer <token>`. Get a token from `POST /a
 | GET | `/api/admin/schedule` | admin | Read the auto-backup schedule |
 | PUT | `/api/admin/schedule` | admin | Update the schedule (`{enabled, hour, minute, keep}`) |
 | POST | `/api/admin/checks` | admin | Run the seven health checks on demand |
+| POST | `/api/admin/people/gc-empty` | admin | Delete anonymous, face-less placeholder `people` rows (`{deleted: N, ok: true}`); idempotent sweep, never touches named people |
 
 ## Static
 

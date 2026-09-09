@@ -761,6 +761,48 @@ def _recount_person(person_id: int) -> None:
         )
 
 
+def _gc_unnamed_person(person_id: int) -> bool:
+    """Delete an anonymous, face-less placeholder person row if one exists.
+
+    When a face is unassigned or moved to another person and the source ends up
+    with no remaining faces, the now-empty unnamed row would otherwise linger
+    forever (named people and any person still owning a face row are untouched).
+    Returns True when the row was deleted.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            """DELETE FROM people
+               WHERE id = ?
+                 AND (name IS NULL OR name = '')
+                 AND face_count = 0
+                 AND NOT EXISTS (SELECT 1 FROM faces WHERE person_id = ?)""",
+            (person_id, person_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_empty_people() -> int:
+    """Sweep every anonymous, face-less placeholder person row.
+
+    The targeted `_gc_unnamed_person` keeps write paths clean, but rows orphaned
+    before that guard existed (e.g. faces bulk-deleted outside the current code
+    paths) accumulate in bulk here. The single DELETE re-checks the full
+    predicate atomically so a face assigned concurrently is never swept; the
+    age guard keeps an in-flight clusterer create/assign from being caught in
+    between. Idempotent; returns how many rows were deleted.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            """DELETE FROM people
+               WHERE (name IS NULL OR name = '')
+                 AND face_count = 0
+                 AND created < ?
+                 AND NOT EXISTS (SELECT 1 FROM faces WHERE person_id = people.id)""",
+            (int(time.time()) - 3600,),
+        )
+        return cur.rowcount
+
+
 def insert_face(photo_uid: str, person_id: int | None, confidence: float, bbox: list, embedding: bytes) -> int:
     with get_conn() as conn:
         cur = conn.execute(
@@ -816,6 +858,7 @@ def assign_face_person(face_id: int, person_id: int) -> None:
         conn.execute("UPDATE faces SET person_id=? WHERE id=?", (person_id, face_id))
     if old is not None and old != person_id:
         _recount_person(old)
+        _gc_unnamed_person(old)
     _recount_person(person_id)
 
 
@@ -844,6 +887,7 @@ def unassign_face(face_id: int) -> None:
         conn.execute("UPDATE faces SET person_id=NULL WHERE id=?", (face_id,))
     if old is not None:
         _recount_person(old)
+        _gc_unnamed_person(old)
 
 
 def create_person(name: str | None, cover_uid: str | None, cover_face_id: int | None = None) -> int:

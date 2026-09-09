@@ -40,6 +40,7 @@ from store import (
     clip_exists,
     confirm_deletions,
     count_faces_for_photo,
+    delete_empty_people,
     get_photos,
     init_db,
     insert_clip,
@@ -846,6 +847,10 @@ def _cluster_loop() -> None:
         time.sleep(settings.cluster_interval)
         try:
             cluster_once()
+            # Sweep placeholder rows left empty by face deletions/reassignments.
+            gc = delete_empty_people()
+            if gc:
+                log.info("swept %d empty people rows", gc)
             _runtime["last_cluster"] = time.time()
             _sidcar_mark_dirty()
         except Exception as exc:  # pragma: no cover
