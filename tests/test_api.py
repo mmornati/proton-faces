@@ -453,6 +453,16 @@ class TestPhotos:
         group = r.json()["groups"][0]
         assert sorted(g["uid"] for g in group["photos"]) == ["p1", "p2"]
 
+    def test_duplicates_favorited_by_me(self, client, password_hash):
+        user_id = _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1", sha1="same-hash")
+        _seed_done_photo("p2", sha1="same-hash")
+        store.favorite_photo(user_id, "p2")
+        r = client.get("/api/duplicates", headers=_bearer(client))
+        group = r.json()["groups"][0]
+        by_uid = {p["uid"]: p["favorited_by_me"] for p in group["photos"]}
+        assert by_uid == {"p1": False, "p2": True}
+
     def test_anchors(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1", capture_time=1700000000)
@@ -1408,6 +1418,27 @@ class TestTTLCacheSingleFlight:
         self._run_concurrent(api.api_people_duplicates)
         assert calls == 1
         assert api._dups_cache[1] == {"duplicates": []}
+
+    def test_photo_duplicates_single_flight(self, monkeypatch):
+        api._photo_dups_cache = None
+        calls = 0
+
+        def fake_duplicate_groups(limit=500):
+            nonlocal calls
+            calls += 1
+            time.sleep(0.05)
+            return []
+
+        monkeypatch.setattr(api, "duplicate_groups", fake_duplicate_groups)
+        self._run_concurrent(lambda: api._duplicate_groups_cached(200))
+        assert calls == 1
+        assert list(api._photo_dups_cache[1]) == [200]
+        # page sizes are keyed separately, so a new limit recomputes once and
+        # later hits are served from the cache.
+        assert api._duplicate_groups_cached(500) is api._photo_dups_cache[1][500]
+        assert calls == 2
+        assert api._duplicate_groups_cached(200) is api._photo_dups_cache[1][200]
+        assert calls == 2
 
     def test_clip_matrix_single_flight(self, monkeypatch):
         api._clip_cache = (time.time() - 1000, 1, ["p1"], np.zeros((1, 512), dtype=np.float32))

@@ -1630,26 +1630,33 @@ def duplicate_groups(limit: int = 500) -> list[list[sqlite3.Row]]:
 
     Returns a list of groups (each is a list of sqlite3.Row). Groups are
     ordered by total photo count DESC so the worst offenders appear first.
-    A ``hidden`` flag on individual rows lets the user dismiss a duplicate
-    while keeping the original — that's why we filter ``hidden=0`` here.
+    Members keep the ``hidden ASC, capture_time DESC`` sort so a dismissed
+    copy stays visible (styled) at the end of its group.
+
+    Single self-join (issue #90): the derived `g` table picks the top-`limit`
+    duplicate sha1s with a ROW_NUMBER window preserving the count-DESC group
+    order, so one round-trip returns every member of every group.
     """
     with get_conn() as conn:
-        groups = conn.execute(
-            "SELECT sha1 FROM photos "
-            "WHERE status='done' AND sha1 IS NOT NULL AND sha1 != '' "
-            "GROUP BY sha1 HAVING COUNT(*) > 1 "
-            "ORDER BY COUNT(*) DESC LIMIT ?",
+        rows = conn.execute(
+            "SELECT p.* FROM photos p "
+            "JOIN ("
+            "  SELECT sha1, ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC, sha1) AS grp "
+            "  FROM photos "
+            "  WHERE status='done' AND sha1 IS NOT NULL AND sha1 != '' "
+            "  GROUP BY sha1 HAVING COUNT(*) > 1 "
+            "  LIMIT ?"
+            ") g ON g.sha1 = p.sha1 "
+            "WHERE p.status='done' "
+            "ORDER BY g.grp, p.hidden ASC, p.capture_time DESC, p.uid ASC",
             (limit,),
         ).fetchall()
-        out: list[list[sqlite3.Row]] = []
-        for g in groups:
-            members = conn.execute(
-                "SELECT * FROM photos "
-                "WHERE sha1 = ? AND status='done' "
-                "ORDER BY hidden ASC, capture_time DESC",
-                (g["sha1"],),
-            ).fetchall()
-            out.append(members)
+    out: list[list[sqlite3.Row]] = []
+    for r in rows:
+        if out and out[-1][0]["sha1"] == r["sha1"]:
+            out[-1].append(r)
+        else:
+            out.append([r])
     return out
 
 

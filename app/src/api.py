@@ -147,10 +147,17 @@ app.add_middleware(CompressionMiddleware, minimum_size=1024)
 
 _STATIC = Path(__file__).parent / "static"
 
-# TTL cache for the (expensive) duplicates computation.
+# TTL cache for the (expensive) people-duplicates computation.
 _DUP_CACHE_TTL = 30.0
 _dups_cache: tuple[float, dict] | None = None
 _dups_cache_lock = threading.Lock()
+
+# TTL cache for the photo-duplicates endpoint (issue #90). Groups are
+# user-independent (favorites are merged per request), so one entry per
+# `limit` page-size serves every authenticated user.
+_PHOTO_DUPS_CACHE_TTL = 30.0
+_photo_dups_cache: tuple[float, dict[int, list]] | None = None
+_photo_dups_cache_lock = threading.Lock()
 
 # TTL caches (cheap, frequently re-requested on navigation).
 _ANCHORS_CACHE_TTL = 60.0
@@ -236,6 +243,11 @@ def _extract_bearer(request: Request) -> str | None:
 def _invalidate_dups_cache() -> None:
     global _dups_cache
     _dups_cache = None
+
+
+def _invalidate_photo_dups_cache() -> None:
+    global _photo_dups_cache
+    _photo_dups_cache = None
 
 
 def _invalidate_people_cache() -> None:
@@ -348,14 +360,17 @@ def _row_to_dict(row) -> dict:
     return d
 
 
-def _user_photos(user_id: int, rows) -> list[dict]:
+def _user_photos(user_id: int, rows, fav_set: set[str] | None = None) -> list[dict]:
     """Serialize a list of photo rows for `user_id`, marking favorited_by_me.
 
     Issues a single batched query against user_favorites for the page of uids
-    so list endpoints stay O(1) round-trips.
+    so list endpoints stay O(1) round-trips. A precomputed `fav_set` skips
+    that query so callers can batch one favorites lookup across many row
+    groups (used by the Duplicates endpoint).
     """
-    uids = [r["uid"] for r in rows]
-    fav_set = favorite_uids(user_id, uids) if uids else set()
+    if fav_set is None:
+        uids = [r["uid"] for r in rows]
+        fav_set = favorite_uids(user_id, uids) if uids else set()
     out = []
     for r in rows:
         d = _row_to_dict(r)
@@ -816,20 +831,53 @@ def api_memories(month: int | None = None, day: int | None = None, limit: int = 
     return {"month": m, "day": d, "photos": photos}
 
 
+def _duplicate_groups_cached(limit: int) -> list[list]:
+    """Photo-duplicate groups with a short single-flight TTL cache.
+
+    Double-checked locking keyed by `limit` so concurrent requests share one
+    store round-trip while different page sizes keep their own entries. The
+    groups are user-independent — the endpoint merges per-user favorites on
+    top, so one entry serves every authenticated caller.
+    """
+    global _photo_dups_cache
+    now = time.time()
+    cache = _photo_dups_cache
+    if cache is not None and now - cache[0] < _PHOTO_DUPS_CACHE_TTL and limit in cache[1]:
+        return cache[1][limit]
+    with _photo_dups_cache_lock:
+        now = time.time()
+        cache = _photo_dups_cache
+        if cache is not None and now - cache[0] < _PHOTO_DUPS_CACHE_TTL and limit in cache[1]:
+            return cache[1][limit]
+        if cache is None or now - cache[0] >= _PHOTO_DUPS_CACHE_TTL:
+            cache = (now, {})
+            _photo_dups_cache = cache
+        groups = duplicate_groups(limit=limit)
+        cache[1][limit] = groups
+        return groups
+
+
 @app.get("/api/duplicates")
 def api_duplicates(limit: int = 200, user: CurrentUser = Depends(require_user)):
     """Groups of photos that share a Proton content-hash (sha1).
 
     Each group is rendered side-by-side in the Duplicates tab; users can
     hide individual copies (``hidden=1``) so they don't re-appear.
+
+    One store round-trip returns every group with its members (self-join,
+    issue #90) and the favorite flags come from a single batched query over
+    all the returned uids — not one per-group query. Groups themselves are cached
+    for `_PHOTO_DUPS_CACHE_TTL` seconds.
     """
-    groups = duplicate_groups(limit=limit)
+    groups = _duplicate_groups_cached(limit)
+    all_uids = [r["uid"] for members in groups for r in members]
+    fav_set = favorite_uids(user.id, all_uids) if all_uids else set()
     out = []
     for members in groups:
         out.append({
             "sha1": members[0]["sha1"],
             "count": len(members),
-            "photos": _user_photos(user.id, members),
+            "photos": _user_photos(user.id, members, fav_set=fav_set),
         })
     return {"groups": out}
 
@@ -861,6 +909,9 @@ def api_patch_photo(uid: str, body: dict = Body(...),
         set_archived(uid, bool(body["archived"]))
     if "hidden" in body:
         set_hidden(uid, bool(body["hidden"]))
+        # Hidden members are included (at the end of their group); invalidate
+        # so the Duplicates tab reflects the new order right away.
+        _invalidate_photo_dups_cache()
     row = get_photo(uid)
     return _single_user_photo(user.id, row)
 

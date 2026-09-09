@@ -894,6 +894,44 @@ class TestDuplicatesAndMemories:
         assert len(groups) == 1
         assert [r["uid"] for r in groups[0]] == ["p1", "p2"]
 
+    def test_duplicate_groups_ordered_count_desc_hidden_last(self, tmp_db):
+        store.upsert_photos(
+            [
+                _photo("a1", sha1="two", capture_time=3000),
+                _photo("a2", sha1="two", capture_time=1000),
+                _photo("b1", sha1="three", capture_time=10),
+                _photo("b2", sha1="three", capture_time=2000),
+                _photo("b3", sha1="three", capture_time=100),
+            ]
+        )
+        for uid in ("a1", "a2", "b1", "b2", "b3"):
+            store.set_photo_done(uid, f"{uid}.webp", None, None)
+        store.set_hidden("a2", True)
+        groups = store.duplicate_groups()
+        # worst offenders first; members hidden-ASC then capture_time-DESC
+        assert [[r["uid"] for r in g] for g in groups] == [
+            ["b2", "b3", "b1"],
+            ["a1", "a2"],
+        ]
+
+    def test_duplicate_groups_single_round_trip(self, tmp_db):
+        # issue #90: one self-join must fetch every group + member, not one
+        # query per group (a 500-group library used to cost ~1000 queries).
+        store.upsert_photos(
+            [_photo("p1", sha1="same"), _photo("p2", sha1="same"), _photo("p3", sha1="other")]
+        )
+        for uid in ("p1", "p2", "p3"):
+            store.set_photo_done(uid, f"{uid}.webp", None, None)
+        statements: list[str] = []
+        with store.get_conn() as conn:
+            conn.set_trace_callback(statements.append)
+            try:
+                store.duplicate_groups()
+            finally:
+                conn.set_trace_callback(None)
+        selects = [s for s in statements if s.strip().upper().startswith("SELECT")]
+        assert len(selects) == 1
+
     def test_memories_for_today(self, tmp_db):
         store.upsert_photos([_photo("p1", capture_time=1609459200)])  # 2021-01-01
         store.set_photo_done("p1", "t.webp", None, None)
