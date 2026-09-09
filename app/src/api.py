@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -165,7 +166,11 @@ _ANCHORS_CACHE_TTL = 60.0
 _anchors_cache: tuple[float, dict] | None = None
 
 _PEOPLE_CACHE_TTL = 10.0
-_people_cache: tuple[str | None, float, list] | None = None  # (q, ts, full list)
+_PEOPLE_CACHE_MAX = 32
+# Small LRU keyed by the name prefix (None = the unfiltered full list).
+# Typeahead keystrokes that move forward/back between prefixes hit warm
+# entries instead of re-running the people query on every keystroke.
+_people_cache: OrderedDict[str | None, tuple[float, list]] = OrderedDict()
 _people_cache_lock = threading.Lock()
 
 # Hard cap on how long `/api/photos/{uid}/full` is allowed to take before we
@@ -253,7 +258,7 @@ def _invalidate_photo_dups_cache() -> None:
 
 def _invalidate_people_cache() -> None:
     global _people_cache
-    _people_cache = None
+    _people_cache = OrderedDict()
 
 
 def _invalidate_clip_cache() -> None:
@@ -1220,26 +1225,45 @@ async def api_full(uid: str, request: Request,
 
 # --- people ----------------------------------------------------------------
 
+def _people_cache_get_locked(q: str | None, now: float) -> list | None:
+    """Fresh cached list for `q`, else None. Promotes `q` to most-recently-used
+    on a hit. Caller must hold `_people_cache_lock`."""
+    entry = _people_cache.get(q)
+    if entry is None:
+        return None
+    ts, full = entry
+    if now - ts >= _PEOPLE_CACHE_TTL:
+        return None
+    _people_cache.move_to_end(q)
+    return full
+
+
+def _people_cache_put_locked(q: str | None, now: float, full: list) -> None:
+    """Store `full` under `q`, refreshing its timestamp and evicting the
+    least-recently-used entry once the cache exceeds `_PEOPLE_CACHE_MAX`.
+    Caller must hold `_people_cache_lock`."""
+    _people_cache[q] = (now, full)
+    _people_cache.move_to_end(q)
+    while len(_people_cache) > _PEOPLE_CACHE_MAX:
+        _people_cache.popitem(last=False)
+
+
 def _people_all_cached() -> list:
     """Full (unfiltered) people list as serialized dicts, cached briefly.
 
-    Avoids re-running the expensive GROUP-BY-all-faces query (~180 k rows) on
-    every call — shares the same `_people_cache` slot (q=None) as
-    `/api/people` so the suggest endpoint and the people grid don't each pay
-    for it independently.
+    Avoids re-running the expensive people query on every call — shares the
+    same LRU slot (q=None) as `/api/people` so the suggest endpoint and the
+    people grid don't each pay for it independently.
     """
     global _people_cache
     now = time.time()
-    if _people_cache is not None:
-        cached_q, ts, full = _people_cache
-        if cached_q is None and now - ts < _PEOPLE_CACHE_TTL:
-            return full
+    entry = _people_cache.get(None)
+    if entry is not None and now - entry[0] < _PEOPLE_CACHE_TTL:
+        return entry[1]
     with _people_cache_lock:
-        now = time.time()
-        if _people_cache is not None:
-            cached_q, ts, full = _people_cache
-            if cached_q is None and now - ts < _PEOPLE_CACHE_TTL:
-                return full
+        full = _people_cache_get_locked(None, now)
+        if full is not None:
+            return full
         rows = all_people()
         full = [
             {
@@ -1255,17 +1279,18 @@ def _people_all_cached() -> list:
             }
             for r in rows
         ]
-        _people_cache = (None, now, full)
+        _people_cache_put_locked(None, now, full)
         return full
 
 
 @app.get("/api/people")
 def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
-    """People ordered by photo_count DESC. Paginated, optionally filtered by name.
+    """People ordered by photo_count DESC. Paginated, optionally filtered by a
+    case-insensitive name prefix.
 
-    The expensive GROUP-BY-all-faces query is materialized once per `q` and
-    cached briefly, then each page just slices the list — so infinite scroll
-    (new offset per page) no longer re-runs the aggregation for every page.
+    Each `q` prefix is materialized once and cached in a small LRU, then each
+    page just slices the list — so infinite scroll (new offset per page) and
+    typeahead keystrokes no longer re-run the aggregation for every request.
     """
     q = (q or "").strip() or None
     limit = max(1, min(limit, 1000))
@@ -1276,19 +1301,17 @@ def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
         full = _people_all_cached()
         page = full[offset : offset + limit]
         return {"people": page, "total": len(full), "limit": limit, "offset": offset}
-    if _people_cache is not None:
-        cached_q, ts, full = _people_cache
-        if cached_q == q and now - ts < _PEOPLE_CACHE_TTL:
-            page = full[offset : offset + limit]
-            return {"people": page, "total": len(full), "limit": limit, "offset": offset}
+    entry = _people_cache.get(q)
+    if entry is not None and now - entry[0] < _PEOPLE_CACHE_TTL:
+        page = entry[1][offset : offset + limit]
+        return {"people": page, "total": len(entry[1]), "limit": limit, "offset": offset}
 
     with _people_cache_lock:
         now = time.time()
-        if _people_cache is not None:
-            cached_q, ts, full = _people_cache
-            if cached_q == q and now - ts < _PEOPLE_CACHE_TTL:
-                page = full[offset : offset + limit]
-                return {"people": page, "total": len(full), "limit": limit, "offset": offset}
+        full = _people_cache_get_locked(q, now)
+        if full is not None:
+            page = full[offset : offset + limit]
+            return {"people": page, "total": len(full), "limit": limit, "offset": offset}
         rows = all_people(q=q)
         total = len(rows)
         full = [
@@ -1305,7 +1328,7 @@ def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
             }
             for r in rows
         ]
-        _people_cache = (q, now, full)
+        _people_cache_put_locked(q, now, full)
         page = full[offset : offset + limit]
         return {"people": page, "total": total, "limit": limit, "offset": offset}
 

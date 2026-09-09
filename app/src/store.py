@@ -105,6 +105,10 @@ CREATE TABLE IF NOT EXISTS people (
     photo_count   INTEGER NOT NULL DEFAULT 0    -- denormalized: COUNT(DISTINCT photo_uid)
 );
 CREATE INDEX IF NOT EXISTS idx_people_photo_count ON people(photo_count DESC);
+-- Case-insensitive prefix lookups for the people typeahead/search (issue #91):
+-- SQLite turns `name COLLATE NOCASE LIKE 'prefix%'` into a range scan over
+-- this index instead of a full-table LIKE scan.
+CREATE INDEX IF NOT EXISTS idx_people_name ON people(name COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS faces (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -372,6 +376,10 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE people ADD COLUMN photo_count INTEGER NOT NULL DEFAULT 0")
     if "idx_people_photo_count" not in {r["name"] for r in conn.execute("PRAGMA index_list(people)")}:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_people_photo_count ON people(photo_count DESC)")
+    # Issue #91: prefix name lookups for the typeahead. The schema also declares
+    # it, but existing DBs pre-date that change.
+    if "idx_people_name" not in {r["name"] for r in conn.execute("PRAGMA index_list(people)")}:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_people_name ON people(name COLLATE NOCASE)")
     conn.execute(
         """UPDATE people
            SET face_count = (SELECT COUNT(*) FROM faces f WHERE f.person_id = people.id),
@@ -1334,8 +1342,10 @@ def person_mean_embeddings_from_cache() -> dict[int, np.ndarray]:
 def all_people(q: str | None = None, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:
     """People ordered by photo_count DESC.
 
-    With `q`, restricts to people whose name matches the LIKE pattern
-    (case-insensitive prefix is encouraged). With `limit`/`offset`, paginates.
+    With `q`, restricts to people whose name starts with the prefix
+    (case-insensitive; `COLLATE NOCASE` lets `LIKE 'q%'` seek
+    `idx_people_name` instead of scanning the table). With `limit`/`offset`,
+    paginates.
     """
     sql = (
         "SELECT p.id, p.name, p.cover_uid, p.cover_face_id, "
@@ -1344,8 +1354,8 @@ def all_people(q: str | None = None, limit: int | None = None, offset: int = 0) 
     )
     params: list = []
     if q:
-        sql += "WHERE LOWER(p.name) LIKE LOWER(?) "
-        params.append(f"%{q}%")
+        sql += "WHERE p.name COLLATE NOCASE LIKE ? "
+        params.append(f"{q}%")
     sql += "ORDER BY p.photo_count DESC, p.id ASC"
     if limit is not None:
         sql += " LIMIT ? OFFSET ?"

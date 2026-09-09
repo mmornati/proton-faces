@@ -8,6 +8,7 @@ module-level ML functions (embed_text / embed_query_face) monkeypatched.
 
 import threading
 import time
+from collections import OrderedDict
 
 import numpy as np
 import pytest
@@ -1400,7 +1401,7 @@ class TestTTLCacheSingleFlight:
         assert api._bridge_health_cache[1] == (True, True)
 
     def test_people_all_cached_single_flight(self, monkeypatch):
-        api._people_cache = (None, time.time() - 1000, [])
+        api._people_cache = OrderedDict([(None, (time.time() - 1000, []))])
         calls = 0
 
         def fake_all_people(q=None):
@@ -1412,10 +1413,10 @@ class TestTTLCacheSingleFlight:
         monkeypatch.setattr(api, "all_people", fake_all_people)
         self._run_concurrent(api._people_all_cached)
         assert calls == 1
-        assert api._people_cache is not None and api._people_cache[0] is None
+        assert api._people_cache.get(None) is not None
 
     def test_people_filtered_single_flight(self, monkeypatch):
-        api._people_cache = ("foo", time.time() - 1000, [])
+        api._people_cache = OrderedDict([("foo", (time.time() - 1000, []))])
         calls = 0
 
         def fake_all_people(q=None):
@@ -1427,7 +1428,7 @@ class TestTTLCacheSingleFlight:
         monkeypatch.setattr(api, "all_people", fake_all_people)
         self._run_concurrent(lambda: api.api_people(limit=10, offset=0, q="foo"))
         assert calls == 1
-        assert api._people_cache is not None and api._people_cache[0] == "foo"
+        assert api._people_cache.get("foo") is not None
 
     def test_duplicates_single_flight(self, monkeypatch):
         api._dups_cache = (time.time() - 1000, {})
@@ -1489,3 +1490,85 @@ class TestTTLCacheSingleFlight:
         monkeypatch.setattr(api, "read_clip_sidecar", fake_sidecar)
         self._run_concurrent(api._get_clip_matrix)
         assert sidecar_calls == 1
+
+
+class TestPeopleCacheLru:
+    """The /api/people q-cache is an LRU: distinct prefixes coexist, warm
+    entries are reused without re-computing, stale entries re-compute, and
+    capacity evicts the least-recently-used prefix."""
+
+    _person = {"id": 1, "name": "Alice", "cover_uid": "p1", "cover_face_id": None,
+               "face_count": 1, "photo_count": 1, "cover_url": None}
+
+    def test_warm_prefix_reuses_cache(self, monkeypatch):
+        calls = 0
+
+        def fake_all_people(q=None):
+            nonlocal calls
+            calls += 1
+            return [self._person]
+
+        monkeypatch.setattr(api, "all_people", fake_all_people)
+        r1 = api.api_people(limit=10, offset=0, q="al")
+        r2 = api.api_people(limit=10, offset=0, q="al")
+        assert calls == 1
+        assert r1["people"] == r2["people"]
+        assert r1["total"] == 1
+
+    def test_distinct_prefixes_evict_lru(self, monkeypatch):
+        api._people_cache = OrderedDict()
+        seen: list[str | None] = []
+
+        def fake_all_people(q=None):
+            seen.append(q)
+            return [{**self._person, "name": str(q)}]
+
+        monkeypatch.setattr(api, "all_people", fake_all_people)
+        for i in range(api._PEOPLE_CACHE_MAX + 5):
+            q = f"prefix-{i}"
+            api.api_people(limit=10, offset=0, q=q)
+        assert len(api._people_cache) == api._PEOPLE_CACHE_MAX
+        # the five oldest prefixes were evicted and will re-compute on touch
+        for i in range(5):
+            api.api_people(limit=10, offset=0, q=f"prefix-{i}")
+        assert seen.count("prefix-0") == 2  # cold again after eviction
+
+    def test_expired_entry_recomputes(self, monkeypatch):
+        api._people_cache = OrderedDict([("al", (time.time() - 1000, [self._person]))])
+        calls = 0
+
+        def fake_all_people(q=None):
+            nonlocal calls
+            calls += 1
+            return [self._person]
+
+        monkeypatch.setattr(api, "all_people", fake_all_people)
+        api.api_people(limit=10, offset=0, q="al")
+        assert calls == 1
+
+    def test_distinct_prefixes_do_not_invalidate_each_other(self, monkeypatch):
+        calls: list[str] = []
+
+        def fake_all_people(q=None):
+            calls.append(q)
+            return [{**self._person, "name": str(q)}]
+
+        monkeypatch.setattr(api, "all_people", fake_all_people)
+        api.api_people(limit=10, offset=0, q="a")
+        api.api_people(limit=10, offset=0, q="al")
+        api.api_people(limit=10, offset=0, q="a")
+        api.api_people(limit=10, offset=0, q="al")
+        assert calls == ["a", "al"]  # each prefix computed exactly once
+
+    def test_invalidate_clears_all_prefixes(self, monkeypatch):
+        calls: list[str] = []
+
+        def fake_all_people(q=None):
+            calls.append(q)
+            return [{**self._person, "name": str(q)}]
+
+        monkeypatch.setattr(api, "all_people", fake_all_people)
+        api.api_people(limit=10, offset=0, q="al")
+        api._invalidate_people_cache()
+        api.api_people(limit=10, offset=0, q="al")
+        assert calls == ["al", "al"]
