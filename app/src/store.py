@@ -739,20 +739,20 @@ def set_photo_done(
         # A photo just joined the counted set (done + thumbnail). Keep the
         # photo_albums mirror complete and flag its albums so the next
         # incremental albums sync counts it (issue #95).
-        row = conn.execute("SELECT albums FROM photos WHERE uid=?", (uid,)).fetchone()
+        row = c.execute("SELECT albums FROM photos WHERE uid=?", (uid,)).fetchone()
         uids = set()
         if row and row["albums"]:
             try:
                 uids = set(json.loads(row["albums"]))
             except ValueError:
                 pass
-        conn.execute("DELETE FROM photo_albums WHERE photo_uid=?", (uid,))
+        c.execute("DELETE FROM photo_albums WHERE photo_uid=?", (uid,))
         if uids:
-            conn.executemany(
+            c.executemany(
                 "INSERT OR IGNORE INTO photo_albums (photo_uid, album_uid) VALUES (?, ?)",
                 [(uid, u) for u in uids],
             )
-        _mark_albums_dirty(conn, uids)
+        _mark_albums_dirty(c, uids)
 
 
 def set_photo_full(uid: str) -> None:
