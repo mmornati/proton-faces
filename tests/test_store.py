@@ -270,6 +270,64 @@ class TestPhotoClaims:
         rows = store.get_photos("new", limit=1)
         assert [r["uid"] for r in rows] == ["p2"]
 
+    def test_claim_photos_for_download_batch(self, tmp_db):
+        store.upsert_photos([_photo("p1"), _photo("p2"), _photo("p3")])
+        _set_status("p2", "done")
+        claimed = store.claim_photos_for_download(["p1", "p2", "p3"])
+        assert sorted(claimed) == ["p1", "p3"]
+        assert store.get_photo("p1")["status"] == "downloading"
+        assert store.get_photo("p2")["status"] == "done"
+        assert store.get_photo("p3")["status"] == "downloading"
+        # Already-claimed uids are left alone on a second pass.
+        assert store.claim_photos_for_download(["p1", "p3"]) == []
+
+    def test_claim_photos_for_download_empty(self, tmp_db):
+        assert store.claim_photos_for_download([]) == []
+
+    def test_claim_photos_for_download_unknown_uids(self, tmp_db):
+        store.upsert_photos([_photo("p1")])
+        claimed = store.claim_photos_for_download(["p1", "nope"])
+        assert claimed == ["p1"]
+
+
+class TestTransaction:
+    def test_commit(self, tmp_db):
+        store.upsert_photos([_photo()])
+        with store.transaction() as conn:
+            conn.execute("UPDATE photos SET status='processing' WHERE uid='p1'")
+        assert store.get_photo("p1")["status"] == "processing"
+
+    def test_rollback_on_exception(self, tmp_db):
+        store.upsert_photos([_photo()])
+        with pytest.raises(RuntimeError):
+            with store.transaction() as conn:
+                conn.execute("UPDATE photos SET status='processing' WHERE uid='p1'")
+                raise RuntimeError("boom")
+        assert store.get_photo("p1")["status"] == "new"
+
+    def test_transaction_rollback_is_swallowed(self, tmp_db):
+        store.upsert_photos([_photo()])
+        with store.transaction() as conn:
+            conn.execute("UPDATE photos SET status='processing' WHERE uid='p1'")
+            raise store.TransactionRollback
+        assert store.get_photo("p1")["status"] == "new"
+
+    def test_helpers_share_transaction_conn(self, tmp_db):
+        # Everything written on the shared conn is one commit: the claim, the
+        # face insert and the error mark appear together — or not at all.
+        store.upsert_photos([_photo()])
+        assert store.claim_photo_for_download("p1") is True
+        with pytest.raises(RuntimeError):
+            with store.transaction() as conn:
+                assert store.claim_photo_for_processing("p1", conn) is True
+                store.insert_face("p1", None, 0.9, "[0,0,10,10]", EMB.tobytes(), conn=conn)
+                store.set_photo_error("p1", "boom", conn=conn)
+                raise RuntimeError("boom")
+        # The whole batch was rolled back: p1 is back at its pre-transaction
+        # status and the face insert never landed.
+        assert store.get_photo("p1")["status"] == "downloading"
+        assert store.count_faces_for_photo("p1") == 0
+
 
 class TestStats:
     def test_stats_counts(self, tmp_db):

@@ -238,6 +238,54 @@ def get_conn() -> sqlite3.Connection:
         raise
 
 
+class TransactionRollback(Exception):
+    """Raise inside a `with transaction():` block to roll it back without error.
+
+    Used to abort a batch of writes (e.g. a lost photo claim) without turning
+    a normal no-op into a failure: the block is rolled back and the exception
+    is swallowed.
+    """
+
+
+@contextmanager
+def transaction() -> sqlite3.Connection:
+    """Run several writes on the caller's persistent connection as one commit.
+
+    The indexer uses this to collapse ~6 separate commits per photo (claim,
+    face inserts, clip insert, done) into a single fsync-heavy commit — the
+    dominant per-photo cost on HDD-backed indexes. Any exception rolls the
+    whole batch back, leaving the prior committed state (an uncommitted photo
+    simply keeps its old status and is retried — same crash semantics as the
+    per-step commits it replaces).
+
+    Store helpers called inside **must** receive ``conn=`` so they execute on
+    this transaction instead of committing on their own connection.
+    """
+    conn = _get_persistent_conn(str(settings.db_path))
+    conn.execute("BEGIN")
+    try:
+        yield conn
+    except TransactionRollback:
+        conn.rollback()
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+
+
+@contextmanager
+def _with_conn(conn: sqlite3.Connection | None) -> sqlite3.Connection:
+    """Yield *conn* when given (the caller owns the transaction), else open a
+    commit-on-exit connection. Lets store helpers accept an optional
+    connection while keeping their single-call behaviour unchanged."""
+    if conn is not None:
+        yield conn
+    else:
+        with get_conn() as c:
+            yield c
+
+
 def init_db() -> None:
     with get_conn() as conn:
         # Migrations first: existing DBs need ALTER TABLE ADD COLUMN before the
@@ -573,8 +621,39 @@ def claim_photo_for_download(uid: str) -> bool:
         return cur.rowcount == 1
 
 
-def claim_photo_for_processing(uid: str) -> bool:
-    """Atomically move a photo from 'downloading' to 'processing'."""
+def claim_photos_for_download(uids: list[str]) -> list[str]:
+    """Atomically claim a batch of 'new' photos for download.
+
+    Uses a single UPDATE ... RETURNING so one connection/commit replaces N
+    per-uid claims. Only the uids that were actually in status 'new' are
+    returned (the rest are left for the next cycle).
+    """
+    if not uids:
+        return []
+    with _lock, get_conn() as conn:
+        cur = conn.execute(
+            f"""UPDATE photos
+                   SET status='downloading'
+                 WHERE uid IN ({",".join("?" * len(uids))})
+                   AND status='new'
+                 RETURNING uid""",
+            uids,
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
+def claim_photo_for_processing(uid: str, conn: sqlite3.Connection | None = None) -> bool:
+    """Atomically move a photo from 'downloading' to 'processing'.
+
+    When *conn* is given the claim runs inside that caller-owned transaction
+    (the whole per-photo sequence then commits as one). Otherwise it makes its
+    own quick commit, serialized against other claims by `_lock`.
+    """
+    if conn is not None:
+        cur = conn.execute(
+            "UPDATE photos SET status='processing' WHERE uid=? AND status='downloading'", (uid,)
+        )
+        return cur.rowcount == 1
     with _lock, get_conn() as conn:
         cur = conn.execute(
             "UPDATE photos SET status='processing' WHERE uid=? AND status='downloading'", (uid,)
@@ -582,9 +661,15 @@ def claim_photo_for_processing(uid: str) -> bool:
         return cur.rowcount == 1
 
 
-def set_photo_done(uid: str, thumb_path: str, gps: tuple[float, float] | None, place: str | None) -> None:
-    with get_conn() as conn:
-        conn.execute(
+def set_photo_done(
+    uid: str,
+    thumb_path: str,
+    gps: tuple[float, float] | None,
+    place: str | None,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    with _with_conn(conn) as c:
+        c.execute(
             """UPDATE photos SET status='done', thumb_path=?, gps_lat=?, gps_lng=?, place=?,
                processed_at=?, error=NULL WHERE uid=?""",
             (
@@ -647,9 +732,9 @@ def backfill_fullres_images() -> int:
     return n
 
 
-def set_photo_error(uid: str, error: str) -> None:
-    with get_conn() as conn:
-        conn.execute("UPDATE photos SET status='error', error=? WHERE uid=?", (error, uid))
+def set_photo_error(uid: str, error: str, conn: sqlite3.Connection | None = None) -> None:
+    with _with_conn(conn) as c:
+        c.execute("UPDATE photos SET status='error', error=? WHERE uid=?", (error, uid))
 
 
 def set_photo_deleted(uid: str) -> None:
@@ -743,15 +828,17 @@ def stats() -> dict:
 
 # --- faces & people -------------------------------------------------------
 
-def _recount_person(person_id: int) -> None:
+def _recount_person(person_id: int, conn: sqlite3.Connection | None = None) -> None:
     """Refresh the denormalized face_count / photo_count for one person.
 
     Cheap per-person correlated recount, used at every face<->person write
     site so `all_people()` and `get_person()` can read cached counts instead
     of running an expensive join + COUNT(DISTINCT) on every request.
+
+    Passing *conn* keeps the recount inside an enclosing transaction.
     """
-    with get_conn() as conn:
-        conn.execute(
+    with _with_conn(conn) as c:
+        c.execute(
             """UPDATE people
                SET face_count = (SELECT COUNT(*) FROM faces f WHERE f.person_id = people.id),
                    photo_count = (SELECT COUNT(DISTINCT f.photo_uid) FROM faces f
@@ -803,35 +890,42 @@ def delete_empty_people() -> int:
         return cur.rowcount
 
 
-def insert_face(photo_uid: str, person_id: int | None, confidence: float, bbox: list, embedding: bytes) -> int:
-    with get_conn() as conn:
-        cur = conn.execute(
+def insert_face(
+    photo_uid: str,
+    person_id: int | None,
+    confidence: float,
+    bbox: list,
+    embedding: bytes,
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    with _with_conn(conn) as c:
+        cur = c.execute(
             "INSERT INTO faces (photo_uid, person_id, confidence, bbox, embedding) VALUES (?,?,?,?,?)",
             (photo_uid, person_id, confidence, json.dumps(bbox), sqlite3.Binary(embedding)),
         )
         fid = cur.lastrowid
     if person_id is not None:
-        _recount_person(person_id)
+        _recount_person(person_id, conn)
     return fid
 
 
-def count_faces_for_photo(photo_uid: str) -> int:
+def count_faces_for_photo(photo_uid: str, conn: sqlite3.Connection | None = None) -> int:
     """How many face rows a photo already has.
 
     Used by the worker to skip re-running face detection when a photo is
     reprocessed (e.g. a reclaimed photo restored after a false deletion).
     """
-    with get_conn() as conn:
-        row = conn.execute(
+    with _with_conn(conn) as c:
+        row = c.execute(
             "SELECT COUNT(*) AS n FROM faces WHERE photo_uid=?", (photo_uid,)
         ).fetchone()
         return int(row["n"])
 
 
-def clip_exists(photo_uid: str) -> bool:
+def clip_exists(photo_uid: str, conn: sqlite3.Connection | None = None) -> bool:
     """Whether a photo already has a CLIP embedding (to skip recomputing it)."""
-    with get_conn() as conn:
-        row = conn.execute(
+    with _with_conn(conn) as c:
+        row = c.execute(
             "SELECT 1 FROM clips WHERE photo_uid=? LIMIT 1", (photo_uid,)
         ).fetchone()
         return row is not None
@@ -1404,9 +1498,9 @@ def faces_for_person(person_id: int, limit: int = 500) -> list[sqlite3.Row]:
 
 # --- clips ----------------------------------------------------------------
 
-def insert_clip(photo_uid: str, embedding: bytes) -> None:
-    with get_conn() as conn:
-        conn.execute(
+def insert_clip(photo_uid: str, embedding: bytes, conn: sqlite3.Connection | None = None) -> None:
+    with _with_conn(conn) as c:
+        c.execute(
             "INSERT INTO clips (photo_uid, embedding) VALUES (?,?) "
             "ON CONFLICT(photo_uid) DO UPDATE SET embedding=excluded.embedding",
             (photo_uid, sqlite3.Binary(embedding)),

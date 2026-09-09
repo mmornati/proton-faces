@@ -33,10 +33,11 @@ from faces import detect_faces
 from geocode import reverse_geocode_many
 from sidecar import write_clip_sidecar, write_face_sidecar
 from store import (
+    TransactionRollback,
     backfill_fullres_images,
-    claim_photo_for_download,
     claim_photo_for_full,
     claim_photo_for_processing,
+    claim_photos_for_download,
     clip_exists,
     confirm_deletions,
     count_faces_for_photo,
@@ -53,6 +54,7 @@ from store import (
     set_photo_error,
     set_photo_full,
     sync_albums,
+    transaction,
     upsert_photos,
 )
 
@@ -496,7 +498,10 @@ def _downloader_loop() -> None:
                 time.sleep(5)
                 continue
             uids = [r["uid"] for r in photos]
-            claimed = [u for u in uids if claim_photo_for_download(u)]
+            # One UPDATE ... RETURNING claims the whole batch instead of N
+            # separate per-uid connections/commits; only the uids that were
+            # actually 'new' come back.
+            claimed = claim_photos_for_download(uids)
             if not claimed:
                 time.sleep(5)
                 continue
@@ -553,89 +558,103 @@ def _worker_loop() -> None:
 
 
 def _process_one(uid: str) -> None:
-    if not claim_photo_for_processing(uid):
-        return
-
     work = _work_path(uid)
-    if not work.exists():
-        set_photo_error(uid, "work file missing")
-        return
 
-    with Image.open(work) as img:
-        w, h = img.size
-        rgb = img.convert("RGB")
-        arr = np.asarray(rgb)
-        bgr = arr[:, :, ::-1].copy()  # PIL -> OpenCV BGR
+    # One transaction per photo: the claim, the read, every per-face insert,
+    # the clip insert and the final 'done' mark all run on a single
+    # connection and commit once — this collapses the ~6 separate
+    # connections/commits the old per-step flow made. A lost claim raises
+    # TransactionRollback to abort the transaction (the photo keeps its prior
+    # status and is retried); any other exception rolls the whole batch back,
+    # which preserves the crash semantics of the per-step commits this
+    # replaces — an uncommitted photo simply stays in its old status.
+    with transaction() as conn:
+        if not claim_photo_for_processing(uid, conn):
+            raise TransactionRollback
 
-    # GPS/place is enriched by the gps loop (subprocess) — never geocode from
-    # a worker thread: reverse_geocoder forks a multiprocessing pool which
-    # deadlocks inside the app's threaded process.
-    photo = _photo_row(uid)
-    gps = (
-        (photo["gps_lat"], photo["gps_lng"])
-        if photo and photo["gps_lat"] is not None
-        else None
-    )
-    place = photo["place"] if photo else None
+        if not work.exists():
+            set_photo_error(uid, "work file missing", conn=conn)
+            return
 
-    # Re-processing a photo (e.g. a reclaimed photo that was falsely marked
-    # deleted and is being restored) must not re-run the expensive face
-    # detector nor leave duplicate face rows behind. If this photo already
-    # has faces from a previous run, keep them — they are still valid, and
-    # skipping detection is exactly what makes reclaiming ~79 k photos fast
-    # (only the thumbnail is re-downloaded; embeddings and any person_id
-    # assignments are preserved). Clips are upserted in `insert_clip`, so a
-    # fresh detection is only ever needed when no prior result exists.
-    existing_faces = count_faces_for_photo(uid)
-    if existing_faces:
-        face_count = existing_faces
-    else:
-        faces = detect_faces(bgr)
-        face_count = len(faces)
-        matched = 0
-        for f in faces:
-            # Assign straight to an existing person when their mean embedding
-            # matches, so a known face never sits unassigned and can't spawn a
-            # duplicate-person cluster. Unmatched faces stay NULL for the
-            # cluster loop / manual review.
-            person_id = match_person(
-                f["embedding"].tobytes(), settings.face_sim_threshold
-            )
-            if person_id is not None:
-                matched += 1
-            insert_face(
-                photo_uid=uid,
-                person_id=person_id,
-                confidence=f["confidence"],
-                bbox=_norm_bbox(f["bbox"], w, h),
-                embedding=f["embedding"].tobytes(),
-            )
+        with Image.open(work) as img:
+            w, h = img.size
+            rgb = img.convert("RGB")
+            arr = np.asarray(rgb)
+            bgr = arr[:, :, ::-1].copy()  # PIL -> OpenCV BGR
 
-    # Clip embedding: recompute only when the photo has none yet (same
-    # reclaim fast-path as faces above — the previous CLIP vector, if any,
-    # is still valid).
-    clip_vec = None if clip_exists(uid) else embed_pil(rgb)
+        # GPS/place is enriched by the gps loop (subprocess) — never geocode
+        # from a worker thread: reverse_geocoder forks a multiprocessing pool
+        # which deadlocks inside the app's threaded process.
+        photo = _photo_row(uid, conn)
+        gps = (
+            (photo["gps_lat"], photo["gps_lng"])
+            if photo and photo["gps_lat"] is not None
+            else None
+        )
+        place = photo["place"] if photo else None
 
-    # Persist thumbnail into the cache, then remove the work file.
-    final = _thumb_path(uid)
-    work.replace(final)
+        # Re-processing a photo (e.g. a reclaimed photo that was falsely
+        # marked deleted and is being restored) must not re-run the expensive
+        # face detector nor leave duplicate face rows behind. If this photo
+        # already has faces from a previous run, keep them — they are still
+        # valid, and skipping detection is exactly what makes reclaiming
+        # ~79k photos fast (only the thumbnail is re-downloaded; embeddings
+        # and any person_id assignments are preserved). Clips are upserted in
+        # `insert_clip`, so a fresh detection is only ever needed when no
+        # prior result exists.
+        existing_faces = count_faces_for_photo(uid, conn)
+        if existing_faces:
+            face_count = existing_faces
+        else:
+            faces = detect_faces(bgr)
+            face_count = len(faces)
+            matched = 0
+            for f in faces:
+                # Assign straight to an existing person when their mean
+                # embedding matches, so a known face never sits unassigned and
+                # can't spawn a duplicate-person cluster. Unmatched faces stay
+                # NULL for the cluster loop / manual review.
+                person_id = match_person(
+                    f["embedding"].tobytes(), settings.face_sim_threshold
+                )
+                if person_id is not None:
+                    matched += 1
+                insert_face(
+                    photo_uid=uid,
+                    person_id=person_id,
+                    confidence=f["confidence"],
+                    bbox=_norm_bbox(f["bbox"], w, h),
+                    embedding=f["embedding"].tobytes(),
+                    conn=conn,
+                )
 
-    if clip_vec is not None:
-        insert_clip(uid, clip_vec.tobytes())
+        # Clip embedding: recompute only when the photo has none yet (same
+        # reclaim fast-path as faces above — the previous CLIP vector, if
+        # any, is still valid).
+        clip_vec = None if clip_exists(uid, conn) else embed_pil(rgb)
 
-    # Mark sidecar dirty when new faces or clips were added
-    if not existing_faces or clip_vec is not None:
-        _sidcar_mark_dirty()
+        # Persist thumbnail into the cache, then remove the work file.
+        final = _thumb_path(uid)
+        work.replace(final)
 
-    set_photo_done(uid, final.name, gps, place)
-    log.debug(
-        "processed %s: %d faces (kept=%d, matched=%d), clip=%s",
-        uid, face_count, bool(existing_faces), matched if not existing_faces else 0,
-        clip_vec is not None,
-    )
+        if clip_vec is not None:
+            insert_clip(uid, clip_vec.tobytes(), conn=conn)
+
+        # Mark sidecar dirty when new faces or clips were added
+        if not existing_faces or clip_vec is not None:
+            _sidcar_mark_dirty()
+
+        set_photo_done(uid, final.name, gps, place, conn=conn)
+        log.debug(
+            "processed %s: %d faces (kept=%d, matched=%d), clip=%s",
+            uid, face_count, bool(existing_faces), matched if not existing_faces else 0,
+            clip_vec is not None,
+        )
 
 
-def _photo_row(uid: str):
+def _photo_row(uid: str, conn=None):
+    if conn is not None:
+        return conn.execute("SELECT * FROM photos WHERE uid=?", (uid,)).fetchone()
     with _db_conn() as conn:
         return conn.execute("SELECT * FROM photos WHERE uid=?", (uid,)).fetchone()
 
