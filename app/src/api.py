@@ -8,11 +8,10 @@ import logging
 import os
 import threading
 import time
-import urllib.error
-import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 import numpy as np
 from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -612,16 +611,37 @@ def _cached_bridge_health() -> tuple[bool, bool]:
 # process never runs the indexer itself (RUN_INDEXER=0 by default), so
 # `get_indexer_state()` would otherwise return an empty stub. Instead we
 # HTTP GET the dedicated /status endpoint that the indexer container
-# exposes on its internal network. 2 s TTL caps the cost of the frontend
-# 30 s poll to one round-trip every ~2 s of modal activity.
-_INDEXER_PROXY_CACHE_TTL = 2.0
-_INDEXER_PROXY_TIMEOUT = 2.0  # seconds; the endpoint computes store.stats() and can be slow under load
+# exposes on its internal network. The frontend polls /api/status every
+# 60 s; status is not realtime-critical, so a 30 s TTL means at most one
+# proxied round-trip per poll instead of a fresh HTTP call every 2 s.
+_INDEXER_PROXY_CACHE_TTL = 30.0
+_INDEXER_PROXY_TIMEOUT = 3.0  # seconds; the endpoint computes store.stats() and can be slow under load
 _indexer_proxy_cache: tuple[float, dict] | None = None
 # Once the indexer proxy starts failing, suppress repeat warning logs
 # for this many seconds. The frontend still renders the empty stub
 # either way, and the cache TTL keeps the failure state sticky.
 _INDEXER_PROXY_LOG_THROTTLE = 30.0
 _indexer_proxy_last_warn: float = 0.0
+
+# Pooled HTTP client for the indexer-status proxy (mirrors the
+# `bridge_client._bridge` singleton pattern). The old urllib path opened a
+# fresh TCP connection per call; the API container polls this endpoint
+# every /api/status refresh, so keep-alive reuse matters. Short timeout:
+# a hung indexer must degrade to the local stub, not stall the poll.
+_indexer_proxy_client: httpx.Client | None = None
+_indexer_proxy_client_lock = threading.Lock()
+
+
+def _get_indexer_proxy_client() -> httpx.Client:
+    global _indexer_proxy_client
+    if _indexer_proxy_client is None:
+        with _indexer_proxy_client_lock:
+            if _indexer_proxy_client is None:
+                _indexer_proxy_client = httpx.Client(
+                    timeout=httpx.Timeout(_INDEXER_PROXY_TIMEOUT),
+                    headers={"Accept": "application/json"},
+                )
+    return _indexer_proxy_client
 
 
 def _indexer_is_local() -> bool:
@@ -659,39 +679,37 @@ def _fetch_remote_indexer_state() -> dict:
     durable count is still surfaced, and tags the payload with
     `proxy_ok=False` so the UI can surface the failure instead of
     showing a silent "—".
+
+    The indexer's /status payload already carries the durable `pending_db`
+    count (computed in the indexer process), so the fresh/valid path never
+    runs the local `stats()` queries. Degraded mode falls back to
+    `_cached_stats()`, so `pending_db` reuses the same cached computation
+    as the response's `stats` block — at most one `stats()` per request.
     """
     global _indexer_proxy_cache, _indexer_proxy_last_warn
     now = time.time()
     if _indexer_proxy_cache is not None and now - _indexer_proxy_cache[0] < _INDEXER_PROXY_CACHE_TTL:
         return _indexer_proxy_cache[1]
-    try:
-        pending_db = (stats().get("photos") or {}).get("pending", 0)
-    except Exception:
-        pending_db = None
     url = settings.indexer_status_url.rstrip("/") + "/status"
-    payload: dict | None = None
+    headers = {}
+    token = (settings.indexer_token or "").strip()
+    if token:
+        headers["X-Indexer-Token"] = token
     try:
-        proxy_headers = {"Accept": "application/json"}
-        token = (settings.indexer_token or "").strip()
-        if token:
-            proxy_headers["X-Indexer-Token"] = token
-        req = urllib.request.Request(url, headers=proxy_headers)
-        with urllib.request.urlopen(req, timeout=_INDEXER_PROXY_TIMEOUT) as resp:
-            if getattr(resp, "status", 200) != 200:
-                raise RuntimeError(f"indexer status {resp.status}")
-            payload = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as exc:
+        resp = _get_indexer_proxy_client().get(url, headers=headers)
+        resp.raise_for_status()
+        payload = resp.json()
+    except (httpx.HTTPError, OSError, ValueError) as exc:
         if now - _indexer_proxy_last_warn >= _INDEXER_PROXY_LOG_THROTTLE:
             log.warning("indexer status proxy failed (%s): %s", url, exc)
             _indexer_proxy_last_warn = now
+        try:
+            pending_db = (_cached_stats().get("photos") or {}).get("pending", 0)
+        except Exception:
+            pending_db = None
         payload = _empty_indexer_state(pending_db=pending_db)
         payload["proxy_ok"] = False
         payload["proxy_error"] = type(exc).__name__
-    # Always surface the DB count even when the proxy succeeded, so both
-    # metrics are visible on the success path too (the proxy already
-    # includes pending_db, but local stats is fresher and never wrong).
-    if pending_db is not None and "pending_db" not in payload:
-        payload["pending_db"] = int(pending_db)
     payload.setdefault("pending_db", 0)
     payload.setdefault("pending_in_queue", 0)
     payload.setdefault("proxy_ok", True)
@@ -711,23 +729,17 @@ def _indexer_proxy_json(method: str, path: str, body: dict | None = None) -> dic
     a deployment fix anyway.
     """
     url = settings.indexer_status_url.rstrip("/") + path
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    headers = {}
     token = (settings.indexer_token or "").strip()
     if token:
         headers["X-Indexer-Token"] = token
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method=method,
-        headers=headers,
-    )
+    if body is not None:
+        headers["Content-Type"] = "application/json"
     try:
-        with urllib.request.urlopen(req, timeout=_INDEXER_PROXY_TIMEOUT) as resp:
-            if getattr(resp, "status", 200) != 200:
-                raise RuntimeError(f"indexer {method} {path} -> HTTP {resp.status}")
-            return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as exc:
+        resp = _get_indexer_proxy_client().request(method, url, json=body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+    except (httpx.HTTPError, OSError, ValueError) as exc:
         raise HTTPException(502, f"indexer proxy {method} {path} failed: {exc}")
 
 
