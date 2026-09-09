@@ -846,7 +846,7 @@ def _cluster_loop() -> None:
     while True:
         time.sleep(settings.cluster_interval)
         try:
-            cluster_once()
+            cluster_once(settings.cluster_max_faces)
             # Sweep placeholder rows left empty by face deletions/reassignments.
             gc = delete_empty_people()
             if gc:

@@ -65,6 +65,7 @@ class Settings:
         # indexer mode (RUN_INDEXER=1) always stays single-process.
         self.uvicorn_workers = int(os.environ.get("UVICORN_WORKERS", "2"))
         self.cluster_interval = int(os.environ.get("CLUSTER_INTERVAL", "1800"))
+        self.cluster_max_faces = int(os.environ.get("CLUSTER_MAX_FACES", "5000"))
         self.gps_interval = int(os.environ.get("GPS_INTERVAL", "21600"))  # 6h
         self.face_sim_threshold = float(os.environ.get("FACE_SIM_THRESHOLD", "0.45"))
         self.min_cluster_size = int(os.environ.get("MIN_CLUSTER_SIZE", "3"))

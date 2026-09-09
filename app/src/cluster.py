@@ -1,8 +1,11 @@
 """Incremental people clustering over ArcFace face embeddings.
 
-Faces that have no person_id are clustered with HDBSCAN (cosine distance).
-Each resulting cluster becomes a person row; subsequent runs only look at
-faces still lacking a person, so named people are never disturbed.
+Faces that have no person_id are clustered with HDBSCAN (euclidean distance
+on L2-normalized embeddings). For unit-norm vectors euclidean distance is a
+monotone transform of cosine distance (d² = 2 − 2·cos), so the hierarchy is
+identical to the previous cosine formulation while unlocking BLAS-optimized
+euclidean paths. Each resulting cluster becomes a person row; subsequent runs
+only look at faces still lacking a person, so named people are never disturbed.
 """
 from __future__ import annotations
 
@@ -126,12 +129,22 @@ def match_person(embedding: bytes, threshold: float) -> int | None:
 
 
 def cluster_once(max_faces: int = 5000) -> int:
-    """Cluster faces that have no person yet. Returns number of people created."""
-    rows = faces_without_person(limit=max_faces)
+    """Cluster faces that have no person yet. Returns number of people created.
+
+    `max_faces` caps how many unassigned faces one run clusters; 0 or a
+    negative value means no cap (use with care on large libraries).
+    """
+    rows = faces_without_person(limit=max_faces if max_faces > 0 else None)
     if len(rows) < settings.min_cluster_size:
         return 0
 
     X = np.stack([_decode(r) for r in rows]).astype(np.float32)
+    # Cheap insurance before the euclidean run: ArcFace already emits
+    # L2-normalized embeddings, but re-normalizing keeps the euclidean/cosine
+    # equivalence exact even if a row was written by an older path.
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    X /= norms
     labels = HDBSCAN(
         min_cluster_size=settings.min_cluster_size,
         # min_samples > 1 suppresses singleton/pair clusters that HDBSCAN
@@ -140,7 +153,10 @@ def cluster_once(max_faces: int = 5000) -> int:
         # Existing people rows are never re-clustered (we only cluster
         # faces_without_person), so this only affects new clusters.
         min_samples=settings.min_samples,
-        metric="cosine",
+        # euclidean on unit-norm vectors is monotone-equivalent to cosine and
+        # unlocks kd/ball-tree + BLAS paths instead of brute-force pairwise
+        # cosine (the pre-change bottleneck on 5 k×512 runs).
+        metric="euclidean",
     ).fit_predict(X)
 
     n_created = 0

@@ -310,6 +310,19 @@ class TestFaces:
         store.unassign_face(fid)
         assert len(store.faces_without_person()) == 1
 
+    def test_faces_without_person_limit(self, tmp_db):
+        self._seed_photo_done()
+        fids = [
+            store.insert_face("p1", None, 0.9, json.dumps([0, i, 10, i + 10]), EMB.tobytes())
+            for i in range(5)
+        ]
+        assert len(store.faces_without_person(limit=2)) == 2
+        # ordered by id, so the first two rows are the earliest inserts
+        got = store.faces_without_person(limit=2)
+        assert [r["id"] for r in got] == fids[:2]
+        # limit=None returns every unassigned face (no cap)
+        assert len(store.faces_without_person(limit=None)) == 5
+
     def test_assign_faces_person_bulk(self, tmp_db):
         self._seed_photo_done()
         fids = [

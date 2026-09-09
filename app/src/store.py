@@ -852,11 +852,14 @@ def all_face_rows() -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def faces_without_person(limit: int = 5000) -> list[sqlite3.Row]:
+def faces_without_person(limit: int | None = 5000) -> list[sqlite3.Row]:
     with get_conn() as conn:
-        return conn.execute(
-            "SELECT * FROM faces WHERE person_id IS NULL ORDER BY id LIMIT ?", (limit,)
-        ).fetchall()
+        sql = "SELECT * FROM faces WHERE person_id IS NULL ORDER BY id"
+        args: tuple = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            args = (limit,)
+        return conn.execute(sql, args).fetchall()
 
 
 def assign_face_person(face_id: int, person_id: int) -> None:

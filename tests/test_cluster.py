@@ -2,6 +2,8 @@ import threading
 import time
 
 import numpy as np
+from sklearn.cluster import HDBSCAN
+from sklearn.metrics import adjusted_rand_score
 
 import cluster
 import store
@@ -115,6 +117,47 @@ class TestPersonMeansCacheSWR:
         release.set()
         self._wait_refresh()
         assert cluster._person_means_refreshing is False
+
+
+class TestCosineEuclideanEquivalence:
+    """HDBSCAN metric='euclidean' on L2-normalized vectors must reproduce the
+    old metric='cosine' clustering exactly (d² = 2 − 2·cos for unit norms).
+
+    Uses realistic dense 512-d embeddings (random unit centroids + Gaussian
+    noise), not degenerate low-rank layouts where metrics disagree.
+    """
+
+    @staticmethod
+    def _faces(per=40, sigma=0.1, npeople=4, seed=0):
+        rng = np.random.default_rng(seed)
+        X = []
+        for _ in range(npeople):
+            center = rng.normal(size=512)
+            center /= np.linalg.norm(center)
+            pts = center + rng.normal(0.0, sigma, (per, 512))
+            X.append(pts)
+        X = np.vstack(X).astype(np.float32)
+        # unit-norm embeddings, as ArcFace emits
+        return X / np.linalg.norm(X, axis=1, keepdims=True)
+
+    def test_identical_labels_between_metrics(self):
+        X = self._faces()
+        kw = dict(min_cluster_size=3, min_samples=2)
+        cosine = HDBSCAN(**kw, metric="cosine").fit_predict(X)
+        euclidean = HDBSCAN(**kw, metric="euclidean").fit_predict(X)
+        # identical partitions (label-permutation invariant)
+        assert adjusted_rand_score(cosine, euclidean) == 1.0
+        # same noise assignments on both paths
+        assert int((cosine == -1).sum()) == int((euclidean == -1).sum())
+
+    def test_identical_labels_over_sigma_range(self):
+        for sigma in (0.05, 0.1, 0.2):
+            X = self._faces(sigma=sigma)
+            kw = dict(min_cluster_size=3, min_samples=2)
+            cosine = HDBSCAN(**kw, metric="cosine").fit_predict(X)
+            euclidean = HDBSCAN(**kw, metric="euclidean").fit_predict(X)
+            assert adjusted_rand_score(cosine, euclidean) == 1.0
+            assert int((cosine == -1).sum()) == int((euclidean == -1).sum())
 
 
 class TestClusterOnce:
