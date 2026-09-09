@@ -64,6 +64,13 @@ class Settings:
         # mem_limit; raising it multiplies CLIP memory accordingly. In-process
         # indexer mode (RUN_INDEXER=1) always stays single-process.
         self.uvicorn_workers = int(os.environ.get("UVICORN_WORKERS", "2"))
+        # Pre-load the CLIP + InsightFace sessions in each uvicorn worker at
+        # startup (api lifespan hook) instead of lazily on the first user
+        # request. Models are baked into the image; the warm-up just forces the
+        # per-process session/weight load + ONNX graph init so the first
+        # /api/search and /api/search/face don't pay a multi-second load.
+        # Set to 0 to defer loading to the first request (tests and CLI use 0).
+        self.warm_models = _env_bool("WARM_MODELS", True)
         self.cluster_interval = int(os.environ.get("CLUSTER_INTERVAL", "1800"))
         self.cluster_max_faces = int(os.environ.get("CLUSTER_MAX_FACES", "5000"))
         self.gps_interval = int(os.environ.get("GPS_INTERVAL", "21600"))  # 6h

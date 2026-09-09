@@ -33,6 +33,21 @@ def fake_app(monkeypatch):
     return install
 
 
+class TestWarmUp:
+    def test_runs_dummy_detection_pass(self, fake_app):
+        app = fake_app([])
+        faces.warm_up()
+        assert app.get_calls == 1
+
+    def test_load_failure_propagates(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("no model")
+
+        monkeypatch.setattr(faces, "_load", _boom)
+        with pytest.raises(RuntimeError):
+            faces.warm_up()
+
+
 class TestDetectFaces:
     def test_empty_image(self, fake_app):
         fake_app([])

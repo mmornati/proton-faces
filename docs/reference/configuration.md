@@ -44,6 +44,7 @@ Set inside `compose.yml` for each service. Most match the compose-level defaults
 | `INDEXER_STATUS_URL` | `http://indexer:8091` | Where the `app` container reads the indexer's status from. For local single-process dev with `RUN_INDEXER=1`, override to `http://127.0.0.1:8091`. |
 | `RUN_INDEXER` | `0` | Set `1` on the `app` container to start the in-process indexer. |
 | `UVICORN_WORKERS` | `2` | Number of uvicorn workers serving the API. Each worker lazily loads its own CLIP ONNX session (~838 MB RSS) + a per-worker matrix cache, so this is the dominant term in the `app` container's memory footprint. Keep low on memory-constrained hosts; raise on memory-rich ones. Ignored when `RUN_INDEXER=1` (single-process mode). |
+| `WARM_MODELS` | `1` | Pre-load the CLIP + InsightFace sessions in every uvicorn worker at startup (lifespan hook, issue #97) so the first `/api/search` and `/api/search/face` after a deploy/restart don't pay a multi-second model load inside a user request. Models are baked into the image and warmed at build time; this re-applies the per-process load in each worker. Set `0` to defer loading to the first request (tests/CLI use `0`). A failed warm-up is logged and non-fatal — the lazy path remains the fallback. |
 | `LOG_LEVEL` | `INFO` | Logging verbosity: `DEBUG` / `INFO` / `WARNING` / `ERROR`. |
 | `DEMO_MODE` | unset | `1` enables demo mode (no real Proton account). Set automatically by the `demo` compose profile. |
 | `DEMO_ADMIN_PASSWORD` | unset → prompt | Override the demo admin password. |

@@ -214,6 +214,10 @@ services:
       # its own CLIP session, so keep this low on memory-constrained hosts
       # (see APP_MEM_LIMIT / APP_CPUS above and config.uvicorn_workers).
       - UVICORN_WORKERS=${UVICORN_WORKERS:-2}
+      # Pre-load CLIP + InsightFace in each worker at startup (issue #97) so
+      # the first search request after a deploy/restart isn't slow. MT COST:
+      # a worker takes a few extra seconds to become ready on boot.
+      - WARM_MODELS=${WARM_MODELS:-1}
       # Where to read the indexer's live state from. Defaults to
       # http://indexer:8091 (internal compose network only — the
       # indexer container does NOT publish this port to the host).

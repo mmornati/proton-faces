@@ -18,6 +18,8 @@ from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, Upload
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+import clip
+import faces
 import indexer
 from auth import (
     ROLE_RANK,
@@ -130,9 +132,38 @@ async def _lifespan(_: FastAPI):
     (a known default is forgerable and an ephemeral per-worker secret breaks
     signed URLs across uvicorn workers). Raises so the process refuses to
     boot instead of serving 500s on the first /thumb request.
+
+    After the fail-closed check, each uvicorn worker pre-loads the ML
+    sessions (issue #97) so the first /api/search and /api/search/face
+    don't pay a multi-second model load inside a user request.
     """
     require_signing_secret()
+    warm_models()
     yield
+
+
+def warm_models() -> None:
+    """Pre-load the CLIP + InsightFace sessions once per worker process.
+
+    Every uvicorn worker lazily loads its own sessions on the first user
+    request, which after a deploy/restart turns /api/search and
+    /api/search/face into multi-second latency spikes and repeats the
+    weight loads N workers times. Called from the lifespan (once per
+    worker process) before traffic is served. Failures are logged and
+    swallowed so a missing model never blocks boot — the lazy path remains
+    as fallback. Gated by WARM_MODELS (default on; off in tests/CLI).
+    """
+    if not settings.warm_models:
+        log.info("WARM_MODELS=0: skipping ML session warm-up")
+        return
+    for name, fn in (
+        ("clip", clip.warm_up),
+        ("insightface", faces.warm_up),
+    ):
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - warm-up must never block boot
+            log.warning("warm-up for %s failed (lazy load remains as fallback): %s", name, exc)
 
 
 app = FastAPI(

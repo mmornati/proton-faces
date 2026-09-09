@@ -48,6 +48,20 @@ def _load():
         return app
 
 
+def warm_up() -> None:
+    """Pre-load the InsightFace sessions and force ONNX graph initialization.
+
+    Runs a dummy detection pass on a zeroed 640x640 frame (the configured
+    det_size) so the first /api/search/face after boot doesn't pay the model
+    load inside the request. Call once per worker process at startup;
+    failures propagate to the caller (the app logs + continues, keeping the
+    lazy path as fallback).
+    """
+    app = _load()
+    app.get(np.zeros((640, 640, 3), dtype=np.uint8))
+    log.info("InsightFace warm-up done (detection)")
+
+
 def detect_faces(image: np.ndarray) -> list[dict]:
     """Detect faces in a BGR numpy image (H,W,3).
 

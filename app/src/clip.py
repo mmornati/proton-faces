@@ -96,6 +96,23 @@ def _load():
         return _sess_vision, _sess_text, _tokenizer
 
 
+def warm_up() -> None:
+    """Pre-load the CLIP sessions and force ONNX graph initialization.
+
+    Runs a dummy 224x224 image through the vision model and a dummy prompt
+    through the text model so the first /api/search after boot doesn't pay
+    the session/weight load inside the request. Call once per worker process
+    at startup; failures propagate to the caller (the app logs + continues,
+    keeping the lazy path as fallback).
+    """
+    sess_vision, sess_text, tokenizer = _load()
+    pixel_values = np.zeros((1, 3, _SIZE, _SIZE), dtype=np.float32)
+    sess_vision.run(None, {"pixel_values": pixel_values})
+    input_ids = np.asarray([tokenizer.encode("a beach").ids], dtype=np.int64)
+    sess_text.run(None, {"input_ids": input_ids})
+    log.info("CLIP ONNX warm-up done (vision + text)")
+
+
 def _preprocess(img: Image.Image) -> np.ndarray:
     """RGB image -> normalized [1, 3, 224, 224] float32 tensor."""
     img = img.convert("RGB")
