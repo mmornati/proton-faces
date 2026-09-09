@@ -1,4 +1,5 @@
 import json
+import queue
 
 import numpy as np
 import pytest
@@ -233,4 +234,162 @@ class TestProcessOne:
         monkeypatch.setattr(store, "_get_persistent_conn", counting_conn)
         indexer._process_one(uid)
         assert holder["conn"]._n_commits == 1
+        assert store.get_photo(uid)["status"] == "done"
+
+
+class _FakePending:
+    """Minimal stand-in for indexer._pending supporting the batching reads."""
+
+    def __init__(self, items=None, raise_get=False):
+        self._items = list(items or [])
+        self.raise_get = raise_get
+
+    def qsize(self):
+        return len(self._items)
+
+    def get_nowait(self):
+        if not self._items:
+            raise queue.Empty
+        return self._items.pop(0)
+
+    def get(self, timeout=None):
+        if self.raise_get or not self._items:
+            raise queue.Empty
+        return self._items.pop(0)
+
+
+class TestNextWorkBatch:
+    def test_deep_queue_pulls_up_to_batch_size(self, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer.settings, "clip_batch_size", 4)
+        monkeypatch.setattr(indexer.settings, "clip_batch_queue_depth", 8)
+        monkeypatch.setattr(indexer, "_pending", _FakePending(items=list("abcdefghij")))
+        assert indexer._next_work_batch() == ["a", "b", "c", "d"]
+
+    def test_deep_queue_returns_what_is_available(self, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer.settings, "clip_batch_size", 8)
+        monkeypatch.setattr(indexer.settings, "clip_batch_queue_depth", 1)
+        monkeypatch.setattr(indexer, "_pending", _FakePending(items=["a", "b"]))
+        assert indexer._next_work_batch() == ["a", "b"]
+
+    def test_shallow_queue_stays_single(self, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer.settings, "clip_batch_size", 4)
+        monkeypatch.setattr(indexer.settings, "clip_batch_queue_depth", 8)
+        monkeypatch.setattr(indexer, "_pending", _FakePending(items=["a"]))
+        assert indexer._next_work_batch() == ["a"]
+
+    def test_batch_disabled_always_single(self, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer.settings, "clip_batch_size", 1)
+        monkeypatch.setattr(indexer.settings, "clip_batch_queue_depth", 1)
+        monkeypatch.setattr(indexer, "_pending", _FakePending(items=["a", "b", "c"]))
+        assert indexer._next_work_batch() == ["a"]
+
+    def test_empty_queue_falls_back_to_downloading(self, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer.settings, "clip_batch_size", 1)
+        monkeypatch.setattr(indexer.settings, "clip_batch_queue_depth", 1)
+        monkeypatch.setattr(indexer, "_pending", _FakePending(raise_get=True))
+        monkeypatch.setattr(
+            indexer, "get_photos",
+            lambda status, limit=500, offset=0: [{"uid": "leftover"}],
+        )
+        assert indexer._next_work_batch() == ["leftover"]
+
+    def test_empty_everywhere_returns_empty(self, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer.settings, "clip_batch_size", 1)
+        monkeypatch.setattr(indexer.settings, "clip_batch_queue_depth", 1)
+        monkeypatch.setattr(indexer, "_pending", _FakePending(raise_get=True))
+        monkeypatch.setattr(indexer, "get_photos", lambda status, limit=500, offset=0: [])
+        assert indexer._next_work_batch() == []
+
+
+class TestProcessBatch:
+    def _seed_work_photo(self, uid="w1"):
+        store.upsert_photos(
+            [{"uid": uid, "name": uid, "media_type": "image/jpeg", "capture_time": 1}]
+        )
+        assert store.claim_photo_for_download(uid) is True
+        work = indexer._work_path(uid)
+        work.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.full((50, 40, 3), 128, dtype=np.uint8)).save(work, "WEBP")
+        return uid
+
+    def test_batch_embeds_once_and_marks_done(self, tmp_db, app_settings, monkeypatch):
+        a = self._seed_work_photo("b1")
+        b = self._seed_work_photo("b2")
+
+        calls = []
+
+        def fake_embed_batch(images):
+            calls.append(len(images))
+            return np.stack(
+                [np.ones(512, dtype=np.float32) * (i + 1) for i in range(len(images))]
+            )
+
+        monkeypatch.setattr(indexer, "detect_faces", lambda bgr: [])
+        monkeypatch.setattr(indexer, "embed_batch", fake_embed_batch)
+        indexer._process_batch([a, b])
+
+        assert calls == [2]
+        assert store.get_photo(a)["status"] == "done"
+        assert store.get_photo(b)["status"] == "done"
+        assert store.clip_exists(a) is True
+        assert store.clip_exists(b) is True
+
+    def test_existing_clip_skips_batch_embedding(self, tmp_db, app_settings, monkeypatch):
+        a = self._seed_work_photo("r1")
+        b = self._seed_work_photo("r2")
+        keep = np.full(512, 0.25, dtype=np.float32)
+        store.insert_clip(a, keep.tobytes())
+
+        calls = []
+
+        def fake_embed_batch(images):
+            calls.append(len(images))
+            return np.ones((len(images), 512), dtype=np.float32)
+
+        monkeypatch.setattr(indexer, "detect_faces", lambda bgr: [])
+        monkeypatch.setattr(indexer, "embed_batch", fake_embed_batch)
+        indexer._process_batch([a, b])
+
+        # 'a' already had a clip, so only 'b' reaches the batched embedding
+        # and a's original vector is left untouched (reclaim fast-path).
+        assert calls == [1]
+        clips = {r["photo_uid"]: r["embedding"] for r in store.all_clips()}
+        assert bytes(clips[a]) == keep.tobytes()
+        assert store.get_photo(b)["status"] == "done"
+
+    def test_missing_work_file_errors_alongside_batch(self, tmp_db, app_settings, monkeypatch):
+        good = self._seed_work_photo("g1")
+        store.upsert_photos(
+            [{"uid": "gone", "name": "gone", "media_type": "image/jpeg", "capture_time": 1}]
+        )
+        assert store.claim_photo_for_download("gone") is True
+
+        calls = []
+
+        def fake_embed_batch(images):
+            calls.append(len(images))
+            return np.ones((len(images), 512), dtype=np.float32)
+
+        monkeypatch.setattr(indexer, "detect_faces", lambda bgr: [])
+        monkeypatch.setattr(indexer, "embed_batch", fake_embed_batch)
+        indexer._process_batch([good, "gone"])
+
+        assert calls == [1]
+        assert store.get_photo(good)["status"] == "done"
+        assert store.get_photo("gone")["status"] == "error"
+        assert store.get_photo("gone")["error"] == "work file missing"
+
+    def test_process_one_uses_passed_clip_vec(self, tmp_db, app_settings, monkeypatch):
+        # Regression for the single-photo path with a precomputed vector:
+        # embed_pil must NOT be re-invoked when _process_batch provided one.
+        uid = self._seed_work_photo("p1")
+        monkeypatch.setattr(indexer, "detect_faces", lambda bgr: [])
+
+        def boom(*a, **k):
+            raise AssertionError("embed_pil must not run when a clip_vec is supplied")
+
+        monkeypatch.setattr(indexer, "embed_pil", boom)
+        vec = np.ones(512, dtype=np.float32)
+        indexer._process_one(uid, clip_vec=vec)
+        assert store.clip_exists(uid) is True
         assert store.get_photo(uid)["status"] == "done"

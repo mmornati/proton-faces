@@ -27,6 +27,8 @@ These are read by `docker-compose.yml` itself, not by the containers:
 | `INDEXER_STATUS_PORT` | `8091` | Internal-only port on the `indexer` container for its `/status` endpoint. |
 | `BRIDGE_CACHE_STALE_SEC` | `21600` (6 h) | Age (seconds) at which the on-disk Proton SDK cache is flagged "stale" by the admin Server-checks panel. Only fires when full-res downloads are also failing. Lower it to surface stale caches earlier; raise it if your bridge is idle for longer than 6 h. |
 | `ORT_INTRA_OP_THREADS` | `1` | Threads per ONNX Runtime session (CLIP). Default `1` prevents the indexer's workers + CLIP sessions from oversubscribing the CPU; raise only on a box with spare cores. `OMP_NUM_THREADS=1` is set in compose for the OpenMP-backed kernels (insightface). |
+| `CLIP_BATCH_SIZE` | `4` | Max photos embedded per CLIP session.run in the indexer when the pending queue is deep (issue #98). With `ORT_INTRA_OP_THREADS=1`, batch>1 reuses per-core work and raises indexer throughput during a bulk backlog at the same CPU quota. Set `1` to disable batching. |
+| `CLIP_BATCH_QUEUE_DEPTH` | `8` | Pending-queue depth at which indexer workers switch from batch=1 to `CLIP_BATCH_SIZE` micro-batching. Below it (typical for interactive reclaims) workers embed one photo at a time to keep first-result latency low. |
 | `APP_MEM_LIMIT` | `6g` | Memory cap for the `app` container. Each uvicorn worker loads its own CLIP ONNX session (~838 MB RSS measured) + a per-worker matrix cache; 2 workers fit comfortably under 6 GiB. Lower it on small boxes if you also lower `UVICORN_WORKERS`. |
 | `APP_CPUS` | `2.0` | CPU cap for the `app` container, so CLIP/search can't starve the other containers on the host. |
 
