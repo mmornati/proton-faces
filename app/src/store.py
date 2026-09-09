@@ -1835,6 +1835,23 @@ def sync_albums(albums: list[dict]) -> int:
     return len(albums)
 
 
+def album_names(uids: list[str]) -> dict[str, str]:
+    """Resolve album uids to their synced names from the local albums table.
+
+    Unknown uids (albums the 10-minute sync hasn't seen yet) are omitted;
+    callers decide how to render them.
+    """
+    if not uids:
+        return {}
+    marks = ",".join("?" * len(uids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT uid, name FROM albums WHERE uid IN ({marks})",
+            tuple(uids),
+        ).fetchall()
+    return {r["uid"]: r["name"] or r["uid"] for r in rows}
+
+
 def all_albums() -> list[sqlite3.Row]:
     """Albums ordered chronologically by their earliest photo, newest first."""
     with get_conn() as conn:

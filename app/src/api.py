@@ -51,6 +51,7 @@ from indexer import get_indexer_state
 from sidecar import read_clip_sidecar
 from store import (
     _embedding_cache_data,
+    album_names,
     album_photos,
     all_albums,
     all_clips,
@@ -1035,9 +1036,11 @@ def api_photo_meta(uid: str, user: CurrentUser = Depends(require_user)):
     """Full metadata for the photo detail view.
 
     Merges the local index row (GPS, place, faces, people) with the live
-    metadata Proton exposes for the node (size, creation/modification times,
-    photo tags, live-photo relations, album names) fetched on demand from the
-    bridge.
+    node metadata Proton exposes for the photo (size, creation/modification
+    times, photo tags, live-photo relations) fetched on demand from the
+    bridge. Album names resolve from the local albums table (synced every
+    10 minutes) so opening a detail panel never triggers a full bridge
+    album enumeration.
     """
     row = get_photo(uid)
     if row is None:
@@ -1075,24 +1078,20 @@ def api_photo_meta(uid: str, user: CurrentUser = Depends(require_user)):
     except Exception as exc:
         log.warning("bridge node metadata failed for %s: %s", uid, exc)
 
-    # Album names.
-    try:
-        alb = get_bridge().albums()
-        name_by_uid = {a["uid"]: a["name"] for a in alb.get("albums", [])}
-        albums_raw = meta.get("albums")
-        if isinstance(albums_raw, str):
-            try:
-                album_uids = json.loads(albums_raw)
-            except Exception:
-                album_uids = []
-        else:
-            album_uids = albums_raw or []
-        meta["albums_detail"] = [
-            {"uid": u, "name": name_by_uid.get(u, u)} for u in album_uids
-        ]
-    except Exception as exc:
-        log.warning("bridge albums fetch failed: %s", exc)
-        meta["albums_detail"] = [{"uid": u, "name": u} for u in (meta.get("albums") or [])]
+    # Album names resolve from the local albums table (synced every 10
+    # minutes) — never a full bridge enumeration on photo open.
+    albums_raw = meta.get("albums")
+    if isinstance(albums_raw, str):
+        try:
+            album_uids = json.loads(albums_raw)
+        except Exception:
+            album_uids = []
+    else:
+        album_uids = albums_raw or []
+    name_by_uid = album_names(album_uids)
+    meta["albums_detail"] = [
+        {"uid": u, "name": name_by_uid.get(u, u)} for u in album_uids
+    ]
 
     return meta
 

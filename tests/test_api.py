@@ -69,6 +69,7 @@ class FakeBridge:
         self._nodes = {}
         self._albums = []
         self._full_data = b"\xff\xd8\xfffake-jpeg"
+        self._albums_calls = 0
 
     def add_node(self, uid: str, **kw):
         node = {"uid": uid, "name": f"{uid}.jpg", "mediaType": "image/jpeg",
@@ -86,6 +87,7 @@ class FakeBridge:
         return [self._nodes[u] for u in uids if u in self._nodes]
 
     def albums(self):
+        self._albums_calls += 1
         return {"albums": self._albums}
 
     def full_photo(self, uid, range_header=None, timeout_ms=None):
@@ -508,14 +510,32 @@ class TestPhotos:
     def test_meta(self, client, monkeypatch, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1", albums=["al1"])
+        # Album names come from the local albums table; the fixture seeds the
+        # store the way the 10-minute `sync_albums` loop would.
+        store.sync_albums([{"uid": "al1", "name": "Holiday"}])
         fake = FakeBridge()
         fake.add_node("p1", tags=["proton-tag"])
-        fake.add_album("al1", "Holiday")
         monkeypatch.setattr(bridge_client, "_bridge", fake)
         r = client.get("/api/photos/p1/meta", headers=_bearer(client))
         assert r.status_code == 200
         assert r.json()["proton_tags"] == ["proton-tag"]
         assert r.json()["albums_detail"] == [{"uid": "al1", "name": "Holiday"}]
+        # The endpoint must resolve album names locally and never enumerate
+        # the full album list from the bridge (issue #92).
+        assert fake._albums_calls == 0
+
+    def test_meta_unknown_album_uid_falls_back(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        # Album not synced locally yet: the name must fall back to the uid
+        # rather than triggering a bridge album enumeration.
+        _seed_done_photo("p1", albums=["al9"])
+        fake = FakeBridge()
+        fake.add_node("p1")
+        monkeypatch.setattr(bridge_client, "_bridge", fake)
+        r = client.get("/api/photos/p1/meta", headers=_bearer(client))
+        assert r.status_code == 200
+        assert r.json()["albums_detail"] == [{"uid": "al9", "name": "al9"}]
+        assert fake._albums_calls == 0
 
     def test_albums(self, client, password_hash):
         _seed_user(password_hash=password_hash)
