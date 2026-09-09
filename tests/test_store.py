@@ -699,6 +699,76 @@ class TestMergePeopleBulk:
         assert store.face_ids_for_people([99999]) == []
 
 
+class TestGcEmptyPeople:
+    """Anonymous placeholder people rows are swept once they hold no faces."""
+
+    def _backdate(self, pid, ts=1000):
+        with store.get_conn() as conn:
+            conn.execute("UPDATE people SET created=? WHERE id=?", (ts, pid))
+
+    def _seed_photo_done(self, uid):
+        store.upsert_photos([_photo(uid)])
+        store.set_photo_done(uid, f"thumbs/{uid}.webp", None, None)
+
+    def test_sweep_removes_old_unnamed_empty(self, tmp_db):
+        pid = store.create_person(None, None, None)
+        self._backdate(pid)
+        assert store.delete_empty_people() == 1
+        assert store.get_person(pid) is None
+
+    def test_sweep_removes_empty_string_name(self, tmp_db):
+        pid = store.create_person("", None, None)
+        self._backdate(pid)
+        assert store.delete_empty_people() == 1
+        assert store.get_person(pid) is None
+
+    def test_sweep_is_idempotent(self, tmp_db):
+        pid = store.create_person(None, None, None)
+        self._backdate(pid)
+        assert store.delete_empty_people() == 1
+        assert store.delete_empty_people() == 0
+        assert store.get_person(pid) is None
+
+    def test_sweep_keeps_recent_or_named_or_with_faces(self, tmp_db):
+        self._seed_photo_done("p1")
+        recent = store.create_person(None, None, None)          # too young for the age guard
+        named = store.create_person("Named", None, None)        # name is set
+        fid = store.insert_face("p1", None, 0.9, "[]", EMB.tobytes())
+        has_face = store.create_person(None, "p1", fid)
+        store.assign_face_person(fid, has_face)
+        assert store.delete_empty_people() == 0
+        for pid in (recent, named, has_face):
+            assert store.get_person(pid) is not None
+
+    def test_unassign_last_face_deletes_unnamed_person(self, tmp_db):
+        self._seed_photo_done("p1")
+        fid = store.insert_face("p1", None, 0.9, "[]", EMB.tobytes())
+        pid = store.create_person(None, "p1", fid)
+        store.assign_face_person(fid, pid)
+        assert store.get_person(pid)["face_count"] == 1
+        store.unassign_face(fid)
+        assert store.get_person(pid) is None
+
+    def test_moving_last_face_away_deletes_unnamed_source(self, tmp_db):
+        self._seed_photo_done("p1")
+        self._seed_photo_done("p2")
+        f1 = store.insert_face("p1", None, 0.9, "[]", EMB.tobytes())
+        dst = store.create_person("Dst", "p2", None)
+        src = store.create_person(None, "p1", f1)
+        store.assign_face_person(f1, src)
+        store.assign_face_person(f1, dst)  # moves the last face away
+        assert store.get_person(src) is None
+        assert store.get_person(dst)["face_count"] == 1
+
+    def test_named_person_survives_last_face_move(self, tmp_db):
+        self._seed_photo_done("p1")
+        f1 = store.insert_face("p1", None, 0.9, "[]", EMB.tobytes())
+        pid = store.create_person("Carol", "p1", f1)
+        store.assign_face_person(f1, pid)
+        store.unassign_face(f1)
+        assert store.get_person(pid) is not None  # named people are never auto-deleted
+
+
 class TestPhotosQuery:
     def test_done_photos_and_filters(self, tmp_db):
         store.upsert_photos(

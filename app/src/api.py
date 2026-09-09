@@ -62,6 +62,7 @@ from store import (
     count_faces_for_person,
     create_person,
     create_user,
+    delete_empty_people,
     delete_user,
     done_photos,
     duplicate_groups,
@@ -2383,6 +2384,19 @@ def api_admin_set_sync(body: dict = Body(...),
 @app.post("/api/admin/checks")
 def api_admin_checks(_: CurrentUser = Depends(require_role("admin"))):
     return admin.run_checks(recent_full_res_failures=_recent_full_res_failures())
+
+
+@app.post("/api/admin/people/gc-empty")
+def api_admin_gc_empty_people(_: CurrentUser = Depends(require_role("admin"))):
+    """Delete anonymous people rows with no faces / no photos (ghost rows).
+
+    Merges sweep orphaned placeholders created by earlier face deletions that
+    predate the automatic GC. Returns how many rows were removed; re-running
+    is a no-op (idempotent).
+    """
+    deleted = delete_empty_people()
+    _invalidate_people_cache()
+    return {"deleted": deleted, "ok": True}
 
 
 # --- admin: bridge SDK cache management -----------------------------------

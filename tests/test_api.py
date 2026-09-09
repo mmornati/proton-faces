@@ -1151,6 +1151,25 @@ class TestAdmin:
         assert body["passed"] == body["total"]
         assert body["total"] == 8
 
+    def test_admin_gc_empty_people(self, client, password_hash):
+        headers = self._seed_admin(client, password_hash)
+        with store.get_conn() as conn:
+            conn.execute("UPDATE people SET created=1000 WHERE id=?",
+                         (store.create_person(None, None, None),))
+        r = client.post("/api/admin/people/gc-empty", headers=headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["deleted"] == 1
+        # idempotent: nothing left to sweep
+        assert client.post("/api/admin/people/gc-empty", headers=headers).json()["deleted"] == 0
+
+    def test_admin_gc_empty_people_read_role_forbidden(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_user("reader", "read", password_hash)
+        headers = _bearer(client, "reader")
+        assert client.post("/api/admin/people/gc-empty", headers=headers).status_code == 403
+
     def test_admin_bridge_cache(self, client, password_hash):
         headers = self._seed_admin(client, password_hash)
         assert client.get("/api/admin/bridge/cache", headers=headers).status_code == 200
