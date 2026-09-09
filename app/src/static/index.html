@@ -120,11 +120,13 @@ main { padding: 18px; }
 .person .name { font-size: 14px; font-weight: 600; }
 .person .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
 .person input { width: 100%; margin-top: 6px; padding: 5px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); }
-.person .merge-btn, .person .person-map-btn, .person .cover-btn {
-  margin-top: 6px; flex: 1; min-width: 0; white-space: nowrap;
-  background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+.person .pact {
+  margin-top: 6px; flex: none; width: 29px; height: 29px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--panel2); color: var(--muted); border: 1px solid var(--border); border-radius: 7px;
 }
-.person .merge-btn:hover, .person .person-map-btn:hover, .person .cover-btn:hover { color: var(--text); border-color: var(--accent); }
+.person .pact svg { width: 14px; height: 14px; }
+.person .pact:hover { color: var(--accent-strong); border-color: var(--accent); filter: none; }
 .dups { margin-bottom: 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .duphead {
   width: 100%; display: flex; align-items: center; gap: 8px;
@@ -2211,11 +2213,11 @@ function personCardHtml(p) {
       <div class="name">${esc(p.name || "Unknown person")}</div>
       <div class="meta">${p.photo_count} photos · ${p.face_count} faces</div>
       <input class="rename" placeholder="Name" value="${esc(p.name || "")}">
-      <div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap">
-        <button class="small cover-btn" data-id="${p.id}" title="Choose the main photo for this person">Set photo</button>
-        <button class="small merge-btn" data-id="${p.id}">Merge into…</button>
-        <button class="small person-sim-btn" data-id="${p.id}">Similar</button>
-        <button class="small person-map-btn" data-id="${p.id}">Map</button>
+      <div style="display:flex;gap:5px;justify-content:center">
+        <button class="small pact cover-btn" data-id="${p.id}" title="Set cover photo" aria-label="Set cover photo"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></button>
+        <button class="small pact merge-btn" data-id="${p.id}" title="Merge into another person" aria-label="Merge into another person"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg></button>
+        <button class="small pact person-sim-btn" data-id="${p.id}" title="Find similar people" aria-label="Find similar people"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg></button>
+        <button class="small pact person-map-btn" data-id="${p.id}" title="Show on map" aria-label="Show on map"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg></button>
       </div>
     </div>`;
 }
