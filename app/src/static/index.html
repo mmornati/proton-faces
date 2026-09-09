@@ -60,44 +60,6 @@ main { padding: 18px; }
   display: grid; gap: 10px;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
 }
-.card { position: relative; border-radius: 10px; overflow: hidden; background: var(--panel); }
-.card img { width: 100%; height: 180px; object-fit: cover; display: block; cursor: pointer; }
-.card .score {
-  position: absolute; bottom: 6px; right: 6px; background: rgba(0,0,0,.6);
-  color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 6px;
-}
-.card .date {
-  position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,.6);
-  color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 6px;
-}
-.card .facebadge {
-  position: absolute; bottom: 6px; left: 6px; background: rgba(0,0,0,.65);
-  color: var(--accent); font-size: 11px; padding: 2px 7px; border-radius: 6px;
-  cursor: pointer; border: 0;
-}
-.card .facebadge:hover { background: var(--accent); color: #fff; }
-.card .playbadge {
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  width: 44px; height: 44px; border-radius: 50%;
-  background: rgba(0,0,0,.55); color: #fff; font-size: 18px; line-height: 44px;
-  text-align: center; pointer-events: none;
-  text-shadow: 0 1px 2px rgba(0,0,0,.6);
-}
-.card .duration {
-  position: absolute; bottom: 6px; right: 6px;
-  background: rgba(0,0,0,.6); color: #fff;
-  font-size: 11px; padding: 2px 6px; border-radius: 6px;
-  font-variant-numeric: tabular-nums;
-}
-.card .starbtn {
-  position: absolute; top: 6px; right: 6px;
-  width: 28px; height: 28px; line-height: 24px;
-  background: rgba(0,0,0,.55); border: 0; border-radius: 50%;
-  color: #fff; font-size: 16px; cursor: pointer; padding: 0;
-}
-.card .starbtn.on { background: rgba(255,213,79,.9); color: #000; }
-.card.favorited img { box-shadow: inset 0 0 0 3px rgba(255,213,79,.7); }
-.card.archived { opacity: .55; }
 #dvideo, #lbvideo { max-width: 100%; max-height: 80vh; background: #000; }
 .people-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .person {
@@ -105,14 +67,6 @@ main { padding: 18px; }
   padding: 10px; text-align: center; cursor: pointer;
 }
 .person:hover { border-color: var(--accent); }
-.places-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
-.place {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-  padding: 14px; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
-}
-.place:hover { border-color: var(--accent); }
-.place .city { font-size: 15px; font-weight: 600; }
-.place .count { color: var(--muted); font-size: 13px; }
 .person img {
   width: 84px; height: 84px; border-radius: 50%; object-fit: cover;
   background: var(--panel2); margin-bottom: 8px;
@@ -701,8 +655,10 @@ main { padding: 18px 24px 64px; min-width: 0; }
 .card.favorited img { box-shadow: inset 0 0 0 2px var(--accent); }
 .card.archived { opacity: .5; }
 .card.archived img { box-shadow: none; }
-.card .score, .card .date { position: absolute; top: 8px; right: 8px; background: rgba(8,9,11,.62); color: #fff; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 999px; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
-.card .date { top: auto; right: auto; bottom: 8px; left: 8px; }
+.card .score { position: absolute; top: 40px; right: 8px; background: rgba(8,9,11,.62); color: #fff; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 999px; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.card .cardmeta { position: absolute; bottom: 8px; left: 8px; z-index: 2; display: flex; align-items: center; gap: 5px; max-width: calc(100% - 16px); }
+.card .cardmeta .date, .card .cardmeta .place { background: rgba(8,9,11,.62); color: #fff; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 999px; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .cardmeta .place { color: var(--accent-strong); }
 .card .facebadge { position: absolute; top: 8px; left: 8px; background: rgba(8,9,11,.6); color: var(--accent-strong); border: 0; font-family: var(--mono); font-size: 10.5px; padding: 3px 9px; border-radius: 999px; cursor: pointer; letter-spacing: .03em; }
 .card .facebadge:hover { background: var(--accent); color: var(--on-accent); }
 .card .playbadge { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: rgba(8,9,11,.55); border: 1px solid rgba(255,255,255,.22); color: #fff; opacity: 0; transition: opacity .15s; font-size: 17px; }
@@ -711,8 +667,6 @@ main { padding: 18px 24px 64px; min-width: 0; }
 .card .starbtn { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; padding: 0; display: grid; place-items: center; background: rgba(8,9,11,.5); border: 1px solid rgba(255,255,255,.16); border-radius: 50%; color: #fff; font-size: 13px; line-height: 1; cursor: pointer; }
 .card .starbtn:hover { border-color: var(--accent); }
 .card .starbtn.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.place { position: absolute; bottom: 8px; left: 8px; background: rgba(8,9,11,.62); color: #fff; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 999px; z-index: 2; }
-
 /* ===== Memories ===== */
 .memhead { font-size: 15px; font-weight: 680; margin: 22px 0 8px; letter-spacing: -.01em; }
 .memhead:first-child { margin-top: 0; }
@@ -1466,10 +1420,9 @@ function cardHtml(p) {
       <img loading="lazy" src="${p.thumb_url}" data-uid="${esc(p.uid)}" alt="">
       ${isVideo ? `<div class="playbadge" aria-label="Video">▶</div>${dur ? `<div class="duration">${esc(dur)}</div>` : ""}` : ""}
       <button class="starbtn${p.favorited_by_me ? " on" : ""}" data-uid="${esc(p.uid)}" title="Toggle favorite">${p.favorited_by_me ? "★" : "☆"}</button>
-      <div class="date">${fmtDate(p.capture_time)}</div>
       <button class="facebadge" data-uid="${esc(p.uid)}">faces</button>
+      <div class="cardmeta"><div class="date">${fmtDate(p.capture_time)}</div>${p.place ? `<div class="place">${esc(p.place)}</div>` : ""}</div>
       ${p.score !== undefined ? `<div class="score">${(p.score * 100).toFixed(0)}%</div>` : ""}
-      ${p.place ? `<div class="date" style="right:auto;left:6px;top:auto;bottom:6px">${esc(p.place)}</div>` : ""}
     </div>`;
 }
 
@@ -2785,11 +2738,11 @@ async function loadPlaces() {
     markerGroup.addLayer(marker);
   }
   el.innerHTML = `<div class="places-grid">${data.places.map((p) => `
-    <div class="place" data-place="${esc(p.place)}">
+    <div class="placecard" data-place="${esc(p.place)}">
       <span class="city">${esc(p.city)}</span>
       <span class="count">${p.count} photos</span>
     </div>`).join("")}</div>`;
-  el.querySelectorAll(".place").forEach((item) => item.addEventListener("click", async () => {
+  el.querySelectorAll(".placecard").forEach((item) => item.addEventListener("click", async () => {
     showPlacePhotos(item.dataset.place);
   }));
 }
