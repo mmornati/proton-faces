@@ -363,6 +363,48 @@ class TestPublicEndpoints:
         assert r.json()["config"]["face_sim_threshold"] == 0.45
 
 
+class TestStaticPwaAssets:
+    """The SPA, PWA manifest, service worker and icons are served from the static mount."""
+
+    def test_spa_root(self, client):
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "text/html" in r.headers["content-type"]
+        assert b"manifest.json" in r.content
+
+    def test_manifest(self, client):
+        r = client.get("/manifest.json")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["display"] == "standalone"
+        assert body["start_url"] == "/"
+        assert body["theme_color"]
+        assert any("maskable" in (i.get("purpose") or "") for i in body["icons"])
+
+    def test_service_worker(self, client):
+        r = client.get("/sw.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers["content-type"]
+
+    def test_service_worker_never_intercepts_api_or_binary_endpoints(self, client):
+        r = client.get("/sw.js")
+        text = r.text
+        # The fetch handler must short-circuit (network-only) for API routes…
+        assert 'url.pathname.startsWith("/api/")' in text
+        # …and for every binary endpoint.
+        assert '"/thumb"' in text and '"/full"' in text and '"/cover"' in text and '"/crop"' in text
+        assert "url.pathname.endsWith(e)" in text
+        # The SW only ever caches the explicit app-shell list.
+        assert "cache.addAll(SHELL_ASSETS)" in text
+
+    def test_icons(self, client):
+        for icon in ("icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"):
+            r = client.get(f"/{icon}")
+            assert r.status_code == 200, icon
+            assert r.headers["content-type"] == "image/png"
+            assert r.content[:8] == b"\x89PNG\r\n\x1a\n", icon
+
+
 class TestStatusProxy:
     """Issue #93: the /api/status indexer proxy must be cheap to poll.
 
