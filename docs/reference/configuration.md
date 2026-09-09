@@ -16,6 +16,7 @@ These are read by `docker-compose.yml` itself, not by the containers:
 | `SYNC_LIMIT` | `0` | Default sync limit (0 = all photos). |
 | `WORKERS` | `3` | Default number of recognition workers. |
 | `CLUSTER_INTERVAL` | `1800` | Default seconds between people-clustering runs. |
+| `CLUSTER_MAX_FACES` | `5000` | Max unassigned faces per clustering run (0 = no cap). |
 | `GPS_INTERVAL` | `21600` | Default seconds between GPS/place enrichment runs. |
 | `FACE_SIM_THRESHOLD` | `0.45` | Default cosine similarity threshold for face auto-tagging. |
 | `MIN_CLUSTER_SIZE` | `2` | Default minimum faces to form a person cluster. |
