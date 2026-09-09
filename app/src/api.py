@@ -476,9 +476,14 @@ def api_sign(request: Request,
     Body: {"paths": ["/api/photos/<uid>/thumb", "/api/photos/<uid>/full", ...]}
     Returns: {"urls": [{"path": "...", "sig": "...", "exp": 1234567890}, ...]}
 
-    The signed URL is world-readable for ~5 minutes (configurable). This lets
-    the front-end embed <img src="/api/photos/{uid}/thumb?sig=...&exp=...">
-    without ever needing to attach an Authorization header to a static tag.
+    The signed URL is world-readable until the next hour boundary — up to
+    ~60 minutes, with a minimum lifetime of ``ttl`` seconds. Hour-quantized
+    expiry keeps the ``?sig=&exp=`` pair byte-identical for the rest of the
+    current hour so the binary endpoints' ``Cache-Control: immutable`` headers
+    actually get used (otherwise every page load would mint a new URL and
+    force a re-download). This lets the front-end embed
+    <img src="/api/photos/{uid}/thumb?sig=...&exp=..."> without ever needing
+    to attach an Authorization header to a static tag.
 
     In DEMO_ALLOW_PUBLIC_THUMBS=1 mode, signing is optional; the binary
     endpoints stay world-readable even without a signature. In prod mode

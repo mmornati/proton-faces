@@ -1,5 +1,6 @@
 
 import logging
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -47,8 +48,31 @@ class TestSignedTokens:
         sig, exp = auth.make_signed_token("/api/photos/abc/thumb", ttl_seconds=300)
         assert auth.verify_signed_token("/api/photos/abc/thumb", sig, exp) is True
 
+    def test_exp_quantized_to_hour_bucket(self):
+        # Two tokens minted within the same hour must be byte-identical so the
+        # `Cache-Control: immutable` headers on the binary endpoints actually
+        # get used (a fresh ?sig=&exp= per page load defeats them).
+        _, exp1 = auth.make_signed_token("/api/photos/abc/thumb", ttl_seconds=10)
+        _, exp2 = auth.make_signed_token("/api/photos/abc/thumb", ttl_seconds=10)
+        now = int(time.time())
+        next_hour = (now // 3600 + 1) * 3600
+        assert exp1 == exp2 == next_hour
+
+    def test_ttl_is_minimum_lifetime(self, monkeypatch):
+        # Late in an hour bucket the ttl floor (now + ttl) wins over the
+        # boundary, so a requested ttl is never cut short.
+        next_hour = (int(time.time()) // 3600 + 1) * 3600
+        near_end = next_hour - 10  # 10 s before the bucket rolls over
+        monkeypatch.setattr(auth.time, "time", lambda: near_end)
+        _, exp = auth.make_signed_token("/api/photos/abc/thumb", ttl_seconds=300)
+        assert exp == near_end + 300
+
     def test_expired_token(self, monkeypatch):
-        sig, exp = auth.make_signed_token("/api/photos/abc/thumb", ttl_seconds=-10)
+        # exp is quantized to a future hour boundary, so make_signed_token
+        # can't mint an already-expired token; simulate time passing instead.
+        sig, exp = auth.make_signed_token("/api/photos/abc/thumb", ttl_seconds=300)
+        assert auth.verify_signed_token("/api/photos/abc/thumb", sig, exp) is True
+        monkeypatch.setattr(auth.time, "time", lambda: exp + 1)  # clock moves past exp
         assert auth.verify_signed_token("/api/photos/abc/thumb", sig, exp) is False
 
     def test_tampered_path(self):
