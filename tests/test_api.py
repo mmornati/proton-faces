@@ -143,6 +143,36 @@ def test_app_startup_ok_with_signing_secret(monkeypatch):
         assert c.get("/api/health").status_code == 200
 
 
+class TestWarmModels:
+    """The WARM_MODELS lifecycle coordinator (issue #97)."""
+
+    def test_disabled_when_warm_models_off(self, monkeypatch):
+        monkeypatch.setattr(api.settings, "warm_models", False)
+        called = []
+        monkeypatch.setattr(api.clip, "warm_up", lambda: called.append("clip"))
+        monkeypatch.setattr(api.faces, "warm_up", lambda: called.append("faces"))
+        api.warm_models()
+        assert called == []
+
+    def test_calls_both_when_enabled(self, monkeypatch):
+        monkeypatch.setattr(api.settings, "warm_models", True)
+        called = []
+        monkeypatch.setattr(api.clip, "warm_up", lambda: called.append("clip"))
+        monkeypatch.setattr(api.faces, "warm_up", lambda: called.append("faces"))
+        api.warm_models()
+        assert called == ["clip", "faces"]
+
+    def test_failure_is_swallowed(self, monkeypatch):
+        monkeypatch.setattr(api.settings, "warm_models", True)
+
+        def _boom():
+            raise RuntimeError("no model")
+
+        monkeypatch.setattr(api.clip, "warm_up", _boom)
+        monkeypatch.setattr(api.faces, "warm_up", lambda: None)
+        api.warm_models()  # must not raise; lazy path remains the fallback
+
+
 def _seed_user(username="admin", role="admin", password_hash=None):
     return store.create_user(
         username=username,

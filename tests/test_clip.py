@@ -102,6 +102,27 @@ class _FakeTokenizer:
         return self._Encoded()
 
 
+class TestWarmUp:
+    def test_runs_dummy_vision_and_text(self, monkeypatch):
+        vec = np.ones((1, 512), dtype=np.float32)
+        vis = _FakeSession(vec)
+        txt = _FakeSession(vec)
+        monkeypatch.setattr(clip, "_load", lambda: (vis, txt, _FakeTokenizer()))
+        clip.warm_up()
+        assert "pixel_values" in vis.run_calls[0]
+        assert vis.run_calls[0]["pixel_values"].shape == (1, 3, 224, 224)
+        assert "input_ids" in txt.run_calls[0]
+        assert txt.run_calls[0]["input_ids"].shape == (1, len(_FakeTokenizer()._Encoded().ids))
+
+    def test_load_failure_propagates(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("no model")
+
+        monkeypatch.setattr(clip, "_load", _boom)
+        with pytest.raises(RuntimeError):
+            clip.warm_up()
+
+
 class TestEmbed:
     @pytest.fixture
     def fake_sessions(self, monkeypatch):

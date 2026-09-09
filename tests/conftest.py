@@ -19,6 +19,9 @@ os.environ["MODELS_DIR"] = str(_SESSION_DATA / "models")
 # give the suite a stable test secret so signed-URL tests exercise the
 # explicit-secret path.
 os.environ["SIGNING_SECRET"] = "test-signing-secret-0123456789abcdef0123456789abcdef"
+# Tests don't install the ML deps (onnxruntime/insightface) and have empty
+# model dirs; skip the per-worker model warm-up in the app lifespan.
+os.environ["WARM_MODELS"] = "0"
 
 if str(APP_SRC) not in sys.path:
     sys.path.insert(0, str(APP_SRC))
