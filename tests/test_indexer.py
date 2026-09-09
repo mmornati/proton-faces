@@ -202,3 +202,35 @@ class TestProcessOne:
         row = store.get_photo("nofile")
         assert row["status"] == "error"
         assert row["error"] == "work file missing"
+
+    def test_process_one_single_commit(self, tmp_db, app_settings, monkeypatch):
+        # Regression test for #94: the whole per-photo sequence (claim, read,
+        # face inserts, clip insert, done) must be exactly ONE commit.
+        class CountingConn:
+            def __init__(self, real):
+                self._real = real
+                self._n_commits = 0
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+            def commit(self, *a, **k):
+                result = self._real.commit(*a, **k)
+                self._n_commits += 1
+                return result
+
+        uid = self._seed_work_photo()
+        monkeypatch.setattr(indexer, "detect_faces", lambda bgr: [])
+        monkeypatch.setattr(indexer, "embed_pil", lambda img: np.ones(512, dtype=np.float32))
+        orig_get_conn = store._get_persistent_conn
+        holder: dict = {}
+
+        def counting_conn(db_path, timeout=30):
+            if not holder:
+                holder["conn"] = CountingConn(orig_get_conn(db_path, timeout))
+            return holder["conn"]
+
+        monkeypatch.setattr(store, "_get_persistent_conn", counting_conn)
+        indexer._process_one(uid)
+        assert holder["conn"]._n_commits == 1
+        assert store.get_photo(uid)["status"] == "done"
