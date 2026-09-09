@@ -124,10 +124,24 @@ def embed_image(path: str) -> np.ndarray | None:
     return embed_pil(img)
 
 
-def embed_pil(img: Image.Image) -> np.ndarray | None:
+def embed_batch(images: list[Image.Image]) -> np.ndarray | None:
+    """Normalized (N, 512) CLIP vectors for N images in a single session.run.
+
+    ONNX CPU inference batches cheaply: with intra_op=1 the matmul reuses
+    per-core work across the batch, so the indexer embeds several photos per
+    session call instead of paying the per-call overhead N times (issue #98).
+    """
+    if not images:
+        return None
     sess, _, _ = _load()
-    out = sess.run(None, {"pixel_values": _preprocess(img)})[0]  # image_embeds
-    return _l2norm(out).astype(np.float32)[0]
+    pixel_values = np.concatenate([_preprocess(img) for img in images], axis=0)  # (N,3,224,224)
+    out = sess.run(None, {"pixel_values": pixel_values})[0]  # image_embeds (N,512)
+    return _l2norm(out).astype(np.float32)
+
+
+def embed_pil(img: Image.Image) -> np.ndarray | None:
+    out = embed_batch([img])
+    return None if out is None else out[0]
 
 
 def embed_text(text: str) -> np.ndarray:

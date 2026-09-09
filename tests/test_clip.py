@@ -137,3 +137,55 @@ class TestEmbed:
 
     def test_missing_file_returns_none(self, fake_sessions, tmp_path):
         assert clip.embed_image(str(tmp_path / "nope.jpg")) is None
+
+
+class _MeanSession:
+    """Fake vision session: output depends on pixel contents per row.
+
+    Each row's embedding is the flattened-mean of its normalized pixels
+    tiled to 512-d, so two different images produce distinguishable vectors
+    and batch output == stacked per-image output.
+    """
+
+    def __init__(self):
+        self.run_calls = []
+
+    def run(self, feeds, inputs):
+        self.run_calls.append(inputs)
+        pv = inputs["pixel_values"]
+        means = pv.mean(axis=(1, 2, 3))  # (N,)
+        return [np.tile(means[:, None], (1, 512))]
+
+
+class TestEmbedBatch:
+    @pytest.fixture
+    def fake_sessions(self, monkeypatch):
+        vis = _MeanSession()
+        txt = _FakeSession(np.ones((1, 512), dtype=np.float32) * 3.0)
+        monkeypatch.setattr(clip, "_load", lambda: (vis, txt, _FakeTokenizer()))
+        return vis, txt
+
+    def test_empty_returns_none(self, fake_sessions):
+        assert clip.embed_batch([]) is None
+
+    def test_stacked_tensor_single_session_run(self, fake_sessions):
+        vis, _ = fake_sessions
+        out = clip.embed_batch([_rgb_image(), _rgb_image(), _rgb_image()])
+        assert out is not None
+        assert out.shape == (3, 512)
+        assert out.dtype == np.float32
+        assert len(vis.run_calls) == 1
+        feats = vis.run_calls[0]["pixel_values"]
+        assert feats.shape == (3, 3, 224, 224)
+
+    def test_rows_normalized(self, fake_sessions):
+        out = clip.embed_batch([_rgb_image(), _rgb_image(size=(100, 80))])
+        assert np.allclose(np.linalg.norm(out, axis=-1), 1.0)
+
+    def test_matches_embed_pil_per_image(self, fake_sessions):
+        a = _rgb_image((96, 64))
+        b = _rgb_image((48, 128))
+        batch = clip.embed_batch([a, b])
+        assert batch is not None
+        assert np.allclose(batch[0], clip.embed_pil(a), atol=1e-5)
+        assert np.allclose(batch[1], clip.embed_pil(b), atol=1e-5)

@@ -26,7 +26,7 @@ import numpy as np
 from PIL import Image
 
 from bridge_client import BridgeError, BridgeTransientError, get_bridge
-from clip import embed_pil
+from clip import embed_batch, embed_pil
 from cluster import cluster_once, match_person
 from config import settings
 from faces import detect_faces
@@ -541,23 +541,95 @@ def _downloader_loop() -> None:
 def _worker_loop() -> None:
     while True:
         try:
-            uid = _pending.get(timeout=10)
-        except queue.Empty:
-            # No queued thumbnails; pick any 'downloading' photo left over
-            # from a previous run and reprocess it.
-            row = get_photos("downloading", limit=1)
-            if not row:
-                time.sleep(5)
-                continue
-            uid = row[0]["uid"]
+            uids = _next_work_batch()
+        except Exception as exc:  # pragma: no cover
+            log.exception("worker queue error: %s", exc)
+            time.sleep(5)
+            continue
+        if not uids:
+            time.sleep(5)
+            continue
         try:
-            _process_one(uid)
+            _process_batch(uids)
+        except Exception as exc:  # pragma: no cover
+            for uid in uids:
+                log.exception("failed processing %s: %s", uid, exc)
+                set_photo_error(uid, str(exc)[:300])
+
+
+def _next_work_batch() -> list[str]:
+    """Pull the next slice of photos for one worker iteration.
+
+    Deep pending queue → micro-batch: take up to ``clip_batch_size`` uids so
+    their CLIP vectors are computed in a single session.run, which reuses
+    per-core work on CPU (issue #98). Shallow queues stay at batch=1 — an
+    interactive reclaim is likely in flight, and keeping that latency low
+    beats stacking the ONNX call.
+    """
+    if (
+        settings.clip_batch_size > 1
+        and _pending.qsize() >= settings.clip_batch_queue_depth
+    ):
+        uids: list[str] = []
+        while len(uids) < settings.clip_batch_size:
+            try:
+                uids.append(_pending.get_nowait())
+            except queue.Empty:
+                break
+        return uids
+    try:
+        return [_pending.get(timeout=10)]
+    except queue.Empty:
+        # No queued thumbnails; pick any 'downloading' photo left over
+        # from a previous run and reprocess it.
+        row = get_photos("downloading", limit=1)
+        if not row:
+            return []
+        return [row[0]["uid"]]
+
+
+def _process_batch(uids: list[str]) -> None:
+    """Process a slice of photos, sharing one CLIP session.run for the batch.
+
+    Faces stay per-photo inside ``_process_one`` — InsightFace already
+    batches detections in a single app.get() call, so there is nothing to
+    gain from hoisting it up. Only the CLIP step is merged.
+    """
+    decoded: dict[str, Image.Image] = {}
+    for uid in uids:
+        work = _work_path(uid)
+        if not work.exists():
+            continue
+        try:
+            with Image.open(work) as img:
+                decoded[uid] = img.convert("RGB")
+        except Exception as exc:  # pragma: no cover
+            log.warning("could not decode %s: %s", uid, exc)
+
+    # Reclaim fast-path: photos that already have a CLIP vector (re-processed
+    # after a false deletion) must not re-run the embedding — same skip the
+    # per-photo path uses, but applied once up front so the batch only pays
+    # for uids that actually need one.
+    embed_map: dict[str, np.ndarray] = {}
+    need = [(uid, img) for uid, img in decoded.items() if not clip_exists(uid)]
+    if need:
+        vecs = embed_batch([img for _, img in need])
+        if vecs is not None:
+            embed_map = dict(zip((uid for uid, _ in need), vecs))
+
+    for uid in uids:
+        try:
+            _process_one(uid, work_img=decoded.get(uid), clip_vec=embed_map.get(uid))
         except Exception as exc:  # pragma: no cover
             log.exception("failed processing %s: %s", uid, exc)
             set_photo_error(uid, str(exc)[:300])
 
 
-def _process_one(uid: str) -> None:
+def _process_one(
+    uid: str,
+    work_img: Image.Image | None = None,
+    clip_vec: np.ndarray | None = None,
+) -> None:
     work = _work_path(uid)
 
     # One transaction per photo: the claim, the read, every per-face insert,
@@ -576,11 +648,14 @@ def _process_one(uid: str) -> None:
             set_photo_error(uid, "work file missing", conn=conn)
             return
 
-        with Image.open(work) as img:
-            w, h = img.size
-            rgb = img.convert("RGB")
-            arr = np.asarray(rgb)
-            bgr = arr[:, :, ::-1].copy()  # PIL -> OpenCV BGR
+        if work_img is not None:
+            rgb = work_img
+        else:
+            with Image.open(work) as img:
+                rgb = img.convert("RGB")
+        w, h = rgb.size
+        arr = np.asarray(rgb)
+        bgr = arr[:, :, ::-1].copy()  # PIL -> OpenCV BGR
 
         # GPS/place is enriched by the gps loop (subprocess) — never geocode
         # from a worker thread: reverse_geocoder forks a multiprocessing pool
@@ -630,8 +705,13 @@ def _process_one(uid: str) -> None:
 
         # Clip embedding: recompute only when the photo has none yet (same
         # reclaim fast-path as faces above — the previous CLIP vector, if
-        # any, is still valid).
-        clip_vec = None if clip_exists(uid, conn) else embed_pil(rgb)
+        # any, is still valid). In batch mode ``_process_batch`` hands a
+        # precomputed vector in; a uid it skipped (already-held clip, failed
+        # decode) falls back to this single-image check instead.
+        if clip_vec is None and clip_exists(uid, conn):
+            pass
+        elif clip_vec is None:
+            clip_vec = embed_pil(rgb)
 
         # Persist thumbnail into the cache, then remove the work file.
         final = _thumb_path(uid)

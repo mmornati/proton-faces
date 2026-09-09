@@ -57,6 +57,17 @@ class Settings:
         # local active count, treating that as a truncated timeline listing.
         self.sync_deletion_threshold = float(os.environ.get("SYNC_DELETION_THRESHOLD", "0.10"))
         self.workers = int(os.environ.get("WORKERS", "2"))
+        # CLIP micro-batching in the indexer (issue #98): how many CLIP
+        # vectors one ONNX session.run computes when the pending queue is
+        # deep. With intra_op=1 CPU inference, batch>1 reuses per-core work
+        # and raises indexer throughput; shallow queues fall back to batch=1
+        # so interactive reclaims stay low-latency.
+        self.clip_batch_size = int(os.environ.get("CLIP_BATCH_SIZE", "4"))
+        # Pending-queue depth at which workers switch from batch=1 to
+        # CLIP_BATCH_SIZE micro-batching. The queue is in-memory and only
+        # reliably deep during a bulk download backlog, which is exactly when
+        # the batch wins.
+        self.clip_batch_queue_depth = int(os.environ.get("CLIP_BATCH_QUEUE_DEPTH", "8"))
         # How many uvicorn workers serve the API. Each worker lazily loads its
         # own CLIP ONNX session (~838 MB RSS measured) + a per-worker matrix
         # cache, so the count is the dominant term in the `app` container's
