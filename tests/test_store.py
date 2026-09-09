@@ -974,6 +974,14 @@ class TestAlbums:
         assert by_uid["al2"]["photo_count"] == 1
         assert [r["uid"] for r in store.album_photos("al1")] == ["p2", "p1"]
 
+    def test_album_names_resolves_locally(self, tmp_db):
+        store.sync_albums([{"uid": "al1", "name": "Trip"}, {"uid": "al2", "name": None}])
+        assert store.album_names(["al1", "al2", "missing"]) == {
+            "al1": "Trip",
+            "al2": "al2",
+        }
+        assert store.album_names([]) == {}
+
 
 class TestDuplicatesAndMemories:
     def test_duplicate_groups(self, tmp_db):

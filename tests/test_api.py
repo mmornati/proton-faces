@@ -10,6 +10,7 @@ import threading
 import time
 from collections import OrderedDict
 
+import httpx
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -70,6 +71,7 @@ class FakeBridge:
         self._nodes = {}
         self._albums = []
         self._full_data = b"\xff\xd8\xfffake-jpeg"
+        self._albums_calls = 0
 
     def add_node(self, uid: str, **kw):
         node = {"uid": uid, "name": f"{uid}.jpg", "mediaType": "image/jpeg",
@@ -87,6 +89,7 @@ class FakeBridge:
         return [self._nodes[u] for u in uids if u in self._nodes]
 
     def albums(self):
+        self._albums_calls += 1
         return {"albums": self._albums}
 
     def full_photo(self, uid, range_header=None, timeout_ms=None):
@@ -330,6 +333,150 @@ class TestPublicEndpoints:
         assert r.json()["config"]["face_sim_threshold"] == 0.45
 
 
+class TestStatusProxy:
+    """Issue #93: the /api/status indexer proxy must be cheap to poll.
+
+    - Fresh indexer proxied payloads carry `pending_db`, so the app must
+      not run the local `stats()` queries on the happy path (the old code
+      computed them on every proxy cache miss).
+    - Degraded mode (indexer unreachable) computes `pending_db` through
+      `_cached_stats()`, reusing the same computation as the `stats` block
+      instead of firing a second `stats()`.
+    - The proxied state is TTL-cached so a 60 s UI poll costs at most one
+      round-trip to the indexer.
+    """
+
+    @staticmethod
+    def _proxy_client(handler) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(handler), timeout=httpx.Timeout(3.0))
+
+    @staticmethod
+    def _stub_payload(**overrides) -> dict:
+        payload = {
+            "started_at": 1000,
+            "last_sync": 2000,
+            "pending_in_queue": 2,
+            "threads": {"sync": True},
+            "remote": True,
+            "pending_db": 7,
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_fresh_proxy_payload_skips_local_stats(self, app_settings, client, monkeypatch):
+        """Fresh proxy payload supplies pending_db; local stats() runs at most once.
+
+        Local pending would be 1 (one 'new' photo) while the proxy reports 7.
+        The response must use the proxy's count for `indexer.pending_db`, and the
+        single local `stats()` call must come from the `stats` block only.
+        """
+        store.upsert_photos([{
+            "uid": "p-new",
+            "name": "p-new.jpg",
+            "media_type": "image/jpeg",
+            "capture_time": 1700000000,
+            "sha1": "sha-p-new",
+            "albums": [],
+        }])
+        api._stats_cache = None
+        api._indexer_proxy_cache = None
+
+        calls: list[None] = []
+        real_stats = api.stats
+
+        def spy_stats():
+            calls.append(None)
+            return real_stats()
+
+        monkeypatch.setattr(api, "stats", spy_stats)
+        monkeypatch.setattr(
+            api, "_get_indexer_proxy_client",
+            lambda: self._proxy_client(lambda req: httpx.Response(200, json=self._stub_payload())),
+        )
+
+        r = client.get("/api/status")
+        assert r.status_code == 200
+        body = r.json()
+        # the durable count comes from the proxy payload, not local stats
+        assert body["indexer"]["pending_db"] == 7
+        assert body["indexer"]["proxy_ok"] is True
+        # local stats really sees 1 pending photo...
+        assert body["stats"]["photos"]["pending"] == 1
+        # ...but it was computed exactly once — for the stats block — not again
+        # for the proxy path (pre-fix this was 2 calls).
+        assert len(calls) == 1
+
+    def test_proxy_ttl_reuses_one_roundtrip_per_poll(self, app_settings, client, monkeypatch):
+        """The 30 s TTL means N back-to-back polls cost exactly one proxy call."""
+        hits: list[None] = []
+        api._indexer_proxy_cache = None
+
+        def handler(req):
+            hits.append(None)
+            return httpx.Response(200, json=self._stub_payload())
+
+        monkeypatch.setattr(api, "_get_indexer_proxy_client", lambda: self._proxy_client(handler))
+
+        for _ in range(3):
+            r = client.get("/api/status")
+            assert r.status_code == 200
+        assert len(hits) == 1
+
+    def test_degraded_proxy_uses_local_pending_db_once(self, app_settings, client, monkeypatch):
+        """Indexer unreachable → stub with local pending_db, computed via _cached_stats."""
+        store.upsert_photos([{
+            "uid": "p-new",
+            "name": "p-new.jpg",
+            "media_type": "image/jpeg",
+            "capture_time": 1700000000,
+            "sha1": "sha-p-new",
+            "albums": [],
+        }])
+        api._stats_cache = None
+        api._indexer_proxy_cache = None
+
+        calls: list[None] = []
+        real_stats = api.stats
+
+        def spy_stats():
+            calls.append(None)
+            return real_stats()
+
+        def handler(req):
+            raise httpx.ConnectError("indexer unreachable", request=req)
+
+        monkeypatch.setattr(api, "stats", spy_stats)
+        monkeypatch.setattr(api, "_get_indexer_proxy_client", lambda: self._proxy_client(handler))
+
+        r = client.get("/api/status")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["indexer"]["proxy_ok"] is False
+        assert body["indexer"]["proxy_error"] == "ConnectError"
+        assert body["indexer"]["pending_db"] == 1
+        # the stub's pending_db shares the stats-block computation (1 call total,
+        # not the pre-fix 1 direct + 1 cached).
+        assert len(calls) == 1
+
+    def test_indexer_proxy_json_pooled_client(self, app_settings, monkeypatch):
+        """Admin sync-control proxy uses the pooled client and 502s on failure."""
+        monkeypatch.setattr(
+            api, "_get_indexer_proxy_client",
+            lambda: self._proxy_client(
+                lambda req: httpx.Response(200, json={"sync_interval": 3600})
+            ),
+        )
+        assert api._indexer_proxy_json("GET", "/sync-config") == {"sync_interval": 3600}
+
+        def handler(req):
+            raise httpx.ConnectError("down", request=req)
+
+        monkeypatch.setattr(api, "_get_indexer_proxy_client", lambda: self._proxy_client(handler))
+        with pytest.raises(Exception) as excinfo:
+            api._indexer_proxy_json("GET", "/sync-config")
+        assert excinfo.value.status_code == 502
+
+
 # --- photos ---------------------------------------------------------------
 
 
@@ -509,14 +656,32 @@ class TestPhotos:
     def test_meta(self, client, monkeypatch, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1", albums=["al1"])
+        # Album names come from the local albums table; the fixture seeds the
+        # store the way the 10-minute `sync_albums` loop would.
+        store.sync_albums([{"uid": "al1", "name": "Holiday"}])
         fake = FakeBridge()
         fake.add_node("p1", tags=["proton-tag"])
-        fake.add_album("al1", "Holiday")
         monkeypatch.setattr(bridge_client, "_bridge", fake)
         r = client.get("/api/photos/p1/meta", headers=_bearer(client))
         assert r.status_code == 200
         assert r.json()["proton_tags"] == ["proton-tag"]
         assert r.json()["albums_detail"] == [{"uid": "al1", "name": "Holiday"}]
+        # The endpoint must resolve album names locally and never enumerate
+        # the full album list from the bridge (issue #92).
+        assert fake._albums_calls == 0
+
+    def test_meta_unknown_album_uid_falls_back(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        # Album not synced locally yet: the name must fall back to the uid
+        # rather than triggering a bridge album enumeration.
+        _seed_done_photo("p1", albums=["al9"])
+        fake = FakeBridge()
+        fake.add_node("p1")
+        monkeypatch.setattr(bridge_client, "_bridge", fake)
+        r = client.get("/api/photos/p1/meta", headers=_bearer(client))
+        assert r.status_code == 200
+        assert r.json()["albums_detail"] == [{"uid": "al9", "name": "al9"}]
+        assert fake._albums_calls == 0
 
     def test_albums(self, client, password_hash):
         _seed_user(password_hash=password_hash)

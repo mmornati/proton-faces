@@ -100,6 +100,7 @@ def _reset_module_state():
         api._clip_cache = None
         api._bridge_health_cache = None
         api._indexer_proxy_cache = None
+        api._indexer_proxy_client = None
         api._full_semaphore = asyncio.Semaphore(api._FULL_SEMAPHORE_MAX)
         api._full_res_failure_ts.clear()
     except ImportError:
