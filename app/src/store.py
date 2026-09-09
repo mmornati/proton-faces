@@ -1099,13 +1099,20 @@ _SQL_CHUNK = 500
 
 
 def merge_people_bulk(source_ids: list[int], target_id: int) -> int:
-    """Merge many people into `target_id` in a single transaction.
+    """Merge many people into `target_id`, committing once per chunk.
 
     Mirrors `merge_person` per source: backfill the target's name/cover from
     the sources when unset, re-parent every face onto the target, then delete
     the source rows. Unlike calling `merge_person` N times (one connection +
-    commit each), all UPDATEs/DELETEs run on a single connection in chunks, so
-    a 49k-people dedupe campaign costs one commit, not one per source.
+    commit each), each ~500-id chunk of sources runs its whole merge on a
+    single connection and commits once, so a 49k-people dedupe campaign is a
+    few dozen commits, not one per source.
+
+    Each source-id merge is independently valid, so committing per chunk means
+    the WAL writer lock is held only for the duration of one chunk instead of
+    the whole campaign — indexer claims and API writes stay unblocked during
+    large merges, and a failure (or a concurrent deletion of the target)
+    leaves the already-merged chunks persisted.
 
     Missing / repeated ids and the target itself are skipped. Returns how many
     source people were actually merged (existing rows deleted).
@@ -1119,17 +1126,19 @@ def merge_people_bulk(source_ids: list[int], target_id: int) -> int:
         ids.append(sid)
     if not ids:
         return 0
-    with get_conn() as conn:
-        tgt = conn.execute(
-            "SELECT name, cover_uid, cover_face_id FROM people WHERE id=?", (target_id,)
-        ).fetchone()
-        if tgt is None:
-            return 0
-        t_name, t_cover_uid, t_cover_face_id = tgt["name"], tgt["cover_uid"], tgt["cover_face_id"]
-        merged = 0
-        for start in range(0, len(ids), _SQL_CHUNK):
-            chunk = ids[start : start + _SQL_CHUNK]
-            qmarks = ",".join("?" * len(chunk))
+    merged = 0
+    for start in range(0, len(ids), _SQL_CHUNK):
+        chunk = ids[start : start + _SQL_CHUNK]
+        qmarks = ",".join("?" * len(chunk))
+        with get_conn() as conn:
+            # Re-read the target per chunk so the backfill sees the state
+            # committed by the previous chunk (and any concurrent writer).
+            tgt = conn.execute(
+                "SELECT name, cover_uid, cover_face_id FROM people WHERE id=?", (target_id,)
+            ).fetchone()
+            if tgt is None:
+                return merged
+            t_name, t_cover_uid, t_cover_face_id = tgt["name"], tgt["cover_uid"], tgt["cover_face_id"]
             for src in conn.execute(
                 "SELECT name, cover_uid, cover_face_id FROM people "
                 f"WHERE id IN ({qmarks})",
@@ -1148,16 +1157,10 @@ def merge_people_bulk(source_ids: list[int], target_id: int) -> int:
                         (t_cover_face_id, target_id),
                     )
                 merged += 1
-        for start in range(0, len(ids), _SQL_CHUNK):
-            chunk = ids[start : start + _SQL_CHUNK]
-            qmarks = ",".join("?" * len(chunk))
             conn.execute(
                 "UPDATE faces SET person_id=? WHERE person_id IN (" + qmarks + ")",
                 (target_id, *chunk),
             )
-        for start in range(0, len(ids), _SQL_CHUNK):
-            chunk = ids[start : start + _SQL_CHUNK]
-            qmarks = ",".join("?" * len(chunk))
             conn.execute("DELETE FROM people WHERE id IN (" + qmarks + ")", chunk)
     _recount_person(target_id)
     return merged
