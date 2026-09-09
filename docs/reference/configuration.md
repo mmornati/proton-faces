@@ -17,6 +17,7 @@ These are read by `docker-compose.yml` itself, not by the containers:
 | `WORKERS` | `3` | Default number of recognition workers. |
 | `CLUSTER_INTERVAL` | `1800` | Default seconds between people-clustering runs. |
 | `GPS_INTERVAL` | `21600` | Default seconds between GPS/place enrichment runs. |
+| `ALBUM_FULL_RESCAN_SEC` | `21600` (6 h) | How often (seconds) the albums sync runs a full photos-table rescan as a repair pass. Between rescans the sync is incremental (issue #95): only albums whose membership changed are recounted. Lower it to converge out-of-band edits faster at the cost of more scanning. |
 | `FACE_SIM_THRESHOLD` | `0.45` | Default cosine similarity threshold for face auto-tagging. |
 | `MIN_CLUSTER_SIZE` | `2` | Default minimum faces to form a person cluster. |
 | `LOG_LEVEL` | `INFO` | Default logging verbosity. |
