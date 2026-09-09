@@ -478,6 +478,29 @@ class TestDenormalizedCounts:
         row = next(r for r in rows if r["id"] == pid)
         assert (row["face_count"], row["photo_count"]) == (3, 2)
 
+    def test_all_people_q_prefix_collate_nocase(self, tmp_db):
+        self._seed_photo_done("p1")
+        for name in ["Alice", "alice", "Bob", "Alicia", "xalicia"]:
+            store.create_person(name, "p1", None)
+        hits = store.all_people(q="al")
+        names = sorted(r["name"] for r in hits)
+        # case-insensitive prefix: everything starting with "al"; the
+        # substring-but-not-prefix "xalicia" is excluded.
+        assert names == ["Alice", "Alicia", "alice"]
+        assert store.all_people(q="zzz") == []
+
+    def test_all_people_q_prefix_uses_index(self, tmp_db):
+        self._seed_photo_done("p1")
+        store.create_person("Alice", "p1", None)
+        store.create_person("Bob", "p1", None)
+        with store.get_conn() as conn:
+            plan = conn.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT id FROM people p "
+                "WHERE p.name COLLATE NOCASE LIKE 'al%'"
+            ).fetchall()
+        assert any("idx_people_name" in str(row[3]) for row in plan)
+
 
 class TestSimilarFaces:
     def test_similar_faces_matches_near_embedding(self, tmp_db):
