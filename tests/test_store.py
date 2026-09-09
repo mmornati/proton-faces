@@ -1,3 +1,4 @@
+import contextlib
 import json
 import threading
 import time
@@ -665,6 +666,29 @@ class TestMergePeopleBulk:
         sources = [self._seed_person(f"p{i}", f"S{i}") for i in range(1, 620)]
         assert store.merge_people_bulk(sources, target) == 619
         assert store.get_person(target)["face_count"] == 620
+
+    def test_commits_per_chunk(self, tmp_db, monkeypatch):
+        # Issue #87: a bulk merge must commit after each ~500-id chunk, not
+        # hold one giant transaction for the whole campaign (the WAL writer
+        # lock then never blocks indexer claims / API writes for seconds).
+        # 601 sources span two chunks: 2 chunk transactions + the closing
+        # recount = 3 commit points. A single-transaction merge would be 2.
+        target = self._seed_person("p0", "Target")
+        sources = [self._seed_person(f"p{i}", f"S{i}") for i in range(1, 602)]
+        real_get_conn = store.get_conn
+        commits = 0
+
+        @contextlib.contextmanager
+        def counting_get_conn():
+            nonlocal commits
+            with real_get_conn() as conn:
+                commits += 1
+                yield conn
+
+        monkeypatch.setattr(store, "get_conn", counting_get_conn)
+        assert store.merge_people_bulk(sources, target) == 601
+        assert commits >= 3
+        assert store.get_person(target)["face_count"] == 602
 
     def test_face_ids_for_people(self, tmp_db):
         a = self._seed_person("p1", "A")
