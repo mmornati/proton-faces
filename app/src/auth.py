@@ -225,8 +225,24 @@ def require_signing_secret() -> None:
 
 
 def make_signed_token(path: str, ttl_seconds: int = 300) -> tuple[str, int]:
-    """Return (sig, exp) for a path. Path is the URL path WITHOUT query string."""
-    exp = int(time.time()) + ttl_seconds
+    """Return (sig, exp) for a path. Path is the URL path WITHOUT query string.
+
+    ``exp`` is quantized UP to the next hour boundary (but never earlier than
+    ``now + ttl_seconds``). Because the binary endpoints are cached with
+    ``Cache-Control: public, max-age=31536000, immutable``, the old
+    ``now + ttl`` formula produced a fresh ``?sig=&exp=`` pair on every page
+    load and browsers re-downloaded every thumbnail. Hour-quantized expiry
+    keeps the URL byte-identical for the rest of the current hour, so those
+    immutable headers actually get used.
+
+    Validity semantics: a URL minted right after an hour boundary lives until
+    the next boundary (~1 h); one minted near the boundary lives ``ttl``
+    seconds longer than it (the floor). Signed URLs are therefore shareable
+    for up to ~1 h — same risk class as the old 5-minute TTL for a
+    self-hosted app, and documented in SECURITY_HARDENING.md.
+    """
+    now = int(time.time())
+    exp = max(now + ttl_seconds, (now // 3600 + 1) * 3600)
     msg = f"{path}|{exp}".encode("utf-8")
     sig = hmac.new(_signing_secret(), msg, hashlib.sha256).hexdigest()
     return sig, exp

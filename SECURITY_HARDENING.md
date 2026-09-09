@@ -64,7 +64,13 @@ users fetch full-resolution Proton photos if they know a UID.
 - `make_signed_token(path, ttl)` / `verify_signed_token(path, sig, exp)` —
   HMAC-SHA256 over `path|exp` keyed by `SIGNING_SECRET` (explicit secret
   required outside DEMO_MODE — startup fails closed if unset; DEMO_MODE may
-  fall back to a per-boot random secret with a WARN log).
+  fall back to a per-boot random secret with a WARN log). `exp` is quantized
+  UP to the next hour boundary (never earlier than `now + ttl`), so URLs stay
+  byte-identical within an hour and the binary endpoints'
+  `Cache-Control: public, max-age=31536000, immutable` headers actually get
+  used — a fresh `?sig=&exp=` per page load would otherwise re-download every
+  thumbnail (see perf: signed-URL exp churn). `verify_signed_token` is
+  unchanged: it checks `exp > now` and the HMAC.
 - `signed_or_token(request)` — accepts EITHER a valid signed URL OR a bearer
   token. Used by the four binary endpoints.
 - `_hardening_overrides(key, default)` — resolves the demo feature flags
@@ -79,7 +85,9 @@ users fetch full-resolution Proton photos if they know a UID.
 **Server (`app/src/api.py`):**
 
 - `POST /api/sign` — issues signed URLs for a list of binary-endpoint paths.
-  Requires bearer. Default TTL 300 s; min 30 s, max 1 h.
+  Requires bearer. Default TTL 300 s; min 30 s, max 1 h. `ttl` is a minimum
+  lifetime floor — the returned `exp` is the next hour boundary (up to ~1 h),
+  matching how `_sign_if_needed` uses the tokens on the server side.
 - `_sign_if_needed(url)` — wraps every `thumb_url` / `cover_url` / `crop_url`
   in API responses when prod mode is on, so `<img src=...>` works without
   any front-end refactor.
@@ -266,9 +274,14 @@ These are NOT in scope for this hardening pass but worth noting:
 
 1. **Photo UID entropy.** The `/thumb /full /cover /crop` signed-URL gate
    raises the bar but does not eliminate the UID-guessing vector entirely.
-   If an attacker knows a UID, the signed URL is valid for 5 minutes.
-   Mitigation: keep TTL short (default 300 s) and ensure UIDs are 128-bit
-   random (currently sourced from the Proton SDK; verified random).
+   If an attacker knows a UID, a signed URL is valid until the next hour
+   boundary — up to ~60 minutes, so a captured URL is effectively shareable
+   for up to an hour. That is the same risk class as the old 5-minute TTL
+   for a self-hosted app; the hour-bucket quantization exists to keep
+   browser caches effective, not to widen the exposure: the URL is still
+   unguessable without knowledge of `SIGNING_SECRET`. Mitigation: keep the
+   lifetime floor short (default 300 s) and ensure UIDs are 128-bit random
+   (currently sourced from the Proton SDK; verified random).
 2. **Bridge container compromise.** The bridge has no auth; if an attacker
    reaches it, they can read every photo via `/photo/{uid}/full`. The
    bridge is reachable only on the internal compose network; a successful

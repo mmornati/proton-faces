@@ -535,6 +535,19 @@ class TestPhotos:
         assert marker["thumb_url"].split("?")[0] == "/api/photos/p1/thumb"
         assert "sig=" in marker["thumb_url"]  # signed by default when public thumbs are off
 
+    def test_thumb_url_stable_within_hour(self, client, password_hash):
+        # Regression for signed-URL `exp` churn: two page loads within the same
+        # hour must return byte-identical thumb URLs, otherwise the
+        # `Cache-Control: immutable` headers on the binary endpoints are
+        # defeated and every session re-downloads every thumbnail.
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1", place="Paris, France", gps=(48.8584, 2.2945))
+        headers = _bearer(client)
+        url1 = client.get("/api/map", headers=headers).json()["markers"][0]["thumb_url"]
+        url2 = client.get("/api/map", headers=headers).json()["markers"][0]["thumb_url"]
+        assert url1 == url2
+        assert "sig=" in url1 and "exp=" in url1
+
 
 # --- faces / people -------------------------------------------------------
 
