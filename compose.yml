@@ -81,12 +81,19 @@ services:
       - PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=${PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION:-1}
       # Optional: point at a custom Proton API environment.
       # - PROTON_DRIVE_BASE_URL=drive-api.proton.me
-      # Outbound rate limit to Proton API. 3 req/s burst 2 keeps us inside
-      # Proton's comfort zone and avoids the 429 "Server errors limit reached"
-      # cascade that triggered false-deletions when the timeline listing
-      # dropped rows mid-shard during the Aug 27 / Sep 1 Proton incidents.
+      # Outbound rate limit to Proton API, in two layers. 3 req/s burst 2 gates
+      # operation STARTS (timeline sync, node listing, album sync, thumbnail
+      # batch, full-res download) and keeps us inside Proton's comfort zone,
+      # avoiding the 429 "Server errors limit reached" cascade that triggered
+      # false-deletions when the timeline listing dropped rows mid-shard during
+      # the Aug 27 / Sep 1 Proton incidents. But one operation fans out into
+      # hundreds-to-thousands of paginated/block HTTPS calls, so the HTTP layer
+      # below additionally paces EVERY upstream call through the SDK's transport
+      # (patched httpClient). Left unset here it derives as RATE_LIMIT x 10
+      # (30 HTTP req/s at the default 3 ops/s); set it to 0 to disable.
       - PROTON_BRIDGE_RATE_LIMIT=${PROTON_BRIDGE_RATE_LIMIT:-3}
       - PROTON_BRIDGE_RATE_BURST=${PROTON_BRIDGE_RATE_BURST:-2}
+      - PROTON_BRIDGE_RATE_LIMIT_HTTP=${PROTON_BRIDGE_RATE_LIMIT_HTTP:-}
     networks:
       - internal
 
