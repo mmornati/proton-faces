@@ -1251,6 +1251,63 @@ class TestSearch:
                         headers=headers)
         assert r.status_code == 404
 
+    def test_topk_window_matches_full_argsort(self):
+        # _topk_indices must return the same survivors (sorted) as the full
+        # np.argsort walk it replaces, across a range of k values.
+        rng = np.random.default_rng(7)
+        scores = (rng.permutation(20_000) + 1).astype(np.float32)
+        for k in (1, 8, 200, 5_000, 20_000, 40_000):
+            got = api._topk_indices(scores, k)
+            want = np.argsort(-scores)[: min(k, scores.size)]
+            assert got.tolist() == want.tolist()
+
+    def test_topk_window_empty_and_oversized(self):
+        scores = np.flip(np.arange(120, dtype=np.float32) + 1)
+        assert api._topk_indices(scores, 5).tolist() == [0, 1, 2, 3, 4]
+        assert api._topk_indices(scores, 10_000).tolist() == list(range(120))
+        assert api._topk_indices(scores, 0).size == 0
+        assert api._topk_indices(np.empty(0, dtype=np.float32), 5).size == 0
+
+    def test_face_search_dedupes_beyond_topk_window(self, monkeypatch):
+        # Photo p0 contributes 14 near-top faces; that alone exhausts the
+        # top-(limit*slack) window, so the exact tail scan must supply the
+        # remaining distinct photos. Results must equal the full-argsort walk.
+        mat = np.zeros((18, 16), dtype=np.float32)
+        uids = []
+        row = 0
+        for i in range(14):  # p0: 14 high-scoring faces
+            mat[row, 15] = 0.90 - i * 0.01
+            uids.append("p0")
+            row += 1
+        for i, score in enumerate((0.60, 0.50, 0.40, 0.30)):
+            mat[row, 15] = score
+            uids.append(f"p{i + 1}")
+            row += 1
+        monkeypatch.setattr(api, "_embedding_cache_data",
+                            lambda: {"mat": mat, "photo_uids": uids})
+        photos = {uid: {"uid": uid} for uid in ("p0", "p1", "p2", "p3", "p4")}
+        monkeypatch.setattr(api, "get_photos_batch",
+                            lambda u: {uid: photos[uid] for uid in u if uid in photos})
+        monkeypatch.setattr(api, "favorite_uids", lambda user_id, uids_: set())
+
+        emb = np.zeros(16, dtype=np.float32)
+        emb[15] = 1.0
+        out = api._face_similarity(emb, limit=4, user_id=1)
+        scores = mat @ emb
+        ref = []
+        seen = set()
+        for i in np.argsort(-scores):
+            uid = uids[i]
+            if uid in seen:
+                continue
+            seen.add(uid)
+            ref.append((uid, float(scores[i])))
+            if len(ref) >= 4:
+                break
+        got = [(r["uid"], r["score"]) for r in out["results"]]
+        assert got == ref
+        assert [uid for uid, _ in got] == ["p0", "p1", "p2", "p3"]
+
 
 # --- admin ----------------------------------------------------------------
 
@@ -1727,6 +1784,22 @@ class TestTTLCacheSingleFlight:
         monkeypatch.setattr(api, "read_clip_sidecar", fake_sidecar)
         self._run_concurrent(api._get_clip_matrix)
         assert sidecar_calls == 1
+
+    def test_clip_matrix_warm_hit_skips_count(self, monkeypatch):
+        # A fresh cache hit must not open a clip_count() connection at all.
+        api._clip_cache = (time.time(), 1, ["p1"], np.zeros((1, 512), dtype=np.float32))
+        count_calls = 0
+
+        def fake_clip_count() -> int:
+            nonlocal count_calls
+            count_calls += 1
+            return 1
+
+        monkeypatch.setattr(api, "clip_count", fake_clip_count)
+        uids, X = api._get_clip_matrix()
+        assert count_calls == 0
+        assert uids == ["p1"]
+        assert X.shape == (1, 512)
 
 
 class TestPeopleCacheLru:
