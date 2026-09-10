@@ -92,6 +92,7 @@ from store import (
     person_map_markers,
     person_mean_embedding,
     person_mean_embeddings_from_cache,
+    person_mean_matrix_from_cache,
     photo_anchors,
     photos_by_tag,
     photos_for_person,
@@ -1612,12 +1613,9 @@ def api_face_suggest(face_id: int, limit: int = 5):
     if emb is None:
         return {"suggestions": []}
     fe = np.frombuffer(emb, dtype=np.float32)
-    means = person_mean_embeddings_from_cache()
-    if not means:
+    pids, M = person_mean_matrix_from_cache()
+    if M.shape[0] == 0:
         return {"suggestions": []}
-# Vectorized: one (P,512) @ (512,) matmul over every person's mean.
-    pids = np.array(list(means.keys()), dtype=np.int64)
-    M = np.stack([means[p] for p in pids]).astype(np.float32)
     sims = M @ fe
     order = np.argsort(-sims)
     top_n = max(1, min(limit, 50))
@@ -1806,16 +1804,13 @@ def api_people_similar(person_id: int, threshold: float = 0.40, limit: int = 50)
     """
     if limit < 1:
         limit = 50
-    means = person_mean_embeddings_from_cache()
-    fe = means.get(person_id)
-    if fe is None or len(means) < 2:
+    pids, M = person_mean_matrix_from_cache()
+    tgt = np.flatnonzero(pids == person_id)
+    if tgt.size == 0 or pids.size < 2:
         return {"similar": []}
-    pids = np.array([pid for pid in means if pid != person_id], dtype=np.int64)
-    if pids.size == 0:
-        return {"similar": []}
-    M = np.stack([means[pid] for pid in pids]).astype(np.float32)
+    fe = M[tgt[0]]
     sims = M @ fe
-    hits = np.flatnonzero(sims >= threshold)
+    hits = np.flatnonzero((sims >= threshold) & (pids != person_id))
     if hits.size == 0:
         return {"similar": []}
     order = hits[np.argsort(-sims[hits])][:limit]
@@ -1900,18 +1895,14 @@ def api_people_merge_all_similar(target_id: int, body: dict,
     target = get_person(target_id)
     if target is None:
         raise HTTPException(404, "target person not found")
-    means = person_mean_embeddings_from_cache()
-    fe = means.get(target_id)
-    if fe is None or len(means) < 2:
+    pids, M = person_mean_matrix_from_cache()
+    tgt_idx = np.flatnonzero(pids == target_id)
+    if tgt_idx.size == 0 or pids.size < 2:
         return {"ok": True, "target_id": target_id, "merged_count": 0, "assigned_similar": 0,
                 "photo_count": target["photo_count"], "face_count": target["face_count"]}
-    pids = np.array([pid for pid in means if pid != target_id], dtype=np.int64)
-    if pids.size == 0:
-        return {"ok": True, "target_id": target_id, "merged_count": 0, "assigned_similar": 0,
-                "photo_count": target["photo_count"], "face_count": target["face_count"]}
-    M = np.stack([means[pid] for pid in pids]).astype(np.float32)
+    fe = M[tgt_idx[0]]
     sims = M @ fe
-    hits = np.flatnonzero(sims >= threshold)
+    hits = np.flatnonzero((sims >= threshold) & (pids != target_id))
     order = hits[np.argsort(-sims[hits])]
     source_ids = [int(pids[i]) for i in order[:max_sources]]
     if not source_ids:
