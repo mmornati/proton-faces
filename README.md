@@ -202,8 +202,9 @@ the legacy single-process layout (everything in `app`), set `RUN_INDEXER=1` in
 
 The published npm `@protontech/drive-sdk` cannot run standalone — its
 authentication module is not published — so the bridge is built inside the
-Proton Drive SDK monorepo at image build time (pinned tag `cli/v0.8.0`). You
-never need to clone it yourself; the Docker build does it automatically.
+Proton Drive SDK monorepo at image build time (pinned to the commit behind tag
+`cli/v0.8.0`). You never need to clone it yourself; the Docker build does it
+automatically.
 
 ---
 
