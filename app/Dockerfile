@@ -9,11 +9,12 @@
 FROM python:3.11-slim
 
 # System deps: onnxruntime wheels need libgomp1; build-essential is required to
-# compile insightface's Cython extension; curl downloads the baked CLIP models.
-# ffmpeg extracts video poster frames + reads durations via ffprobe.
+# compile insightface's Cython extension; curl downloads the baked CLIP models;
+# unzip extracts the pinned buffalo_l release asset. ffmpeg extracts video
+# poster frames + reads durations via ffprobe.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        libgomp1 libglib2.0-0 ffmpeg build-essential curl \
+        libgomp1 libglib2.0-0 ffmpeg build-essential curl unzip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -24,35 +25,26 @@ RUN pip install --no-cache-dir -r requirements.txt
 # --- bake in ML models ---
 # Models live at /models in the image (MODELS_DIR env below); the data volume
 # holds only thumbnails + SQLite, not model weights.
-# InsightFace buffalo_l.
-ENV INSIGHTFACE_HOME=/models/insightface
-RUN python - <<'PY'
-from pathlib import Path
-import os
-root = Path(os.environ["INSIGHTFACE_HOME"])
-root.mkdir(parents=True, exist_ok=True)
-from insightface.app import FaceAnalysis
-app = FaceAnalysis(
-    name="buffalo_l",
-    allowed_modules=["detection", "recognition"],
-    providers=["CPUExecutionProvider"],
-    root=str(root),
-)
-app.prepare(ctx_id=0, det_size=(640, 640))
-print("insightface model baked at", root)
-PY
+#
+# Supply-chain hardening (issue #50): every downloaded artifact is pinned to an
+# immutable revision (HF commit SHA / GitHub release asset) and verified against
+# the checksums in models.sha256 via `sha256sum -c` below. A checksum mismatch
+# fails the build, so a tampered or swapped asset can never be baked in.
+COPY models.sha256 ./
 
 # CLIP ViT-B-32 (OpenAI weights) via ONNX — Xenova export of
 # openai/clip-vit-base-patch32. Same weights as the open_clip 'openai'
 # pretrained set, so existing CLIP embeddings stay in the same space.
+# Pinned to commit d15189d7028b43f1d3e65039190477f6af591c2a (not mutable
+# `main`); verified against models.sha256.
 # Download once at build time; baked into /models/clip.
 RUN mkdir -p /models/clip \
     && curl -fsSL -o /models/clip/vision_model.onnx \
-        https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model.onnx \
+        https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/d15189d7028b43f1d3e65039190477f6af591c2a/onnx/vision_model.onnx \
     && curl -fsSL -o /models/clip/text_model.onnx \
-        https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/text_model.onnx \
+        https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/d15189d7028b43f1d3e65039190477f6af591c2a/onnx/text_model.onnx \
     && curl -fsSL -o /models/clip/tokenizer.json \
-        https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/tokenizer.json \
+        https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/d15189d7028b43f1d3e65039190477f6af591c2a/tokenizer.json \
     && python - <<'PY'
 import numpy as np
 import onnxruntime as ort
@@ -69,6 +61,27 @@ ids = np.array([tok.encode("a beach").ids], dtype=np.int64)
 _ = txt.run(None, {"input_ids": ids})[0]
 print("clip onnx models baked")
 PY
+
+# InsightFace buffalo_l. The upstream `ensure_available` auto-download points at
+# an http://d1gsb2o3ihr2l5.cloudfront.net URL that no longer resolves (DNS
+# failure), and is not checksum-verifiable. Instead we pull the immutable
+# v0.7 GitHub release asset, verify it against models.sha256, and unzip it into
+# the exact layout FaceAnalysis expects: /models/insightface/models/buffalo_l/.
+# Pre-placing the ONNX files there makes `ensure_available` return early, so the
+# runtime never attempts its own (non-verifiable) download.
+ENV INSIGHTFACE_HOME=/models/insightface
+RUN mkdir -p /models/insightface/models/buffalo_l \
+    && curl -fsSL -o /models/insightface/models/buffalo_l.zip \
+        https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip
+
+# Verify every baked model asset against the pinned checksums. Runs after all
+# downloads; a mismatch aborts the build (issue #50). The checksum file uses
+# paths relative to /models, so verify from there.
+RUN cd /models && sha256sum -c /app/models.sha256
+
+# Extract buffalo_l into the layout FaceAnalysis expects, then drop the zip.
+RUN unzip -o /models/insightface/models/buffalo_l.zip -d /models/insightface/models/buffalo_l/ \
+    && rm /models/insightface/models/buffalo_l.zip
 
 COPY src ./src
 WORKDIR /app/src
