@@ -71,6 +71,13 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+# Precomputed bcrypt cost-12 hash of a dummy password. The unknown-username
+# login path verifies against this so it performs the same ~250 ms bcrypt work
+# as a real failed attempt — a cheaper dummy (e.g. rounds=4) leaks whether a
+# username exists via measurable wall-time (username enumeration).
+_DUMMY_PASSWORD_HASH = "$2b$12$tZrnftPg/8ElL8NnFYB1ZuDhHAgEZNfArIC70mLxQgX9qY8MnnaAG"
+
+
 # --- FastAPI dependencies --------------------------------------------------
 
 def _extract_token(request: Request) -> str | None:
@@ -483,10 +490,10 @@ def login(username: str, password: str, *, user_agent: str | None = None,
     check_login_rate_limit(ip, username)
     row = store.get_user_by_username(username)
     if row is None or row["disabled"] or not verify_password(password, row["password_hash"]):
-        # Constant-ish: always hash the dummy to keep wall time comparable when
-        # the username doesn't exist (defense against username enumeration).
+        # Same cost-12 bcrypt work as a real failed attempt, so unknown-username
+        # logins can't be told apart from wrong-password logins by wall-time.
         if row is None:
-            bcrypt.checkpw(b"probe", bcrypt.hashpw(b"probe", bcrypt.gensalt(rounds=4)))
+            verify_password("probe", _DUMMY_PASSWORD_HASH)
         record_login_failure(ip, username)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
     record_login_success(ip, username)
