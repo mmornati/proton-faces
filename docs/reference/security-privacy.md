@@ -96,6 +96,22 @@ There is no automatic token rotation; the access token stays valid until expiry 
 
 There is no CORS layer in the app — the web UI is served from the same origin as the API. If you put a reverse proxy in front, configure it to **not** add CORS headers; the same-origin model is intentional.
 
+## Security headers
+
+The app ships a `SecurityHeadersMiddleware` (`app/src/security_headers.py`) that adds
+defense-in-depth headers to **every** response (HTML, JSON and binary alike):
+
+- `Content-Security-Policy` — `default-src 'self'`, with `img-src` allowing `data:`/`blob:`
+  and OSM tiles, `media-src` allowing `blob:`, and `script-src`/`style-src` allowing
+  `'unsafe-inline'` plus the jsDelivr CDN (Leaflet). `frame-ancestors 'none'` blocks
+  embedding. Tightening `script-src` to a nonce or external file is a follow-up.
+- `X-Content-Type-Options: nosniff` — no MIME sniffing.
+- `X-Frame-Options: DENY` — clickjacking protection (belt-and-braces with `frame-ancestors`).
+- `Referrer-Policy: same-origin` — no referrer leakage to third parties.
+
+If you run a reverse proxy in front, its own security headers (see
+`SECURITY_HARDENING.md` §9) are additive; the app-level headers are harmless duplicates.
+
 ## Threat model — what you should worry about
 
 | Threat | Mitigation |

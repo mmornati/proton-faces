@@ -50,6 +50,7 @@ from compression import CompressionMiddleware
 from config import settings
 from faces import embed_query_face
 from indexer import get_indexer_state
+from security_headers import SecurityHeadersMiddleware
 from sidecar import read_clip_sidecar
 from store import (
     _embedding_cache_data,
@@ -178,6 +179,7 @@ app = FastAPI(
 )
 
 app.add_middleware(CompressionMiddleware, minimum_size=1024)
+app.add_middleware(SecurityHeadersMiddleware)
 
 _STATIC = Path(__file__).parent / "static"
 
