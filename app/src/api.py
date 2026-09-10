@@ -2068,6 +2068,29 @@ def _clamp_search_limit(limit: int) -> int:
     return max(1, min(limit, SEARCH_MAX_LIMIT))
 
 
+# Over-sample factor for the face-search top-k window. Face search dedupes
+# per photo (best face per photo wins), so a photo that contributed many
+# faces could otherwise exhaust the window; `_face_similarity` scans the tail
+# exactly when the window cannot fill `limit` photos, keeping results
+# identical to a full argsort.
+_FACE_DEDUPE_SLACK = 4
+
+
+def _topk_indices(scores: np.ndarray, k: int) -> np.ndarray:
+    """Indices of the largest ``k`` scores, in descending order.
+
+    ``np.argpartition`` selects the top-k in O(N) instead of a full
+    O(N log N) ``np.argsort``; only the k survivors get sorted. ``k`` is
+    clamped to the number of scores.
+    """
+    n = scores.shape[0]
+    if k <= 0 or n == 0:
+        return np.empty(0, dtype=np.intp)
+    k = min(k, n)
+    idx = np.argpartition(-scores, k - 1)[:k]
+    return idx[np.argsort(-scores[idx])]
+
+
 @app.get("/api/search")
 def api_search(q: str, limit: int = 100, user: CurrentUser = Depends(require_user)):
     """Free-text semantic search via CLIP (objects, scenes, etc.)."""
@@ -2156,21 +2179,30 @@ def _get_clip_matrix() -> tuple[list[str], np.ndarray]:
     """Cached (uids, X) matrix of every CLIP embedding.
 
     Prefers the mmap sidecar written by the indexer; falls back to the
-    DB-based cache when sidecar files are absent.
+    DB-based cache when sidecar files are absent. Freshness follows the TTL
+    on the hot path: the SQLite COUNT that detects new clips is only re-read
+    once the TTL expires, so a debounced text search never opens an extra DB
+    connection per keystroke. At expiry the matrix is reused (re-stamped)
+    when the count is unchanged.
     """
     global _clip_cache
     now = time.time()
-    n_now = clip_count()
     if _clip_cache is not None:
-        ts, n_cached, uids, X = _clip_cache
-        if n_cached == n_now and (now - ts) < _CLIP_CACHE_TTL:
+        ts, _, uids, X = _clip_cache
+        if (now - ts) < _CLIP_CACHE_TTL:
             return uids, X
     with _clip_cache_lock:
         now = time.time()
+        if _clip_cache is not None:
+            ts, _, uids, X = _clip_cache
+            if (now - ts) < _CLIP_CACHE_TTL:
+                return uids, X
+        # TTL expired (or cold cache): one COUNT decides build vs reuse.
         n_now = clip_count()
         if _clip_cache is not None:
             ts, n_cached, uids, X = _clip_cache
-            if n_cached == n_now and (now - ts) < _CLIP_CACHE_TTL:
+            if n_cached == n_now:
+                _clip_cache = (now, n_cached, uids, X)
                 return uids, X
         # Try mmap sidecar first
         sidecar = read_clip_sidecar()
@@ -2194,7 +2226,7 @@ def _semantic_search(vec: np.ndarray, limit: int, user_id: int) -> dict:
     if X.size == 0:
         return {"results": [], "total": 0}
     sims = X @ vec  # all embeddings are L2-normalized
-    idx = np.argsort(-sims)[:limit]
+    idx = _topk_indices(sims, limit)
     photo_uids = [uids[i] for i in idx]
     photos = get_photos_batch(photo_uids)
     fav_set = favorite_uids(user_id, photo_uids)
@@ -2220,9 +2252,13 @@ def _face_similarity(emb: np.ndarray, limit: int, user_id: int) -> dict:
     uids = data["photo_uids"]
     scores = mat @ emb
     # Rank all faces by similarity, then dedupe per photo keeping the best
-    # face score. The vectorized matmul replaces the previous per-row Python
-    # loop; the scan below is bounded because it stops after `limit` photos.
-    order = np.argsort(-scores)
+    # face score. Only the top (limit * slack) faces are selected via
+    # argpartition (O(N) vs the full O(N log N) argsort); the slack covers
+    # photos that contributed many faces. If the window still cannot fill
+    # `limit` photos, the remaining lower-ranked faces are scanned exactly,
+    # so results stay identical to a full argsort.
+    n = scores.shape[0]
+    order = _topk_indices(scores, min(limit * _FACE_DEDUPE_SLACK, n))
     seen: set = set()
     top_uids: list = []
     top_scores: list = []
@@ -2235,6 +2271,21 @@ def _face_similarity(emb: np.ndarray, limit: int, user_id: int) -> dict:
         top_scores.append(float(scores[i]))
         if len(top_uids) >= limit:
             break
+    if len(order) < n and len(top_uids) < limit:
+        # The top-k window ran out of distinct photos before `limit` was
+        # reached (one photo contributed too many faces). Keep walking the
+        # remaining faces in score order so the result stays exact.
+        rest = np.setdiff1d(np.arange(n), order)
+        rest = rest[np.argsort(-scores[rest])]
+        for i in rest:
+            if len(top_uids) >= limit:
+                break
+            uid = uids[i]
+            if uid in seen:
+                continue
+            seen.add(uid)
+            top_uids.append(uid)
+            top_scores.append(float(scores[i]))
     # Batch-fetch all photos in one query instead of N+1 get_photo calls.
     photos = get_photos_batch(top_uids)
     fav_set = favorite_uids(user_id, top_uids)
