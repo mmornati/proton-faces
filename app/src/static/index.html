@@ -1148,6 +1148,11 @@ async function api(path, opts) {
   return authFetch(path, opts);
 }
 
+async function adminFetch(path) {
+  try { return await api(path); }
+  catch { return null; }
+}
+
 // auth.js — bearer-token wrapper + login screen glue.
 // Stores access + refresh tokens in localStorage; transparently refreshes
 // the access token on 401 and shows the login screen if the refresh fails.
@@ -2021,17 +2026,20 @@ async function loadAlbums() {
   }
   $("#counts").textContent = `${data.albums.length} albums`;
   el.innerHTML = `<div class="albums-grid">${data.albums.map((a) => `
-    <div class="album" data-uid="${esc(a.uid)}">
+    <div class="album" data-uid="${esc(a.uid)}" data-name="${esc(a.name || "Album")}">
       ${a.cover_url ? `<img loading="lazy" src="${a.cover_url}" alt="">` : '<div style="width:100%;height:150px;background:var(--panel2)"></div>'}
-      <div class="aname">${esc(a.name || "Album")}</div>
-      <div class="acount">${a.photo_count} photos · ${fmtAlbumRange(a)}</div>
+      <div class="acap">
+        <div class="aname">${esc(a.name || "Album")}</div>
+        <div class="acount">${a.photo_count} photos · ${fmtAlbumRange(a)}</div>
+      </div>
     </div>`).join("")}</div>`;
   el.querySelectorAll(".album").forEach((card) => card.addEventListener("click", async () => {
-    state.photoSource = { type: "album", id: card.dataset.uid };
+    state.photoSource = { type: "album", id: card.dataset.uid, name: card.dataset.name };
     state.beforeTs = null;
     state.view = "photos";
     document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
     document.querySelector('nav a[data-view="photos"]').classList.add("active");
+    setViewTitle();
     loadPhotos();
   }));
 }
@@ -2817,6 +2825,7 @@ async function runSearch() {
   state.q = $("#q").value.trim();
   if (!state.q) {
     state.photoSource = { type: "all" };
+    setViewTitle();
     return loadPhotos();
   }
   if (state.view !== "photos") {
@@ -2827,6 +2836,7 @@ async function runSearch() {
   state.photoSource = { type: "all" };
   $("#mapwrap").style.display = "none";
   $("#daterailwrap").style.display = "none";
+  setViewTitle();
   await loadPhotos();
 }
 $("#btn-search").addEventListener("click", runSearch);
@@ -3100,19 +3110,14 @@ function pillFor(level, okLevels) {
 async function renderAdminModal() {
   const body = $("#adminmodalbody");
   body.innerHTML = `<div class="empty">Loading…</div>`;
-  try {
-    [adminOverview, adminBackups, adminSchedule, adminUsersWrap, adminSync] = await Promise.all([
-      api("/api/admin/overview"),
-      api("/api/admin/backups"),
-      api("/api/admin/schedule"),
-      api("/api/admin/users"),
-      api("/api/admin/sync"),
-    ]);
-    adminUsers = (adminUsersWrap && adminUsersWrap.users) || [];
-  } catch (e) {
-    body.innerHTML = `<div class="empty">Failed to load admin data: ${esc(String(e.message || e))}</div>`;
-    return;
-  }
+  [adminOverview, adminBackups, adminSchedule, adminUsersWrap, adminSync] = await Promise.all([
+    adminFetch("/api/admin/overview"),
+    adminFetch("/api/admin/backups"),
+    adminFetch("/api/admin/schedule"),
+    adminFetch("/api/admin/users"),
+    adminFetch("/api/admin/sync"),
+  ]);
+  adminUsers = (adminUsersWrap && adminUsersWrap.users) || [];
   body.innerHTML =
     renderAdminOverviewSection() +
     renderAdminChecksSection() +
@@ -3138,8 +3143,8 @@ function renderAdminOverviewSection() {
       <tr><td class="k">Uptime</td><td class="v">${esc(fmtDuration(s.uptime_sec || 0))}</td></tr>
       <tr><td class="k">Data dir</td><td class="v">${esc(d.path || "—")}</td></tr>
       <tr><td class="k">Data size</td><td class="v">${esc(fmtBytes(d.data_bytes || 0))}</td></tr>
-      <tr><td class="k">Last backup</td><td class="v">${b.last_name ? `${esc(b.last_name)} · ${esc(fmtAbs(b.last_ts * 1000))}` : "<span class='pill bad'>none</span>"}</td></tr>
-      <tr><td class="k">Backup count</td><td class="v">${adminBackups.length} / keep ${adminSchedule.keep}</td></tr>
+      <tr><td class="k">Last backup</td><td class="v">${b.last_name ? `${esc(b.last_name)} · ${esc(fmtAbs(b.last_ts))}` : "<span class='pill bad'>none</span>"}</td></tr>
+      <tr><td class="k">Backup count</td><td class="v">${(adminBackups || []).length} / keep ${(adminSchedule || {}).keep}</td></tr>
     </table>`;
 }
 
@@ -3189,15 +3194,18 @@ function renderAdminChecksSection() {
 }
 
 function renderAdminBackupSection() {
+  const backupsDisabled = adminBackups === null;
   let rows = "";
-  if (adminBackups.length === 0) {
+  if (adminBackups === null) {
+    rows = `<tr><td colspan="4" class="empty">Backups disabled in demo mode.</td></tr>`;
+  } else if (adminBackups.length === 0) {
     rows = `<tr><td colspan="4" class="empty">No backups yet.</td></tr>`;
   } else {
     for (const b of adminBackups) {
       rows += `<tr>
         <td class="v">${esc(b.name)}</td>
         <td class="v">${esc(fmtBytes(b.size_bytes))}</td>
-        <td class="v">${esc(fmtAbs(b.ts * 1000))}</td>
+        <td class="v">${esc(fmtAbs(b.ts))}</td>
         <td class="v"><button class="small admin-del-backup" data-name="${esc(b.name)}">Delete</button></td>
       </tr>`;
     }
@@ -3205,8 +3213,8 @@ function renderAdminBackupSection() {
   return `
     <h4>Backup</h4>
     <div class="adminactions">
-      <button id="admin-trigger-backup" class="small">Create backup now</button>
-      <button id="admin-prune-backups" class="small secondary">Prune to keep ${adminSchedule.keep}</button>
+      <button id="admin-trigger-backup" class="small" ${backupsDisabled ? "disabled title='Backups disabled in demo mode'" : ""}>Create backup now</button>
+      <button id="admin-prune-backups" class="small secondary" ${backupsDisabled ? "disabled title='Backups disabled in demo mode'" : ""}>Prune to keep ${(adminSchedule || {}).keep}</button>
       <span class="hint">Backups are SQLite VACUUM snapshots in the data dir.</span>
     </div>
     <table>${rows}</table>`;
@@ -3230,8 +3238,8 @@ function renderAdminScheduleSection() {
 function renderAdminSyncSection() {
   const s = adminSync || {};
   const cfg = s.config || {};
-  const lastSync = s.last_sync ? fmtAbs(s.last_sync * 1000) : "—";
-  const lastFull = cfg.last_full_scan ? fmtAbs(cfg.last_full_scan * 1000) : "—";
+  const lastSync = s.last_sync ? fmtAbs(s.last_sync) : "—";
+  const lastFull = cfg.last_full_scan ? fmtAbs(cfg.last_full_scan) : "—";
   const lastErr = s.last_sync_error ? esc(s.last_sync_error) : "—";
   const tipInt = s.tip_interval || 300;
   return `
@@ -3255,13 +3263,14 @@ function renderAdminSyncSection() {
 }
 
 function renderAdminUsersSection() {
+  const usersDisabled = adminUsersWrap === null;
   let rows = "";
   for (const u of adminUsers) {
     rows += `<tr>
       <td class="v">${esc(u.username)}</td>
       <td class="v">${esc(u.display_name || "")}</td>
       <td class="v">${pillFor(u.role, ["read", "write", "admin"])}</td>
-      <td class="v">${esc(fmtRelative((Date.now() / 1000 - u.created_at) / 86400) + " old")}</td>
+      <td class="v">${esc(fmtRelative(Date.now() / 1000 - u.created_at))}</td>
       <td class="v">
         <button class="small admin-edit-user" data-id="${u.id}">Edit</button>
         <button class="small admin-logout-user" data-id="${u.id}">Revoke</button>
@@ -3280,9 +3289,9 @@ function renderAdminUsersSection() {
         <option value="write" selected>write</option>
         <option value="admin">admin</option>
       </select>
-      <button class="small" id="admin-create-user">Create</button>
+      <button class="small" id="admin-create-user" ${usersDisabled ? "disabled title='User management disabled in demo mode'" : ""}>Create</button>
     </div>
-    <table>${rows || `<tr><td colspan="5" class="empty">No users.</td></tr>`}</table>
+    <table>${usersDisabled ? `<tr><td colspan="5" class="empty">User management disabled in demo mode.</td></tr>` : (rows || `<tr><td colspan="5" class="empty">No users.</td></tr>`)}</table>
     <div id="admin-edit-row" style="display:none" class="userform">
       <span class="hint">Editing user <span id="admin-edit-id"></span></span>
       <input type="text" id="admin-edit-display" placeholder="display name">
@@ -3596,6 +3605,15 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
   });
 }
+function setViewTitle() {
+  const t = document.getElementById("viewtitle");
+  if (!t) return;
+  const src = state.photoSource || {};
+  if (src.type === "album" && src.name) { t.textContent = src.name; return; }
+  const a = document.querySelector('nav a[data-view="' + state.view + '"]');
+  t.textContent = (a && (a.dataset.label || a.textContent.trim())) || "Photos";
+}
+
 (async () => {
   if (!await bootAuth()) return;
   // Nocturne UI glue: theme toggle, view title, user chip.
@@ -3615,12 +3633,6 @@ if ("serviceWorker" in navigator) {
       paintIcon();
     });
   }
-  const setViewTitle = () => {
-    const t = document.getElementById("viewtitle");
-    if (!t) return;
-    const a = document.querySelector('nav a[data-view="' + state.view + '"]');
-    t.textContent = (a && (a.dataset.label || a.textContent.trim())) || "Photos";
-  };
   document.addEventListener("click", (e) => {
     if (e.target && e.target.closest && e.target.closest("a[data-view]")) setViewTitle();
   });
