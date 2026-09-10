@@ -363,6 +363,49 @@ class TestPublicEndpoints:
         assert r.json()["config"]["face_sim_threshold"] == 0.45
 
 
+class TestSecurityHeaders:
+    """Issue #47: every response carries CSP, nosniff, frame and referrer headers."""
+
+    _EXPECTED = {
+        "content-security-policy",
+        "x-content-type-options",
+        "x-frame-options",
+        "referrer-policy",
+    }
+
+    def test_headers_on_html(self, client):
+        r = client.get("/")
+        assert r.status_code == 200
+        assert self._EXPECTED <= set(r.headers)
+
+    def test_headers_on_json(self, client):
+        r = client.get("/api/health")
+        assert r.status_code == 200
+        assert self._EXPECTED <= set(r.headers)
+
+    def test_headers_on_binary(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        r = client.get("/api/photos/p1/thumb", headers=_bearer(client))
+        assert r.status_code == 200
+        assert self._EXPECTED <= set(r.headers)
+
+    def test_csp_values(self, client):
+        r = client.get("/")
+        csp = r.headers["content-security-policy"]
+        assert "default-src 'self'" in csp
+        assert "script-src 'self' 'unsafe-inline'" in csp
+        assert "frame-ancestors 'none'" in csp
+        assert r.headers["x-content-type-options"] == "nosniff"
+        assert r.headers["x-frame-options"] == "DENY"
+        assert r.headers["referrer-policy"] == "same-origin"
+
+    def test_headers_on_404(self, client):
+        r = client.get("/no-such-route")
+        assert r.status_code == 404
+        assert self._EXPECTED <= set(r.headers)
+
+
 class TestStaticPwaAssets:
     """The SPA, PWA manifest, service worker and icons are served from the static mount."""
 
