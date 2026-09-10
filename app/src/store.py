@@ -1449,6 +1449,12 @@ def person_mean_embeddings() -> dict[int, np.ndarray]:
 
 _person_means_cache: dict[int, np.ndarray] | None = None
 _person_means_cache_ts = 0.0
+# Stacked form of `_person_means_cache` as (pids, M): row i of M is the
+# L2-normalized mean embedding of person pids[i]. Built once per cache
+# generation alongside the dict so per-request np.stack is avoided.
+_person_means_matrix: tuple[np.ndarray, np.ndarray] | None = None
+_EMPTY_PIDS = np.zeros(0, dtype=np.int64)
+_EMPTY_MAT = np.zeros((0, 512), dtype=np.float32)
 
 
 def person_mean_embeddings_from_cache() -> dict[int, np.ndarray]:
@@ -1465,8 +1471,12 @@ def person_mean_embeddings_from_cache() -> dict[int, np.ndarray]:
     load timestamp: recomputed only when the underlying matrix reloads
     (every ~120 s), NOT on every suggest request.
 
+    The stacked (P, 512) matrix is assembled here too (once per cache
+    generation) and exposed via `person_mean_matrix_from_cache()`, so the
+    suggest / similar / merge-all endpoints never re-stack the dict.
+
     """
-    global _person_means_cache, _person_means_cache_ts
+    global _person_means_cache, _person_means_cache_ts, _person_means_matrix
     data = _embedding_cache_data()
     mat = data["mat"]
     person_ids = data["person_ids"]
@@ -1474,11 +1484,13 @@ def person_mean_embeddings_from_cache() -> dict[int, np.ndarray]:
         return _person_means_cache
     if mat.shape[0] == 0 or not person_ids:
         _person_means_cache = {}
+        _person_means_matrix = (_EMPTY_PIDS, _EMPTY_MAT)
         _person_means_cache_ts = _embedding_cache_ts
         return _person_means_cache
     mask = np.array([p is not None for p in person_ids], dtype=bool)
     if not mask.any():
         _person_means_cache = {}
+        _person_means_matrix = (_EMPTY_PIDS, _EMPTY_MAT)
         _person_means_cache_ts = _embedding_cache_ts
         return _person_means_cache
     sub = mat[mask]
@@ -1497,8 +1509,34 @@ def person_mean_embeddings_from_cache() -> dict[int, np.ndarray]:
         if n != 0:
             out[int(u)] = (means[i] / n).astype(np.float32)
     _person_means_cache = out
+    # Insertion order matches the dict keys (unique is sorted), so row i of M
+    # is the mean embedding of person pids[i].
+    _person_means_matrix = (
+        np.array(list(out.keys()), dtype=np.int64),
+        np.stack(list(out.values())) if out else _EMPTY_MAT,
+    )
     _person_means_cache_ts = _embedding_cache_ts
     return out
+
+
+def person_mean_matrix_from_cache() -> tuple[np.ndarray, np.ndarray]:
+    """Person-mean embeddings as a stacked (P, 512) matrix, cached per generation.
+
+    Returns `(pids, M)` where row i of M is the L2-normalized mean embedding
+    of person `pids[i]`. Built once when `person_mean_embeddings_from_cache`
+    (re)computes the means — i.e. once per embedding-cache load (~120 s), not
+    per request — so the ~100 MB stacking cost at 49k people is amortized
+    instead of paid on every suggest / similar / merge-all call.
+    """
+    person_mean_embeddings_from_cache()
+    matrix = _person_means_matrix
+    if matrix is None:  # pragma: no cover - defensive; dict func always sets it
+        means = person_mean_embeddings_from_cache()
+        matrix = (
+            _EMPTY_PIDS if not means else np.array(list(means.keys()), dtype=np.int64),
+            _EMPTY_MAT if not means else np.stack(list(means.values())),
+        )
+    return matrix
 
 
 def all_people(q: str | None = None, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:

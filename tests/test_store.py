@@ -700,6 +700,57 @@ class TestPersonMeans:
         means = store.person_mean_embeddings_from_cache()
         assert pid in means
 
+    def test_person_mean_matrix_from_cache(self, tmp_db):
+        v = _embedding(0.5)
+        store.upsert_photos([_photo("p1")])
+        store.set_photo_done("p1", "t.webp", None, None)
+        fid = store.insert_face("p1", None, 0.9, "[]", v.tobytes())
+        pid = store.create_person("Iris", "p1", fid)
+        store.assign_face_person(fid, pid)
+        store.person_mean_embeddings_from_cache()
+        pids, M = store.person_mean_matrix_from_cache()
+        assert M.shape == (1, 512)
+        assert M.dtype == np.float32
+        assert pids.dtype == np.int64
+        # Rows align 1:1 with the dict keys, in sorted order.
+        means = store.person_mean_embeddings_from_cache()
+        assert list(pids) == sorted(means.keys())
+        assert np.allclose(M[0], means[pid])
+        # The cached generation is not re-stacked per request: a second call
+        # returns the exact same (pids, M) tuple.
+        pids2, M2 = store.person_mean_matrix_from_cache()
+        assert pids2 is pids
+        assert M2 is M
+
+    def test_person_mean_matrix_from_cache_empty(self, tmp_db):
+        pids, M = store.person_mean_matrix_from_cache()
+        assert pids.shape == (0,)
+        assert pids is store._EMPTY_PIDS
+        assert M.shape == (0, 512)
+        assert M.dtype == np.float32
+        assert M is store._EMPTY_MAT
+
+    def test_person_mean_matrix_invalidates_with_generation(self, tmp_db):
+        v = _embedding(0.5)
+        store.upsert_photos([_photo("p1")])
+        store.set_photo_done("p1", "t.webp", None, None)
+        fid = store.insert_face("p1", None, 0.9, "[]", v.tobytes())
+        pid = store.create_person("Iris", "p1", fid)
+        store.assign_face_person(fid, pid)
+        store.person_mean_embeddings_from_cache()
+        _, M1 = store.person_mean_matrix_from_cache()
+        # Simulate the embedding matrix reloading (different generation): the
+        # cached means/matrix are dropped and rekeyed to the new ts.
+        store._person_means_cache = None
+        store._person_means_cache_ts = 0.0
+        store._person_means_matrix = None
+        store._embedding_cache_ts += 1000
+        pids2, M2 = store.person_mean_matrix_from_cache()
+        assert M2 is not M1  # rebuilt for the new generation
+        assert store._person_means_cache_ts == store._embedding_cache_ts
+        assert M2.shape == (1, 512)
+        assert np.allclose(M2[0], store._person_means_cache[pid])
+
 
 class TestMergePeopleBulk:
     def _seed_person(self, uid, name, emb_seed=0.0):
