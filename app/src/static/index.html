@@ -105,8 +105,19 @@ main { padding: 18px; }
   width: 72px; padding: 5px 8px; border-radius: 6px;
   border: 1px solid var(--border); background: var(--panel2); color: var(--text); font-size: 13px;
 }
-.duptoolbar .dupall { margin-left: auto; }
 .duprows { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+/* suggested merges (person-centric) */
+.smrows { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+.smrow { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; }
+.smrow:hover { background: var(--panel2); }
+.smrow img { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; background: var(--panel2); flex: none; }
+.smrow .smname { font-size: 14px; font-weight: 600; }
+.smrow .smmeta { color: var(--muted); font-size: 12px; }
+.smrow .smbadge { background: var(--accent-soft); color: var(--accent-strong); font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.smrow .smreview { margin-left: auto; }
+.smhint { color: var(--muted); font-size: 12px; }
+.smmore { display: block; width: 100%; margin-top: 4px; padding: 7px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px; }
+.smmore:hover { background: var(--panel); border-color: var(--border2); }
 /* merge picker modal */
 #mergepick {
   display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
@@ -195,6 +206,12 @@ main { padding: 18px; }
 .spitem .spname2 { font-size: 14px; font-weight: 600; }
 .spitem .spmeta { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .spitem .spsim { color: var(--accent); font-size: 13px; font-weight: 600; margin-left: auto; white-space: nowrap; }
+.spitem .spbar { flex: none; width: 56px; height: 4px; border-radius: 2px; background: var(--panel2); }
+.spitem .spbar i { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
+#spautosel {
+  width: 64px; padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--panel2); color: var(--text); font-size: 13px;
+}
 .empty { color: var(--muted); padding: 40px; text-align: center; }
 /* lightbox */
 #lightbox {
@@ -1054,10 +1071,13 @@ main { padding: 18px 24px 64px; min-width: 0; }
     <div id="simtoolbar">
       <label for="simthreshold">Min. similarity %</label>
       <input id="simthreshold" type="number" min="0" max="99" step="1" value="40">
+      <label for="spautosel">Auto-select ≥ %</label>
+      <input id="spautosel" type="number" min="0" max="99" step="1" value="50">
       <button class="small secondary" id="spchecknone">Check none</button>
       <button class="small spaction" id="spmerge">Merge selected</button>
     </div>
     <div id="simpeoplelist"><div class="empty">Loading similar people…</div></div>
+    <div id="simmoreslot"></div>
   </div>
 </div>
 <div id="facemodal" role="dialog" aria-labelledby="facemodaltitle">
@@ -2201,9 +2221,9 @@ function renderPeopleGrid(people) {
         <div class="duptoolbar">
           <label for="dupthreshold">Min. similarity %</label>
           <input id="dupthreshold" type="number" min="0" max="99" step="1" value="40">
-          <button class="small dupall" id="dupmergeall">Merge all</button>
         </div>
-        <div class="duprows" id="duprows"><span class="dupsim">Expand to check for suggested merges.</span></div>
+        <div class="smrows" id="smrows"><span class="smhint">Expand to check for suggested merges.</span></div>
+        <div id="smmoreslot"></div>
       </div>
     </div>
     <div class="people-grid">${people.map(personCardHtml).join("")}</div>`;
@@ -2218,12 +2238,11 @@ function renderPeopleGrid(people) {
   $("#duphead").addEventListener("click", toggleDups);
   const savedDupThr = localStorage.getItem("dup_threshold");
   if (savedDupThr != null) $("#dupthreshold").value = savedDupThr;
-  $("#dupthreshold").addEventListener("change", () => { loadDuplicates(); });
+  $("#dupthreshold").addEventListener("change", () => { loadSuggestedMerges(); });
   $("#dupthreshold").addEventListener("input", (e) => {
     const v = parseInt(e.target.value, 10);
     if (!isNaN(v)) e.target.value = Math.max(0, Math.min(99, v));
   });
-  $("#dupmergeall").addEventListener("click", mergeAllDuplicates);
   bindPersonCards(people);
 }
 
@@ -2232,7 +2251,7 @@ function toggleDups() {
   const willOpen = !box.classList.contains("open");
   box.classList.toggle("open");
   $("#duphead .dupchev").textContent = willOpen ? "\u25BE" : "\u25B6";
-  if (willOpen && (box.dataset.dirty || !box.dataset.loaded)) loadDuplicates();
+  if (willOpen && (box.dataset.dirty || !box.dataset.loaded)) loadSuggestedMerges();
 }
 
 function bindPersonCards(people, scope) {
@@ -2299,7 +2318,7 @@ function patchAfterMerge(srcId, targetId, r) {
   if (tgt && r.photo_count != null) {
     tgt.querySelector(".meta").textContent = `${r.photo_count} photos · ${r.face_count} faces`;
   }
-  loadDuplicates();
+  loadSuggestedMerges();
 }
 let mpSrcId = null;
 let mpPeople = [];
@@ -2424,20 +2443,30 @@ function closeCoverPicker() {
 // --- similar-people merge assistant ----------------------------------------
 let spTargetId = null;
 let spPeople = [];
+let spTotal = 0;
+let spOffset = 0;
 
 function spThresholdValue() {
   return Math.max(0, Math.min(99, parseInt($("#simthreshold").value || "40", 10) || 40));
+}
+function spAutoSelValue() {
+  return Math.max(0, Math.min(99, parseInt($("#spautosel").value || "50", 10) || 50));
 }
 
 async function openSimilarPeople(personId) {
   spTargetId = personId;
   spPeople = [];
+  spTotal = 0;
+  spOffset = 0;
   $("#simpeople").classList.add("open");
   $("#sptargetname").textContent = "Loading…";
   $("#sptargetimg").src = "";
+  $("#simmoreslot").innerHTML = "";
   $("#simpeoplelist").innerHTML = '<div class="empty">Loading similar people…</div>';
   const saved = localStorage.getItem("sp_threshold");
   if (saved != null) $("#simthreshold").value = saved;
+  const savedAuto = localStorage.getItem("sp_autosel");
+  if (savedAuto != null) $("#spautosel").value = savedAuto;
   try {
     const data = await api(`/api/people?limit=200&offset=0`);
     const src = (data.people || []).find((p) => p.id === personId);
@@ -2460,10 +2489,14 @@ async function loadSimilarPeople() {
   localStorage.setItem("sp_threshold", String(thr));
   list.innerHTML = '<div class="empty">Loading similar people…</div>';
   try {
-    const data = await api(`/api/people/${spTargetId}/similar?threshold=${(thr / 100).toFixed(2)}&limit=50`);
+    const data = await api(`/api/people/${spTargetId}/similar?threshold=${(thr / 100).toFixed(2)}&limit=50&offset=0`);
     spPeople = data.similar || [];
+    spTotal = data.total || 0;
+    spOffset = spPeople.length;
   } catch (e) {
     spPeople = [];
+    spTotal = 0;
+    spOffset = 0;
     list.innerHTML = `<div class="empty">Unavailable: ${esc(String(e.message || e))}</div>`;
     return;
   }
@@ -2474,24 +2507,57 @@ function renderSimilarPeople() {
   const list = $("#simpeoplelist");
   if (!spPeople.length) {
     list.innerHTML = '<div class="empty">No people at or above this similarity.</div>';
+    $("#simmoreslot").innerHTML = "";
     return;
   }
+  const auto = spAutoSelValue();
   list.innerHTML = spPeople.map((p) => `
     <div class="spitem" data-id="${p.person_id}">
-      <input type="checkbox" checked>
+      <input type="checkbox" ${p.similarity * 100 >= auto ? "checked" : ""}>
       ${p.cover_url ? `<img loading="lazy" decoding="async" src="${p.cover_url}" alt="">` : '<div style="width:42px;height:42px;border-radius:8px;background:var(--panel2);flex:none"></div>'}
       <div>
         <div class="spname2">${esc(p.name || "Unknown person")}</div>
         <div class="spmeta">${p.photo_count} photos · ${p.face_count} faces · #${p.person_id}</div>
       </div>
+      <span class="spbar"><i style="width:${Math.round(p.similarity * 100)}%"></i></span>
       <span class="spsim">${Math.round(p.similarity * 100)}%</span>
     </div>`).join("");
+  const more = $("#simmoreslot");
+  if (spOffset < spTotal) {
+    more.innerHTML = `<button class="smmore" id="spmore">Show more ${Math.min(50, spTotal - spOffset)} of ${spTotal.toLocaleString()}</button>`;
+    $("#spmore").addEventListener("click", loadMoreSimilar);
+  } else {
+    more.innerHTML = "";
+  }
+}
+
+async function loadMoreSimilar() {
+  if (spTargetId == null) return;
+  const thr = spThresholdValue();
+  const btn = $("#spmore");
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  try {
+    const data = await api(`/api/people/${spTargetId}/similar?threshold=${(thr / 100).toFixed(2)}&limit=50&offset=${spOffset}`);
+    const more = data.similar || [];
+    spPeople = spPeople.concat(more);
+    spTotal = data.total || spTotal;
+    spOffset = spPeople.length;
+    renderSimilarPeople();
+  } catch (e) {
+    toast("Error loading more: " + e.message);
+    btn.disabled = false;
+    btn.textContent = "Show more";
+  }
 }
 
 function closeSimilarPeople() {
   $("#simpeople").classList.remove("open");
   spTargetId = null;
   spPeople = [];
+  spTotal = 0;
+  spOffset = 0;
+  $("#simmoreslot").innerHTML = "";
 }
 
 async function mergeSelectedSimilar() {
@@ -2535,13 +2601,21 @@ function refreshAfterBatchMerge(targetId, sourceIds, r) {
   if (tgt && r.photo_count != null) {
     tgt.querySelector(".meta").textContent = `${r.photo_count} photos · ${r.face_count} faces`;
   }
-  loadDuplicates();
+  loadSuggestedMerges();
 }
 
 $("#simpeople").addEventListener("click", (e) => { if (e.target.id === "simpeople") closeSimilarPeople(); });
 $("#spclose").addEventListener("click", closeSimilarPeople);
 $("#simthreshold").addEventListener("change", loadSimilarPeople);
 $("#simthreshold").addEventListener("input", (e) => {
+  const v = parseInt(e.target.value, 10);
+  if (!isNaN(v)) e.target.value = Math.max(0, Math.min(99, v));
+});
+$("#spautosel").addEventListener("change", () => {
+  localStorage.setItem("sp_autosel", $("#spautosel").value);
+  renderSimilarPeople();
+});
+$("#spautosel").addEventListener("input", (e) => {
   const v = parseInt(e.target.value, 10);
   if (!isNaN(v)) e.target.value = Math.max(0, Math.min(99, v));
 });
@@ -2553,107 +2627,84 @@ $("#spchecknone").addEventListener("click", () => {
 });
 $("#spmerge").addEventListener("click", mergeSelectedSimilar);
 
-let dupData = [];
+let smPeople = [];
+let smTotal = 0;
+let smOffset = 0;
 
-async function loadDuplicates() {
+async function loadSuggestedMerges() {
   const box = $("#dups");
   if (!box) return;
   if (!box.classList.contains("open")) { box.dataset.dirty = "1"; return; }
-  const rows = $("#duprows");
+  const rows = $("#smrows");
   const count = $("#dupcount");
   const thr = dupThresholdValue();
   localStorage.setItem("dup_threshold", String(thr));
-  rows.innerHTML = '<span class="dupsim">Loading…</span>';
+  rows.innerHTML = '<span class="smhint">Loading suggested merges…</span>';
   try {
-    const dd = await api(`/api/people/duplicates?threshold=${(thr / 100).toFixed(2)}&limit=50`);
+    const dd = await api(`/api/people/suggested-merges?threshold=${(thr / 100).toFixed(2)}&limit=50&offset=0`);
     box.dataset.loaded = "1";
     delete box.dataset.dirty;
-    dupData = dd.duplicates || [];
-    const n = dupData.length;
+    smPeople = dd.people || [];
+    smTotal = dd.total || 0;
+    smOffset = smPeople.length;
+    const n = smTotal;
     if (count) { count.style.display = n ? "" : "none"; count.textContent = n; }
-    if (!n) {
-      rows.innerHTML = '<span class="dupsim">No suggested merges.</span>';
-      return;
-    }
-    rows.innerHTML = dupData.map((d) => `
-      <div class="dup" data-a="${d.a.id}" data-b="${d.b.id}">
-        ${d.a.cover_url ? `<img class="dupthumb" loading="lazy" src="${d.a.cover_url}" title="${esc(d.a.name || "Person " + d.a.id)} (${d.a.id})" alt="">` : '<div class="dupthumb dupthumb-empty"></div>'}
-        <span class="dupnames">${esc(d.a.name || "Person " + d.a.id)}</span>
-        <span class="dup-arrow">+</span>
-        ${d.b.cover_url ? `<img class="dupthumb" loading="lazy" src="${d.b.cover_url}" title="${esc(d.b.name || "Person " + d.b.id)} (${d.b.id})" alt="">` : '<div class="dupthumb dupthumb-empty"></div>'}
-        <span class="dupnames">${esc(d.b.name || "Person " + d.b.id)}</span>
-        <span class="dupsim">${Math.round(d.similarity * 100)}% similar</span>
-        <button class="small" data-merge="1">Merge</button>
-      </div>`).join("");
-    rows.querySelectorAll(".dup").forEach((d) => {
-      d.querySelector("button[data-merge]").addEventListener("click", async () => {
-        const a = +d.dataset.a, b = +d.dataset.b;
-        const r = await api(`/api/people/${a}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_id: b }) });
-        toast(`Merged. Auto-tagged ${r.assigned_similar || 0} faces.`);
-        patchAfterMerge(a, b, r);
-      });
-    });
+    renderSuggestedMerges();
   } catch (e) {
     box.dataset.loaded = "1";
     delete box.dataset.dirty;
     if (count) count.style.display = "none";
-    rows.innerHTML = '<span class="dupsim">Unavailable.</span>';
+    rows.innerHTML = '<span class="smhint">Unavailable.</span>';
+  }
+}
+
+function renderSuggestedMerges() {
+  const rows = $("#smrows");
+  if (!smPeople.length) {
+    rows.innerHTML = '<span class="smhint">No suggested merges at or above this similarity.</span>';
+    $("#smmoreslot").innerHTML = "";
+    return;
+  }
+  rows.innerHTML = smPeople.map((p) => `
+    <div class="smrow" data-id="${p.person_id}">
+      ${p.cover_url ? `<img loading="lazy" decoding="async" src="${p.cover_url}" alt="">` : '<div style="width:42px;height:42px;border-radius:8px;background:var(--panel2);flex:none"></div>'}
+      <div class="smname">${esc(p.name || "Unknown person")}</div>
+      <div class="smmeta">${p.candidate_count} look-alikes · ${p.photo_count} photos</div>
+      <span class="smbadge">${Math.round(p.top_scores[0] * 100)}%</span>
+      <button class="small smreview" data-id="${p.person_id}">Review</button>
+    </div>`).join("");
+  rows.querySelectorAll(".smreview").forEach((b) => b.addEventListener("click", () => openSimilarPeople(+b.dataset.id)));
+  const more = $("#smmoreslot");
+  if (smOffset < smTotal) {
+    more.innerHTML = `<button class="smmore" id="smmore">Show more ${Math.min(50, smTotal - smOffset)} of ${smTotal.toLocaleString()}</button>`;
+    $("#smmore").addEventListener("click", smShowMore);
+  } else {
+    more.innerHTML = "";
+  }
+}
+
+async function smShowMore() {
+  const thr = dupThresholdValue();
+  const btn = $("#smmore");
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  try {
+    const data = await api(`/api/people/suggested-merges?threshold=${(thr / 100).toFixed(2)}&limit=50&offset=${smOffset}`);
+    const more = data.people || [];
+    smPeople = smPeople.concat(more);
+    smTotal = data.total || smTotal;
+    smOffset = smPeople.length;
+    renderSuggestedMerges();
+  } catch (e) {
+    toast("Error loading more: " + e.message);
+    btn.disabled = false;
+    btn.textContent = "Show more";
   }
 }
 
 function dupThresholdValue() {
   const el = $("#dupthreshold");
   return Math.max(0, Math.min(99, parseInt(el.value || "40", 10) || 40));
-}
-
-async function mergeAllDuplicates() {
-  if (!dupData || !dupData.length) { toast("No suggested merges to apply."); return; }
-  const parent = {};
-  const find = (x) => { while (parent[x] !== x) x = parent[x] = parent[x] || x; return x; };
-  const union = (a, b) => { parent[find(a)] = find(b); };
-  const info = {};
-  for (const d of dupData) {
-    for (const p of [d.a, d.b]) {
-      parent[p.id] = parent[p.id] || p.id;
-      info[p.id] = { id: p.id, name: p.name || "", photos: p.photo_count || 0 };
-    }
-    union(d.a.id, d.b.id);
-  }
-  const groups = {};
-  for (const id of Object.keys(parent)) {
-    const root = find(+id);
-    (groups[root] = groups[root] || []).push(+id);
-  }
-  const btn = $("#dupmergeall");
-  const label = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Merging…";
-  let totalMerged = 0, totalAssigned = 0;
-  try {
-    for (const root of Object.keys(groups)) {
-      const members = groups[root];
-      if (members.length < 2) continue;
-      // Target: the named member with the most photos; otherwise the member
-      // with the most photos. Everything else is merged into it.
-      members.sort((x, y) => (info[y].name ? 1 : 0) - (info[x].name ? 1 : 0) || info[y].photos - info[x].photos);
-      const target = members[0];
-      const sourceIds = members.slice(1);
-      const r = await api(`/api/people/${target}/merge_all`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_ids: sourceIds }),
-      });
-      totalMerged += r.merged_count || 0;
-      totalAssigned += r.assigned_similar || 0;
-      refreshAfterBatchMerge(target, sourceIds, r);
-    }
-    toast(`Merged ${totalMerged} people in total. Auto-tagged ${totalAssigned} faces.`);
-  } catch (e) {
-    toast("Error: " + e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = label;
-  }
 }
 
 function showPlacePhotos(place) {
