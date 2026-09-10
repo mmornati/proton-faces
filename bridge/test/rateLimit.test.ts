@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { TokenBucket, createRateLimiter, extractRetryAfter } from '../src/rateLimit';
+import { TokenBucket, createHttpRateLimiter, createRateLimiter, extractRetryAfter } from '../src/rateLimit';
 
 describe('TokenBucket', () => {
     test('rate <= 0 disables the bucket', () => {
@@ -67,6 +67,83 @@ describe('createRateLimiter', () => {
         } finally {
             if (prev !== undefined) process.env.PROTON_BRIDGE_RATE_LIMIT = prev;
         }
+    });
+});
+
+describe('createHttpRateLimiter', () => {
+    const HTTP_VAR = 'PROTON_BRIDGE_RATE_LIMIT_HTTP';
+    const OPS_VAR = 'PROTON_BRIDGE_RATE_LIMIT';
+
+    async function withEnv(changes: Record<string, string | undefined>, fn: () => void | Promise<void>): Promise<void> {
+        const prev: Record<string, string | undefined> = {};
+        for (const [k, v] of Object.entries(changes)) {
+            prev[k] = process.env[k];
+            if (v === undefined) {
+                delete process.env[k];
+            } else {
+                process.env[k] = v;
+            }
+        }
+        try {
+            await fn();
+        } finally {
+            for (const [k, v] of Object.entries(changes)) {
+                if (v === undefined) continue;
+                if (prev[k] === undefined) {
+                    delete process.env[k];
+                } else {
+                    process.env[k] = prev[k]!;
+                }
+            }
+        }
+    }
+
+    test('disabled when the operation layer is disabled (default)', async () => {
+        await withEnv({ [HTTP_VAR]: undefined, [OPS_VAR]: undefined }, () => {
+            expect(createHttpRateLimiter().isEnabled()).toBe(false);
+        });
+    });
+
+    test('derives the HTTP rate as ops x10', async () => {
+        await withEnv({ [HTTP_VAR]: undefined, [OPS_VAR]: '3' }, () => {
+            expect(createHttpRateLimiter().isEnabled()).toBe(true);
+        });
+    });
+
+    test('an explicit value wins over the derived default', async () => {
+        await withEnv({ [HTTP_VAR]: '12', [OPS_VAR]: '3' }, () => {
+            expect(createHttpRateLimiter().isEnabled()).toBe(true);
+        });
+    });
+
+    test('an empty string is treated as unset (derives from the ops rate)', async () => {
+        await withEnv({ [HTTP_VAR]: '', [OPS_VAR]: '3' }, () => {
+            expect(createHttpRateLimiter().isEnabled()).toBe(true);
+        });
+    });
+
+    test('explicit "0" disables the HTTP layer even when ops is enabled', async () => {
+        await withEnv({ [HTTP_VAR]: '0', [OPS_VAR]: '3' }, () => {
+            expect(createHttpRateLimiter().isEnabled()).toBe(false);
+        });
+    });
+
+    test('a non-numeric explicit value disables the HTTP layer', async () => {
+        await withEnv({ [HTTP_VAR]: 'lots', [OPS_VAR]: '3' }, () => {
+            expect(createHttpRateLimiter().isEnabled()).toBe(false);
+        });
+    });
+
+    test('an enabled HTTP bucket paces acquires after a Retry-After backoff', async () => {
+        await withEnv({ [HTTP_VAR]: '1000', [OPS_VAR]: undefined }, () => {
+            const limiter = createHttpRateLimiter();
+            expect(limiter.isEnabled()).toBe(true);
+            limiter.noteRetryAfter(0.25);
+            const t0 = Date.now();
+            return limiter.acquire().then(() => {
+                expect(Date.now() - t0).toBeGreaterThanOrEqual(200);
+            });
+        });
     });
 });
 

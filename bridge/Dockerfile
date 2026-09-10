@@ -5,7 +5,9 @@
 # therefore built inside the Proton Drive SDK monorepo at image build time, pinned to
 # the cli/v0.8.0 tag, reusing the CLI's own init()/auth/crypto machinery.
 #
-# Only ONE file is ours: src/bridge.ts. Everything else comes from the pinned upstream.
+# Our code is dropped in on top of the pinned upstream: the HTTP service
+# (src/bridge.ts) plus the pure helpers it shares with the tests (src/rateLimit.ts,
+# src/helpers.ts), and overlay patches on three upstream files (patches/*.ts).
 
 FROM oven/bun:1.2 AS build
 
@@ -39,6 +41,14 @@ COPY patches/addresses.ts incubating/account/js/src/addresses.ts
 # check, verifyManifest() would then fail after streaming the whole file. Block-level
 # integrity (SHA256) still applies when available.
 COPY patches/fileDownloader.ts client/js/src/internal/download/fileDownloader.ts
+
+# Overlay a patched copy of the CLI's HTTP transport (cli/src/api/httpClient.ts).
+# The SDK routes every upstream HTTPS request through this single class, so
+# this is where the PROTON_BRIDGE_RATE_LIMIT_HTTP bucket paces each paginated
+# listing, thumbnail request and block download (issue #44). ky's internal
+# retry is disabled here so the SDK's own retry loop re-acquires the bucket
+# per attempt. See patches/httpClient.ts for the full rationale.
+COPY patches/httpClient.ts cli/src/api/httpClient.ts
 
 # The CLI's dependencies are file: links to sibling packages (client/js, incubating/account/js).
 # bun resolves those via realpath, so their own deps (ky, ttag, @protontech/crypto, ...) are
@@ -102,8 +112,15 @@ ENV PROTON_DRIVE_CACHE_DIR=/data
 # Tracked in https://github.com/mmornati/proton-faces/issues/39.
 # Optional outbound throttle on Proton HTTPS. Default OFF (0). Set e.g. 5 (req/s) to
 # protect a small home router/CPE from NAT-table saturation during big syncs.
+# Two layers (see bridge/src/rateLimit.ts): the operation layer (below) gates one
+# token per bridge operation start; the HTTP layer gates every upstream HTTPS call
+# through the patched HTTPClient. ENV is intentionally left EMPTY here (not 0) so the
+# HTTP layer DERIVES a default of `PROTON_BRIDGE_RATE_LIMIT x 10` when an operator
+# opts into the operation layer; set PROTON_BRIDGE_RATE_LIMIT_HTTP=0 to keep the HTTP
+# layer off while keeping the operation layer.
 ENV PROTON_BRIDGE_RATE_LIMIT=0
 ENV PROTON_BRIDGE_RATE_BURST=10
+ENV PROTON_BRIDGE_RATE_LIMIT_HTTP=
 # Hard ceiling on a single full-res download. Aborts with 502 if Proton hangs.
 ENV PROTON_BRIDGE_FULL_RES_TIMEOUT_MS=300000
 

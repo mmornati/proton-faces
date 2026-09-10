@@ -95,6 +95,9 @@ The `proton-bridge` container reads these (set in `compose.yml`):
 | `PROTON_DRIVE_CREDENTIALS_STORE` | `unsafe_file` | Session storage backend. `unsafe_file` (default) keeps the plaintext session at `/data/auth-session.json` (the `AUTH_SESSION_MOUNT` bind mount). `pass` selects the SDK's encrypted store: the bridge image ships `pass` + `gnupg`, and its entrypoint generates a container-local GPG key (in the `bridge-gnupg` volume), initializes the store (in the `bridge-pass-store` volume), and migrates an existing plaintext session on first start. See [Session file → Encrypted store](../getting-started/session-export.md#encrypted-store-pass). Live only since PR #129 — earlier compose files hardcoded `unsafe_file`. |
 | `PROTON_DRIVE_CACHE_DIR` | `/data` | Where the SDK caches encrypted blobs. |
 | `PROTON_DRIVE_BASE_URL` | `drive-api.proton.me` | Optional: point at a custom Proton API environment. |
+| `PROTON_BRIDGE_RATE_LIMIT` | `0` (image default; `3` in `compose.yml`) | Sustained outbound requests/second at the *operation* layer: one token per bridge operation start (timeline sync, node listing, album sync, thumbnail batch, full-res download). Honors `Retry-After` on 429 responses. |
+| `PROTON_BRIDGE_RATE_BURST` | `Math.max(1, ceil(rate × 2))` | Burst allowance for the operation-layer bucket (`2` in `compose.yml`). |
+| `PROTON_BRIDGE_RATE_LIMIT_HTTP` | derived: `RATE_LIMIT × 10` | Requests/second at the SDK's HTTP transport — the patched `HTTPClient` acquires a token before **every** upstream HTTPS call (paginated listings, block downloads, thumbnail requests), not just operation starts (issue #44). Unset/empty derives as `PROTON_BRIDGE_RATE_LIMIT × 10` (default compose: 3 ops/s → 30 HTTP req/s); explicit `0` disables this layer. Also honors `Retry-After` on 429/503. |
 
 ## Local dev (single-process)
 

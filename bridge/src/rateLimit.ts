@@ -1,9 +1,20 @@
 /**
- * Optional outbound rate limiter for Proton HTTP calls.
+ * Optional outbound rate limiter for Proton HTTP calls, in two layers.
+ *
+ * Layer 1 — operation starts (createRateLimiter): one token per bridge
+ * operation (timeline sync, node listing, album sync, thumbnail batch,
+ * full-res download). Tight default burst (compose: 3 req/s burst 2) keeps
+ * the automation inside Proton's comfort zone.
+ *
+ * Layer 2 — every upstream HTTPS request (createHttpRateLimiter): the SDK
+ * fans one operation out into hundreds-to-thousands of paginated/block
+ * requests, so gating only operation starts left those unthrottled. Each
+ * HTTP call through the patched HTTPClient acquires a token from this bucket.
  *
  * The bridge process is single-instance, so a per-process token bucket is
- * sufficient. Default is OFF (PROTON_BRIDGE_RATE_LIMIT=0); opt in with a
- * positive number of requests-per-second (sustained), e.g. "5".
+ * sufficient. Default is OFF (PROTON_BRIDGE_RATE_LIMIT=0 for layer 1, and
+ * layer 1 × 10 for layer 2); opt in with a positive number of
+ * requests-per-second (sustained), e.g. "5".
  *
  * Why opt-in only: Proton's public API tolerates a comfortable client rate
  * for normal use (a full library sync fits in minutes), and the SDK already
@@ -84,6 +95,44 @@ export function createRateLimiter(): TokenBucket {
             `[bridge] rate limit enabled: ${rate} req/s sustained, burst ${limiter.isEnabled() ? Math.ceil(rate * 2) : 0}`,
         );
     }
+    return limiter;
+}
+
+/**
+ * HTTP-transport bucket for the patched SDK HTTPClient (patches/httpClient.ts).
+ *
+ * Applies to every upstream HTTPS call the Proton Drive SDK makes, not just
+ * operation starts: paginated listings, thumbnail batches, full-res blocks.
+ *
+ * `PROTON_BRIDGE_RATE_LIMIT_HTTP` overrides the rate directly; an explicit
+ * "0" disables this layer. When the variable is unset or empty, the rate is
+ * derived as `PROTON_BRIDGE_RATE_LIMIT × 10` (a single operation start
+ * typically fans out into up to ~10 short-lived HTTPS calls), and stays
+ * disabled when the operation layer is disabled.
+ */
+export function createHttpRateLimiter(): TokenBucket {
+    const rawExplicit = process.env.PROTON_BRIDGE_RATE_LIMIT_HTTP;
+    const hasExplicit = rawExplicit !== undefined && rawExplicit !== '';
+    const explicitRate = hasExplicit ? Number(rawExplicit) : Number.NaN;
+
+    let rate: number;
+    if (hasExplicit && Number.isFinite(explicitRate)) {
+        rate = explicitRate;
+    } else if (hasExplicit) {
+        // Non-numeric explicit value: treat as disabled rather than silently
+        // falling back to a derived rate the operator did not ask for.
+        rate = 0;
+    } else {
+        const opsRate = Number(process.env.PROTON_BRIDGE_RATE_LIMIT ?? 0);
+        rate = opsRate > 0 ? opsRate * 10 : 0;
+    }
+
+    if (!Number.isFinite(rate) || rate <= 0) {
+        return new TokenBucket(0);
+    }
+    const burst = Math.max(1, Math.ceil(rate));
+    const limiter = new TokenBucket(rate, burst);
+    console.log(`[bridge] http rate limit enabled: ${rate} req/s sustained, burst ${burst} (per upstream HTTPS call)`);
     return limiter;
 }
 

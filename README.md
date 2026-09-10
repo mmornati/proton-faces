@@ -149,10 +149,19 @@ home router or CPE with a small NAT table this can saturate the table and
 take other devices on the LAN offline. To make that impossible by default
 and tunable when it happens:
 
-- **Outbound rate limit** — `PROTON_BRIDGE_RATE_LIMIT` (default `0`, i.e. **disabled**).
+- **Outbound rate limit (two layers)** — `PROTON_BRIDGE_RATE_LIMIT` (default `0`, i.e. **disabled**).
   Set to a positive number of requests-per-second (e.g. `5`) to bound the
   bridge's outbound HTTPS to Proton. `PROTON_BRIDGE_RATE_BURST` (default `2× rate`)
-  controls the burst allowance. Honors `Retry-After` on 429 responses.
+  controls the burst allowance. Both honor `Retry-After` on 429 responses.
+  - **Operation layer**: `PROTON_BRIDGE_RATE_LIMIT` gates one token per bridge
+    *operation start* (timeline sync, node listing, album sync, thumbnail batch,
+    full-res download).
+  - **HTTP layer**: `PROTON_BRIDGE_RATE_LIMIT_HTTP` paces *every* upstream HTTPS
+    call the Proton SDK makes (paginated listings, block downloads, thumbnails) —
+    one operation fans out into hundreds-to-thousands of such calls. Unset/empty,
+    it derives as `RATE_LIMIT × 10` (e.g. 3 ops/s → 30 HTTP req/s); set `0` to
+    keep this layer disabled. This is the layer that actually protects a small
+    router's NAT table during big syncs.
 - **Hard ceiling per full-res download** — `PROTON_BRIDGE_FULL_RES_TIMEOUT_MS`
   (default `300000` = 5 min). Aborts the download and returns 502 if Proton
   hangs (e.g. on an upstream crypto bug). The browser shows a toast instead
