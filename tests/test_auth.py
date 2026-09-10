@@ -189,6 +189,46 @@ class TestLoginRefresh:
             auth.login("ghost", "whatever-password")
         assert exc.value.status_code == 401
 
+    def test_dummy_hash_is_cost12(self):
+        cost = int(auth._DUMMY_PASSWORD_HASH.split("$")[2])
+        assert cost == 12, "unknown-user dummy hash must use bcrypt cost 12"
+
+    def test_unknown_user_uses_cost12_dummy(self, tmp_db, monkeypatch):
+        collected = []
+        real_checkpw = auth.bcrypt.checkpw
+
+        def spy(plain, hashed):
+            collected.append(hashed)
+            return real_checkpw(plain, hashed)
+
+        monkeypatch.setattr(auth.bcrypt, "checkpw", spy)
+        with pytest.raises(HTTPException) as exc:
+            auth.login("ghost", "whatever-password")
+        assert exc.value.status_code == 401
+        assert collected, "unknown-user login must run a bcrypt verification"
+        assert collected[0] == auth._DUMMY_PASSWORD_HASH.encode("ascii")
+
+    def test_unknown_user_as_slow_as_wrong_password(self, tmp_db):
+        store.create_user("bob", auth.hash_password("s3cret!"))
+
+        def best_attempt(user, password):
+            best = float("inf")
+            for _ in range(3):
+                auth._login_attempts.clear()
+                start = time.perf_counter()
+                with pytest.raises(HTTPException):
+                    auth.login(user, password)
+                best = min(best, time.perf_counter() - start)
+            return best
+
+        wrong_password = best_attempt("bob", "wrong-password")
+        unknown_user = best_attempt("ghost", "whatever-password")
+        assert unknown_user >= 0.05, f"unknown-user login too fast: {unknown_user:.3f}s"
+        assert unknown_user >= 0.3 * wrong_password, (
+            f"unknown-user ({unknown_user:.3f}s) much faster than "
+            f"wrong-password ({wrong_password:.3f}s) — username enumeration"
+        )
+
     def test_login_disabled_user_401(self, tmp_db):
         h = auth.hash_password("s3cret!")
         uid = store.create_user("carol", h)
