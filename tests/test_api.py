@@ -1151,6 +1151,81 @@ class TestBinaryEndpointAuth:
         assert len(dups) >= 3  # 4 identical people → C(4,2)=6 pairs, all above threshold
         assert all(d["similarity"] > 0.99 for d in dups)
 
+    def test_person_similar_paginated(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        # Target named + 3 identical look-alikes: `/similar` must report the
+        # total and page past 50 via offset.
+        for i in range(4):
+            _seed_done_photo(f"p{i}")
+            f = _seed_face(f"p{i}", emb=_emb(10))
+            pid = store.create_person(name="Alice" if i == 0 else None,
+                                      cover_uid=f"p{i}", cover_face_id=f)
+            store.assign_face_person(f, pid)
+        headers = _bearer(client)
+        r = client.get(f"/api/people/{pid}/similar", params={"threshold": 0.40}, headers=headers)
+        assert r.status_code == 200
+        assert r.json()["total"] == 3
+        assert len(r.json()["similar"]) == 3
+        # offset == total → empty page but total preserved
+        r2 = client.get(f"/api/people/{pid}/similar",
+                        params={"threshold": 0.40, "limit": 2, "offset": 2}, headers=headers)
+        assert r2.json()["total"] == 3
+        assert len(r2.json()["similar"]) == 1
+
+    def test_person_similar_no_lookalikes(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        fa = _seed_face("p1", emb=_emb(10))
+        pa = store.create_person(name="Alice", cover_uid="p1", cover_face_id=fa)
+        store.assign_face_person(fa, pa)
+        headers = _bearer(client)
+        r = client.get(f"/api/people/{pa}/similar", params={"threshold": 0.99}, headers=headers)
+        assert r.json()["total"] == 0
+        assert r.json()["similar"] == []
+
+    def test_suggested_merges_named_first(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        # One named person + 4 identical anonymous clusters. The named person
+        # has 4 look-alikes (candidate_count 4); every anonymous one has 5.
+        # The named row must rank first, carry top_scores, and slicing must
+        # paginate with a correct total + named count.
+        for i in range(5):
+            _seed_done_photo(f"p{i}")
+            f = _seed_face(f"p{i}", emb=_emb(10))
+            name = "Alice" if i == 0 else None
+            pid = store.create_person(name=name, cover_uid=f"p{i}", cover_face_id=f)
+            store.assign_face_person(f, pid)
+        headers = _bearer(client)
+        r = client.get("/api/people/suggested-merges", params={"threshold": 0.40}, headers=headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 5
+        assert body["named"] == 1
+        assert body["people"][0]["name"] == "Alice"
+        assert body["people"][0]["candidate_count"] == 4
+        assert body["people"][0]["top_scores"][0] > 0.99
+        # Pagination slices the cached ranking.
+        r2 = client.get("/api/people/suggested-merges",
+                        params={"threshold": 0.40, "limit": 2, "offset": 1}, headers=headers)
+        body2 = r2.json()
+        assert body2["total"] == 5
+        assert len(body2["people"]) == 2
+
+    def test_suggested_merges_cached(self, client, password_hash, monkeypatch):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        _seed_done_photo("p2")
+        fa = _seed_face("p1", emb=_emb(10))
+        _seed_face("p2", emb=_emb(10))
+        pa = store.create_person(name="Alice", cover_uid="p1", cover_face_id=fa)
+        store.assign_face_person(fa, pa)
+        headers = _bearer(client)
+        client.get("/api/people/suggested-merges", params={"threshold": 0.40}, headers=headers)
+        assert 0.40 in api._suggested_cache
+        # Mutations invalidate the per-threshold ranking.
+        api._invalidate_dups_cache()
+        assert api._suggested_cache == {}
+
     def test_face_suggest(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1")

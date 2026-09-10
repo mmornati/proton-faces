@@ -181,10 +181,19 @@ app.add_middleware(CompressionMiddleware, minimum_size=1024)
 
 _STATIC = Path(__file__).parent / "static"
 
-# TTL cache for the (expensive) people-duplicates computation.
-_DUP_CACHE_TTL = 30.0
+# TTL cache for the (expensive) people-duplicates computation. The blockwise
+# pairwise scan over ~30 k person-means takes ~40 s, so it is cached well
+# beyond a single page view — both the 1:1 `/duplicates` endpoint and the
+# person-centric `/suggested-merges` discovery share this budget.
+_DUP_CACHE_TTL = 600.0
 _dups_cache: tuple[float, dict] | None = None
 _dups_cache_lock = threading.Lock()
+
+# Person-centric view of the same scan, keyed by threshold (each threshold
+# materialises its own ranked row list once, then requests only slice it).
+_SUGGESTED_CACHE_TTL = 600.0
+_suggested_cache: dict[float, tuple[float, list]] = {}
+_suggested_cache_lock = threading.Lock()
 
 # TTL cache for the photo-duplicates endpoint (issue #90). Groups are
 # user-independent (favorites are merged per request), so one entry per
@@ -279,8 +288,9 @@ def _extract_bearer(request: Request) -> str | None:
 
 
 def _invalidate_dups_cache() -> None:
-    global _dups_cache
+    global _dups_cache, _suggested_cache
     _dups_cache = None
+    _suggested_cache = {}
 
 
 def _invalidate_photo_dups_cache() -> None:
@@ -1794,26 +1804,29 @@ def api_people_merge(source_id: int, body: dict,
 
 
 @app.get("/api/people/{person_id}/similar")
-def api_people_similar(person_id: int, threshold: float = 0.40, limit: int = 50):
+def api_people_similar(person_id: int, threshold: float = 0.40, limit: int = 50, offset: int = 0):
     """People whose mean face embedding is similar to `person_id`'s (cosine).
 
     Vectorized: one (P,512) @ (512,) matmul over every other person's mean,
     reusing the shared cached face matrix. Returns only people at/above the
     given similarity `threshold`, sorted by score desc. Drives the per-person
-    "similar people" merge assistant.
+    "similar people" merge assistant. `offset` pages past `limit` — the
+    matmul is O(P) and cheap, so showing all candidates is just slicing.
     """
     if limit < 1:
         limit = 50
+    offset = max(0, offset)
     pids, M = person_mean_matrix_from_cache()
     tgt = np.flatnonzero(pids == person_id)
     if tgt.size == 0 or pids.size < 2:
-        return {"similar": []}
+        return {"similar": [], "total": 0}
     fe = M[tgt[0]]
     sims = M @ fe
     hits = np.flatnonzero((sims >= threshold) & (pids != person_id))
-    if hits.size == 0:
-        return {"similar": []}
-    order = hits[np.argsort(-sims[hits])][:limit]
+    total = int(hits.size)
+    if total == 0:
+        return {"similar": [], "total": 0}
+    order = hits[np.argsort(-sims[hits])][offset : offset + limit]
     top_pids = [int(pids[i]) for i in order]
     top_sims = [float(sims[i]) for i in order]
     by_id = {r["id"]: r for r in people_by_ids(top_pids)}
@@ -1832,7 +1845,7 @@ def api_people_similar(person_id: int, threshold: float = 0.40, limit: int = 50)
                 ),
             }
         )
-    return {"similar": similar}
+    return {"similar": similar, "total": total}
 
 
 @app.post("/api/people/{target_id}/merge_all")
@@ -2013,6 +2026,118 @@ def _dups_payload(threshold: float, limit: int) -> dict:
             }
         )
     return {"duplicates": dups}
+
+
+def _suggested_rows(threshold: float) -> list[dict]:
+    """Per-target ranking of which people have look-alikes at/above `threshold`.
+
+    Same blockwise pairwise scan as ``_dups_payload``, but aggregated per
+    person instead of into a top-K pair heap: each person collects a
+    candidate count and their top-3 similarity scores. Rows are ranked with
+    **named** people first (merging anonymous clusters into an already
+    identified person is the high-value outcome), then by candidate count,
+    then by best score. The scan itself is the expensive part (~40 s at 30 k
+    people); callers cache the resulting list per threshold.
+    """
+    people = _people_all_cached()
+    if len(people) < 2:
+        return []
+    means = person_mean_embeddings_from_cache()
+    mats: list[np.ndarray] = []
+    ids: list[int] = []
+    by_id: dict[int, dict] = {}
+    for p in people:
+        emb = means.get(p["id"])
+        if emb is not None:
+            mats.append(emb)
+            ids.append(p["id"])
+            by_id[p["id"]] = p
+    if len(mats) < 2:
+        return []
+    X = np.stack(mats).astype(np.float32)  # (M, 512)
+    M = X.shape[0]
+    counts = np.zeros(M, dtype=np.int32)
+    tops: list[list[float]] = [[] for _ in range(M)]
+
+    block = 1024
+    for s in range(0, M, block):
+        e = min(s + block, M)
+        Sb = X[s:e] @ X.T
+        rows, cols = np.nonzero(Sb >= threshold)
+        keep = (s + rows) < cols  # global i < j, no np.triu copy
+        rows, cols = rows[keep], cols[keep]
+        g_rows = s + rows
+        vals = Sb[rows, cols].tolist()
+        for v, gi, gj in zip(vals, g_rows.tolist(), cols.tolist()):
+            counts[gi] += 1
+            counts[gj] += 1
+            for idx in (gi, gj):
+                t = tops[idx]
+                if len(t) < 3:
+                    t.append(v)
+                    t.sort(reverse=True)
+                elif v > t[-1]:
+                    t[-1] = v
+                    t.sort(reverse=True)
+
+    rows = []
+    for gi, c in enumerate(counts):
+        if not c:
+            continue
+        p = by_id[ids[gi]]
+        rows.append(
+            {
+                "person_id": ids[gi],
+                "name": p["name"],
+                "cover_url": p["cover_url"],
+                "photo_count": p["photo_count"],
+                "face_count": p["face_count"],
+                "candidate_count": int(c),
+                "top_scores": [round(float(x), 4) for x in tops[gi]],
+            }
+        )
+    rows.sort(
+        key=lambda r: (
+            0 if r["name"] else 1,  # named targets first
+            -r["candidate_count"],
+            -(r["top_scores"][0] if r["top_scores"] else 0.0),
+            r["person_id"],
+        )
+    )
+    return rows
+
+
+@app.get("/api/people/suggested-merges")
+def api_people_suggested_merges(threshold: float = 0.40, limit: int = 50, offset: int = 0):
+    """Person-centric suggested merges: who has look-alikes? (named first)
+
+    Discovery counterpart to `/duplicates`: instead of 1:1 pairs, returns
+    one row per person that has at least one look-alike at/above `threshold`,
+    ranked with named people before anonymous clusters. Each row carries a
+    `candidate_count` and `top_scores` so the UI can offer "review look-alikes"
+    for one target at a time. The computation shares the expensive blockwise
+    pairwise scan; the ranked row list is cached per threshold for
+    `_SUGGESTED_CACHE_TTL` seconds and `offset`/`limit` slice it.
+    """
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
+    with _suggested_cache_lock:
+        now = time.time()
+        entry = _suggested_cache.get(threshold)
+        if entry is not None and now - entry[0] < _SUGGESTED_CACHE_TTL:
+            full = entry[1]
+        else:
+            full = _suggested_rows(threshold)
+            _suggested_cache[threshold] = (time.time(), full)
+    page = full[offset : offset + limit]
+    named = sum(1 for r in full if r["name"])
+    return {
+        "people": page,
+        "total": len(full),
+        "named": named,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.get("/api/people/{person_id}/photos")

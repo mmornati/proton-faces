@@ -96,6 +96,7 @@ def _reset_module_state():
         import api
 
         api._dups_cache = None
+        api._suggested_cache = {}
         api._photo_dups_cache = None
         api._anchors_cache = None
         api._people_cache = OrderedDict()
