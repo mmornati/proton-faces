@@ -365,6 +365,10 @@ main { padding: 18px; }
 .memhead { font-size: 13px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
 .memgrid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
 .memgrid .card img { height: 120px; }
+.memtoggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
+.memtoggle:hover { color: var(--accent-strong); }
+.memchev { margin-left: auto; color: var(--faint); }
+.memgridwrap { display: block; }
 /* duplicates */
 .dupwrap { display: flex; flex-direction: column; gap: 14px; padding: 8px 0; }
 .dupgroup { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
@@ -936,6 +940,9 @@ main { padding: 18px 24px 64px; min-width: 0; }
      covered each tile — full metadata lives in the detail sheet. */
   .card .cardmeta { display: none; }
   .memgrid { grid-template-columns: repeat(3, 1fr); gap: 2px; }
+  /* "On this day" starts collapsed on phones/PWA to keep the main grid front and center. */
+  .memgridwrap { display: none; }
+  .memgridwrap.open { display: block; }
   .people-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .albums-grid, .places-grid, .dupgrid { grid-template-columns: repeat(2, 1fr); gap: 6px; }
   #daterailwrap { display: none !important; }
@@ -1969,9 +1976,24 @@ async function loadMemories() {
       wrap.style.display = "none";
       return;
     }
-    box.innerHTML = `<div class="memhead">On this day</div>
-      <div class="memgrid">${data.photos.slice(0, 12).map(cardHtml).join("")}</div>`;
+    box.innerHTML = `<button class="memhead memtoggle" id="memtoggle" aria-expanded="true">On this day <span class="memchev">&#9660;</span></button>
+      <div class="memgridwrap"><div class="memgrid">${data.photos.slice(0, 12).map(cardHtml).join("")}</div></div>`;
     wrap.style.display = "";
+    const memtoggle = $("#memtoggle");
+    const gridwrap = box.querySelector(".memgridwrap");
+    // On mobile/PWA the strip starts collapsed (CSS hides the grid); sync the
+    // chevron + aria-expanded so the initial state is correct for screen readers.
+    if (matchMedia("(max-width: 940px)").matches) {
+      gridwrap.classList.remove("open");
+      memtoggle.setAttribute("aria-expanded", "false");
+      memtoggle.querySelector(".memchev").textContent = "\u25B6";
+    }
+    memtoggle.addEventListener("click", () => {
+      const willOpen = !gridwrap.classList.contains("open");
+      gridwrap.classList.toggle("open");
+      memtoggle.setAttribute("aria-expanded", String(willOpen));
+      memtoggle.querySelector(".memchev").textContent = willOpen ? "\u25BE" : "\u25B6";
+    });
     // Re-bind click handlers for the in-memory cards (openDetail + stars).
     box.querySelectorAll(".card img").forEach((img) => img.addEventListener("click", () => openDetail(img.dataset.uid)));
     box.querySelectorAll(".facebadge").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); openDetail(b.dataset.uid); }));
