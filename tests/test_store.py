@@ -445,6 +445,22 @@ class TestFaces:
 
         assert {f["person_id"] for f in faces_for_photo("p2")} == {a}
 
+    def test_live_person_ids_filters_deleted(self, tmp_db):
+        self._seed_photo_done("p1")
+        self._seed_photo_done("p2")
+        f1 = store.insert_face("p1", None, 0.9, "[]", EMB.tobytes())
+        f2 = store.insert_face("p2", None, 0.8, "[]", EMB.tobytes())
+        a = store.create_person("A", "p1", f1)
+        b = store.create_person("B", "p2", f2)
+        store.assign_face_person(f2, b)
+        store.merge_person(b, a)
+        # b is gone from the DB; a survives; a never-existing id is dropped.
+        assert store.live_person_ids([a, b, 999999]) == [a]
+        assert store.live_person_ids([]) == []
+        # A large list is chunked safely (no 999-placeholder overflow).
+        many = list(range(1, 1200))
+        assert store.live_person_ids(many) == [a]
+
     def test_faces_for_photo_joins_name(self, tmp_db):
         self._seed_photo_done()
         fid = store.insert_face("p1", None, 0.9, "[]", EMB.tobytes())
@@ -751,6 +767,29 @@ class TestPersonMeans:
         assert M2.shape == (1, 512)
         assert np.allclose(M2[0], store._person_means_cache[pid])
 
+    def test_invalidate_embedding_cache_drops_all_layers(self, tmp_db):
+        v = _embedding(0.5)
+        store.upsert_photos([_photo("p1")])
+        store.set_photo_done("p1", "t.webp", None, None)
+        fid = store.insert_face("p1", None, 0.9, "[]", v.tobytes())
+        pid = store.create_person("Iris", "p1", fid)
+        store.assign_face_person(fid, pid)
+        store.person_mean_embeddings_from_cache()
+        store.person_mean_matrix_from_cache()
+        assert store._embedding_cache is not None
+        assert store._person_means_cache is not None
+        assert store._person_means_matrix is not None
+        store.invalidate_embedding_cache()
+        assert store._embedding_cache is None
+        assert store._embedding_cache_ts == 0.0
+        assert store._person_means_cache is None
+        assert store._person_means_cache_ts == 0.0
+        assert store._person_means_matrix is None
+        # Rebuild works and reflects the current DB state.
+        pids, M = store.person_mean_matrix_from_cache()
+        assert list(pids) == [pid]
+        assert M.shape == (1, 512)
+
 
 class TestMergePeopleBulk:
     def _seed_person(self, uid, name, emb_seed=0.0):
@@ -760,6 +799,32 @@ class TestMergePeopleBulk:
         pid = store.create_person(name, uid, fid)
         store.assign_face_person(fid, pid)
         return pid
+
+    def test_merge_person_invalidates_embedding_cache(self, tmp_db):
+        a = self._seed_person("p1", "A")
+        b = self._seed_person("p2", "B")
+        store.person_mean_matrix_from_cache()
+        assert store._embedding_cache is not None
+        store.merge_person(b, a)
+        assert store._embedding_cache is None
+        assert store._person_means_matrix is None
+        # The rebuilt matrix no longer contains the merged-away person.
+        pids, _ = store.person_mean_matrix_from_cache()
+        assert b not in pids
+        assert a in pids
+
+    def test_merge_people_bulk_invalidates_embedding_cache(self, tmp_db):
+        a = self._seed_person("p1", "A")
+        b = self._seed_person("p2", "B")
+        c = self._seed_person("p3", "C")
+        store.person_mean_matrix_from_cache()
+        assert store._embedding_cache is not None
+        store.merge_people_bulk([b, c], a)
+        assert store._embedding_cache is None
+        pids, _ = store.person_mean_matrix_from_cache()
+        assert b not in pids
+        assert c not in pids
+        assert a in pids
 
     def test_reparents_and_deletes(self, tmp_db):
         a = self._seed_person("p1", "A")
