@@ -128,6 +128,13 @@ DATA_MOUNT=/srv/proton-faces/data
 
 The directory must be writable by UID 1000 (the user all containers run as).
 
+> **Running the image directly (`docker run`).** The images do **not** declare a `VOLUME`, so
+> when you run them outside compose you must mount the data directory yourself, e.g.
+> `-v proton-faces-data:/data`. Compose does this automatically (it mounts
+> `${DATA_MOUNT:-data}:/data` on every service); the note only matters for manual `docker run`
+> experiments, where an unmounted `/data` writes to the container's ephemeral filesystem and
+> is lost when the container is removed.
+
 ## Updating
 
 ```bash
