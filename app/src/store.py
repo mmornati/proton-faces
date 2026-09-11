@@ -2437,6 +2437,20 @@ def revoke_all_tokens(user_id: int) -> int:
         return cur.rowcount
 
 
+def revoke_all_tokens_except(user_id: int, keep_token: str) -> int:
+    """Sign the user out of every device except the one using *keep_token*.
+
+    Used by self-service password change: the current session stays alive
+    while every other session is revoked. Returns number of tokens deleted.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM auth_tokens WHERE user_id=? AND token<>?",
+            (user_id, _hash_token(keep_token)),
+        )
+        return cur.rowcount
+
+
 def purge_expired_tokens() -> int:
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM auth_tokens WHERE expires_at < ?", (int(time.time()),))
