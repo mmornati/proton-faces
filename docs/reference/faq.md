@@ -136,7 +136,7 @@ Set `DATA_MOUNT` in `.env` to a host path on the new disk, then `docker compose 
 
 ### How do I refresh a token?
 
-`POST /api/auth/refresh` with `{refresh_token}` returns a new access token.
+The browser SPA posts an empty body to `POST /api/auth/refresh` and the server reads the refresh token from the HttpOnly `pf_refresh` cookie (FP-1). It returns a new `{access_token, refresh_token}` and re-sets the cookie. API clients that don't use the cookie can still post `{refresh_token}` in the body. Every refresh **rotates** the token (P-02): the old one is revoked.
 
 ### Can I use OAuth?
 

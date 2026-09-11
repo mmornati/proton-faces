@@ -15,7 +15,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import clip
@@ -35,9 +35,14 @@ from auth import (
     require_user,
     signed_or_token,
 )
-from auth import access_ttl as auth_access_ttl
+from auth import (
+    access_ttl as auth_access_ttl,
+)
 from auth import (
     refresh as refresh_tokens,
+)
+from auth import (
+    refresh_ttl as auth_refresh_ttl,
 )
 from bridge_client import (
     BridgeTransientError,
@@ -440,9 +445,38 @@ def _single_user_photo(user_id: int, row) -> dict:
 # dep. Each route sets dependencies=[] explicitly so it stays public even if
 # route ordering changes.
 
+# FP-1: the refresh token lives in an HttpOnly cookie so it can't be exfiltrated
+# by XSS (localStorage theft was the pre-fix vector). SameSite=Strict blocks
+# cross-site sends; the SPA additionally gates all state-changing calls behind
+# a custom header, so the CSRF surface is closed for the cookie path.
+_REFRESH_COOKIE = "pf_refresh"
+
+
+def _set_refresh_cookie(resp: Response, token: str) -> None:
+    resp.set_cookie(
+        _REFRESH_COOKIE,
+        token,
+        max_age=auth_refresh_ttl(),
+        httponly=True,
+        samesite="strict",
+        secure=settings.auth_cookie_secure,
+        path="/",
+    )
+
+
+def _clear_refresh_cookie(resp: Response) -> None:
+    resp.delete_cookie(_REFRESH_COOKIE, path="/", samesite="strict")
+
+
 @app.post("/api/auth/login", dependencies=[])
 def api_login(request: Request, body: dict = Body(...)):
-    """Exchange username+password for an access+refresh token pair."""
+    """Exchange username+password for an access+refresh token pair.
+
+    The refresh token is returned in the JSON body (backwards-compatible)
+    AND set as an HttpOnly SameSite=Strict cookie (FP-1). The cookie is the
+    primary channel for the browser SPA; the body field exists for API
+    consumers and the hardening script.
+    """
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
     if not username or not password:
@@ -450,7 +484,7 @@ def api_login(request: Request, body: dict = Body(...)):
     ua = request.headers.get("user-agent")
     ip = request.client.host if request.client else None
     access, refresh, user = login(username, password, user_agent=ua, ip=ip)
-    return {
+    resp = JSONResponse({
         "access_token": access,
         "refresh_token": refresh,
         "token_type": "Bearer",
@@ -461,23 +495,31 @@ def api_login(request: Request, body: dict = Body(...)):
             "display_name": user.display_name,
             "role": user.role,
         },
-    }
+    })
+    _set_refresh_cookie(resp, refresh)
+    return resp
 
 
 @app.post("/api/auth/refresh", dependencies=[])
-def api_refresh(request: Request, body: dict = Body(...)):
+def api_refresh(request: Request, body: dict = Body(default={})):
     """Issue a new (access, refresh) pair. The refresh token is **rotated**
     on every successful call (P-02 from the 2026-09-01 pen test):
     the old refresh token is revoked and a new one is minted. The front-end
     MUST overwrite its stored refresh token with the new one.
+
+    The refresh token is read from the HttpOnly cookie (FP-1) with a
+    fallback to the JSON body for backwards compatibility with API
+    consumers and the hardening script.
     """
-    rt = (body.get("refresh_token") or "").strip()
+    rt = (request.cookies.get(_REFRESH_COOKIE) or "").strip()
+    if not rt:
+        rt = (body.get("refresh_token") or "").strip()
     if not rt:
         raise HTTPException(400, "refresh_token required")
     ua = request.headers.get("user-agent")
     ip = request.client.host if request.client else None
     access, new_refresh, user = refresh_tokens(rt, user_agent=ua, ip=ip)
-    return {
+    resp = JSONResponse({
         "access_token": access,
         "refresh_token": new_refresh,
         "token_type": "Bearer",
@@ -488,17 +530,28 @@ def api_refresh(request: Request, body: dict = Body(...)):
             "display_name": user.display_name,
             "role": user.role,
         },
-    }
+    })
+    _set_refresh_cookie(resp, new_refresh)
+    return resp
 
 
 @app.post("/api/auth/logout")
 def api_logout(request: Request, user: CurrentUser = Depends(require_user)):
-    """Invalidate the bearer token used for this request."""
+    """Invalidate the bearer token used for this request.
+
+    Also revokes the refresh token (F-08) and clears the refresh cookie
+    (FP-1) so a logout ends the whole session, not just the access token.
+    """
     auth_header = request.headers.get("Authorization", "")
     token = auth_header.split(None, 1)[1].strip() if auth_header.lower().startswith("bearer ") else None
     if token:
         revoke_token(token)
-    return {"ok": True}
+    rt = (request.cookies.get(_REFRESH_COOKIE) or "").strip()
+    if rt:
+        revoke_token(rt)
+    resp = JSONResponse({"ok": True})
+    _clear_refresh_cookie(resp)
+    return resp
 
 
 @app.get("/api/auth/me")

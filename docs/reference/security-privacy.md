@@ -50,7 +50,7 @@ Proton doesn't publish an OAuth/OIDC provider, so each family member gets a **lo
 - **Opaque bearer tokens** — 32 random bytes, hex-encoded. Not JWT.
 - **Access tokens** — TTL `AUTH_ACCESS_TTL` (default 8 h).
 - **Refresh tokens** — TTL `AUTH_REFRESH_TTL` (default 30 d).
-- Tokens are stored in `auth_tokens` (SQLite), not in cookies. The browser keeps them in `localStorage` under `pf.auth`.
+- Tokens are stored in `auth_tokens` (SQLite). The short-lived **access** token is kept in `localStorage` under `pf.auth`; the **refresh** token is held in the HttpOnly `SameSite=Strict` `pf_refresh` cookie (FP-1) so page-level XSS cannot exfiltrate it. The cookie's `Secure` flag is controlled by `AUTH_COOKIE_SECURE`.
 - Failed username probes run a dummy bcrypt hash to keep wall time comparable to a real failure (defense against username enumeration).
 - Password reset (`--reset-password`) **revokes every active token** for that user.
 
