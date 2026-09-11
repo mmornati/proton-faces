@@ -1174,9 +1174,10 @@ async function adminFetch(path) {
 }
 
 // auth.js — bearer-token wrapper + login screen glue.
-// Stores access + refresh tokens in localStorage; transparently refreshes
-// the access token on 401 and shows the login screen if the refresh fails.
-// Public endpoints (login/refresh/health/status/limits) skip auth entirely.
+// Stores the short-lived ACCESS token in localStorage; the refresh token lives
+// in an HttpOnly cookie (FP-1) so XSS can't exfiltrate it. Transparently
+// refreshes the access token on 401 and shows the login screen if the refresh
+// fails. Public endpoints (login/refresh/health/status/limits) skip auth.
 const AUTH_STORAGE = "pf.auth";
 let _me = null;
 let _refreshInflight = null;
@@ -1199,6 +1200,9 @@ function _isAuthFreePath(path) {
 
 async function authFetch(path, opts = {}) {
   opts.headers = { ...(opts.headers || {}) };
+  // The refresh cookie must ride along on every request so an auto-refresh on
+  // 401 can work; include credentials for same-origin cookie round-trips.
+  opts.credentials = "include";
   const a = _loadAuth();
   if (a && a.access_token && !_isAuthFreePath(path)) {
     opts.headers["Authorization"] = `Bearer ${a.access_token}`;
@@ -1214,15 +1218,13 @@ async function authFetch(path, opts = {}) {
     return r.json();
   }
   // 401: try refreshing once. The server ROTATES the refresh token
-  // (P-02 fix) so we MUST overwrite the stored refresh token with the
-  // new one — otherwise the next refresh will fail with 401.
-  if (a && a.refresh_token) {
+  // (P-02 fix) and returns the new one in the HttpOnly cookie, so the
+  // stored refresh token is NOT carried forward — only the access token
+  // is updated.
+  if (a && a.access_token) {
     try {
-      const refreshed = await _refreshAccess(a.refresh_token);
+      const refreshed = await _refreshAccess();
       const next = { ...a, access_token: refreshed.access_token };
-      if (refreshed.refresh_token) {
-        next.refresh_token = refreshed.refresh_token;
-      }
       _saveAuth(next);
       opts.headers["Authorization"] = `Bearer ${refreshed.access_token}`;
       r = await fetch(path, opts);
@@ -1244,12 +1246,15 @@ async function authFetch(path, opts = {}) {
   return r.json();
 }
 
-async function _refreshAccess(refreshToken) {
+async function _refreshAccess() {
+  // No body — the server reads the refresh token from the HttpOnly cookie
+  // that's sent automatically with credentials: "include".
   if (!_refreshInflight) {
     _refreshInflight = fetch("/api/auth/refresh", {
       method: "POST",
+      credentials: "include",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      body: "{}",
     }).finally(() => { _refreshInflight = null; });
   }
   const r = await _refreshInflight;
@@ -1260,6 +1265,7 @@ async function _refreshAccess(refreshToken) {
 async function login(username, password) {
   const r = await fetch("/api/auth/login", {
     method: "POST",
+    credentials: "include",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password }),
   });
@@ -1268,9 +1274,10 @@ async function login(username, password) {
     throw new Error(t || "login failed");
   }
   const data = await r.json();
+  // Only the short-lived access token goes to localStorage; the refresh
+  // token is held server-side in an HttpOnly cookie.
   _saveAuth({
     access_token: data.access_token,
-    refresh_token: data.refresh_token,
     user: data.user,
   });
   _me = data.user;
@@ -1283,6 +1290,7 @@ async function logout() {
     if (a && a.access_token) {
       await fetch("/api/auth/logout", {
         method: "POST",
+        credentials: "include",
         headers: { Authorization: `Bearer ${a.access_token}` },
       });
     }
@@ -1299,11 +1307,10 @@ async function fetchMe() {
   const a = _loadAuth();
   if (!a || !a.access_token) return null;
   try {
-    const r = await fetch("/api/auth/me", {
-      headers: { Authorization: `Bearer ${a.access_token}` },
-    });
-    if (!r.ok) return null;
-    return r.json();
+    // authFetch transparently refreshes a stale access token via the
+    // HttpOnly refresh cookie (FP-1), so a returning user with a valid
+    // cookie is re-authenticated without re-entering their password.
+    return await authFetch("/api/auth/me");
   } catch { return null; }
 }
 
