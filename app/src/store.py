@@ -11,7 +11,7 @@ from contextlib import contextmanager
 import numpy as np
 
 from config import settings
-from sidecar import read_face_sidecar
+from sidecar import invalidate_face_cache, read_face_sidecar
 
 # Bumped whenever `migrate()` adds one-time data backfills or creates new
 # schema objects that old DBs must also gain. init_db() records this in
@@ -1057,6 +1057,7 @@ def assign_face_person(face_id: int, person_id: int) -> None:
         _recount_person(old)
         _gc_unnamed_person(old)
     _recount_person(person_id)
+    invalidate_embedding_cache()
 
 
 def assign_faces_person_bulk(face_ids: list[int], person_id: int) -> None:
@@ -1075,6 +1076,7 @@ def assign_faces_person_bulk(face_ids: list[int], person_id: int) -> None:
             )
     if face_ids:
         _recount_person(person_id)
+    invalidate_embedding_cache()
 
 
 def unassign_face(face_id: int) -> None:
@@ -1085,6 +1087,7 @@ def unassign_face(face_id: int) -> None:
     if old is not None:
         _recount_person(old)
         _gc_unnamed_person(old)
+    invalidate_embedding_cache()
 
 
 def create_person(name: str | None, cover_uid: str | None, cover_face_id: int | None = None) -> int:
@@ -1131,6 +1134,29 @@ def people_by_ids(person_ids: list[int]) -> list[sqlite3.Row]:
             f"SELECT p.* FROM people p WHERE p.id IN ({qmarks})",
             person_ids,
         ).fetchall()
+
+
+def live_person_ids(person_ids: list[int]) -> list[int]:
+    """Return only the ids in `person_ids` that still have a `people` row.
+
+    The cached person-mean matrix may reference people deleted by a merge
+    (the sidecar rewrite lags on the indexer's debounced schedule). Filtering
+    candidates through this before rendering or merging guarantees stale ids
+    never surface as `person <id> · 0 photos` ghosts or get re-fed into a
+    merge. Chunked to stay under SQLite's 999-placeholder limit.
+    """
+    if not person_ids:
+        return []
+    live: list[int] = []
+    for start in range(0, len(person_ids), _SQL_CHUNK):
+        chunk = person_ids[start : start + _SQL_CHUNK]
+        qmarks = ",".join("?" * len(chunk))
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM people WHERE id IN ({qmarks})", chunk
+            ).fetchall()
+        live.extend(r["id"] for r in rows)
+    return live
 
 
 def face_embedding(face_id: int) -> bytes | None:
@@ -1332,6 +1358,7 @@ def merge_person(source_id: int, target_id: int) -> None:
         )
         conn.execute("DELETE FROM people WHERE id=?", (source_id,))
     _recount_person(target_id)
+    invalidate_embedding_cache()
 
 
 # SQLite caps parameter placeholders at 999; keep the chunk small enough that
@@ -1404,6 +1431,7 @@ def merge_people_bulk(source_ids: list[int], target_id: int) -> int:
             )
             conn.execute("DELETE FROM people WHERE id IN (" + qmarks + ")", chunk)
     _recount_person(target_id)
+    invalidate_embedding_cache()
     return merged
 
 
@@ -1564,6 +1592,33 @@ def person_mean_matrix_from_cache() -> tuple[np.ndarray, np.ndarray]:
             _EMPTY_MAT if not means else np.stack(list(means.values())),
         )
     return matrix
+
+
+def invalidate_embedding_cache() -> None:
+    """Drop the cached face-embedding matrix, person means, and face sidecar.
+
+    Mutations that change which faces belong to which person (merge, bulk
+    merge, face (re)assignment, deletion) must call this so the next
+    ``person_mean_matrix_from_cache`` / ``_embedding_cache_data`` read rebuilds
+    from the DB/sidecar instead of serving stale person_ids. Without it a
+    just-merged-away person lingers in the cached `pids` array and is rendered
+    via the missing-row fallback (``person <id> · 0 photos · 0 faces``) until
+    the ~120 s TTL expires.
+
+    The face sidecar mmap is dropped too (`sidecar.invalidate_face_cache`) so a
+    rebuild re-reads the indexer's on-disk rewrite; note that the indexer only
+    rewrites the sidecar on its own debounced schedule, so the api.py live-row
+    filter is the hard guarantee against a still-stale on-disk file.
+    """
+    global _embedding_cache, _embedding_cache_ts, _person_means_cache
+    global _person_means_cache_ts, _person_means_matrix
+    invalidate_face_cache()
+    with _embedding_cache_lock:
+        _embedding_cache = None
+        _embedding_cache_ts = 0.0
+    _person_means_cache = None
+    _person_means_cache_ts = 0.0
+    _person_means_matrix = None
 
 
 def all_people(q: str | None = None, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:

@@ -320,15 +320,60 @@ class TestAuthEndpoints:
         _seed_user(password_hash=password_hash)
         r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
         old_refresh = r.json()["refresh_token"]
-        r2 = client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
+        # the refresh token rides in the HttpOnly cookie (FP-1); no body needed
+        r2 = client.post("/api/auth/refresh", json={})
         assert r2.status_code == 200
         new_refresh = r2.json()["refresh_token"]
         assert new_refresh != old_refresh
-        # old refresh token is now revoked
+        # the rotated token is re-set as the cookie
+        assert "pf_refresh=" in r2.headers.get("set-cookie", "")
+        # old refresh token is now revoked (drop the cookie so the body is used)
+        client.cookies.clear()
         assert client.post("/api/auth/refresh", json={"refresh_token": old_refresh}).status_code == 401
 
     def test_refresh_requires_token(self, client):
+        # no cookie and no body token -> 400
         assert client.post("/api/auth/refresh", json={}).status_code == 400
+
+    def test_login_sets_http_only_cookie(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        assert r.status_code == 200
+        set_cookie = r.headers.get("set-cookie", "")
+        assert "pf_refresh=" in set_cookie
+        assert "HttpOnly" in set_cookie
+        # starlette serializes attribute names/value lowercase
+        assert "samesite=strict" in set_cookie.lower()
+        assert "Path=/" in set_cookie
+        assert r.json()["refresh_token"]
+
+    def test_login_cookie_secure_when_flag_on(self, client, password_hash, monkeypatch):
+        _seed_user(password_hash=password_hash)
+        monkeypatch.setattr(api.settings, "auth_cookie_secure", True)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        assert r.status_code == 200
+        assert "Secure" in r.headers.get("set-cookie", "")
+
+    def test_login_cookie_not_secure_by_default(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        assert r.status_code == 200
+        assert "Secure" not in r.headers.get("set-cookie", "")
+
+    def test_logout_clears_cookie_and_revokes_refresh(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        assert r.status_code == 200
+        # _bearer re-logs in, which rotates the refresh cookie; capture the
+        # token that is live in the cookie jar at logout time
+        headers = _bearer(client)
+        live_refresh = client.cookies.get("pf_refresh")
+        r = client.post("/api/auth/logout", headers=headers)
+        assert r.status_code == 200
+        # the cookie is cleared -> refresh without a cookie/body fails
+        assert client.post("/api/auth/refresh", json={}).status_code == 400
+        # and the refresh token that was live at logout is revoked
+        assert client.post("/api/auth/refresh", json={"refresh_token": live_refresh}).status_code == 401
 
     def test_sign_returns_verifiable_urls(self, client, password_hash):
         _seed_user(password_hash=password_hash)
@@ -1371,6 +1416,42 @@ class TestBinaryEndpointAuth:
         r = client.get(f"/api/people/{pa}/similar", params={"threshold": 0.99}, headers=headers)
         assert r.json()["total"] == 0
         assert r.json()["similar"] == []
+
+    def test_person_similar_excludes_stale_deleted_ids(self, client, password_hash):
+        """Ghosts from a stale cached matrix never render or count.
+
+        Simulates the production bug: the cached person-mean matrix still
+        references a person deleted by a merge (the sidecar rewrite lags on
+        the indexer's debounced schedule). `/similar` must filter those ids
+        against live `people` rows so the response never contains
+        `person <id> · 0 photos` and `total` reflects only live people.
+        """
+        _seed_user(password_hash=password_hash)
+        for i in range(3):
+            _seed_done_photo(f"p{i}")
+            f = _seed_face(f"p{i}", emb=_emb(10))
+            pid = store.create_person(name="Alice" if i == 0 else None,
+                                      cover_uid=f"p{i}", cover_face_id=f)
+            store.assign_face_person(f, pid)
+        headers = _bearer(client)
+        # Warm the cache, then delete one look-alike directly (bypassing the
+        # merge endpoints) and re-inject its id into the cached matrix to
+        # mimic a stale sidecar that still references the deleted person.
+        r = client.get(f"/api/people/{pid}/similar", params={"threshold": 0.40}, headers=headers)
+        assert r.json()["total"] == 2
+        with store.get_conn() as conn:
+            conn.execute("DELETE FROM people WHERE id=?", (pid,))
+        # Re-inject the deleted id into the cached matrix (stale sidecar).
+        pids, M = store.person_mean_matrix_from_cache()
+        store._person_means_matrix = (
+            np.concatenate([pids, np.array([pid], dtype=np.int64)]),
+            np.concatenate([M, M[:1]], axis=0),
+        )
+        r = client.get(f"/api/people/{pid}/similar", params={"threshold": 0.40}, headers=headers)
+        body = r.json()
+        assert body["total"] == 2
+        assert all(s["person_id"] != pid for s in body["similar"])
+        assert all(s["photo_count"] > 0 for s in body["similar"])
 
     def test_suggested_merges_named_first(self, client, password_hash):
         _seed_user(password_hash=password_hash)

@@ -16,9 +16,9 @@ Authentication is via `Authorization: Bearer <token>`. Get a token from `POST /a
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/auth/login` | none | `{username, password}` → `{access_token, refresh_token, expires_in, user}` |
-| POST | `/api/auth/refresh` | none | `{refresh_token}` → new `{access_token, user}` |
-| POST | `/api/auth/logout` | bearer | Revoke the token used for this request |
+| POST | `/api/auth/login` | none | `{username, password}` → `{access_token, refresh_token, expires_in, user}`. Also sets the refresh token as the HttpOnly `pf_refresh` cookie (FP-1) |
+| POST | `/api/auth/refresh` | none | Reads the refresh token from the HttpOnly `pf_refresh` cookie, falls back to a `{refresh_token}` body. Rotates the refresh token (P-02) and re-sets the cookie → new `{access_token, refresh_token, user}` |
+| POST | `/api/auth/logout` | bearer | Revoke the access token and the HttpOnly refresh cookie's token (F-08), then clear the cookie |
 | GET | `/api/auth/me` | bearer | Current user (`{id, username, display_name, role}`) |
 | GET | `/api/auth/limits` | none | Public; UI uses this for the login screen |
 

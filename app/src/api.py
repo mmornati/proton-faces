@@ -15,7 +15,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import clip
@@ -43,9 +43,14 @@ from auth import (
     verify_password,
     verify_totp_code,
 )
-from auth import access_ttl as auth_access_ttl
+from auth import (
+    access_ttl as auth_access_ttl,
+)
 from auth import (
     refresh as refresh_tokens,
+)
+from auth import (
+    refresh_ttl as auth_refresh_ttl,
 )
 from bridge_client import (
     BridgeTransientError,
@@ -93,6 +98,7 @@ from store import (
     get_user_by_username,
     is_favorite,
     list_users,
+    live_person_ids,
     map_markers,
     memories_for_today,
     merge_people_bulk,
@@ -451,6 +457,29 @@ def _single_user_photo(user_id: int, row) -> dict:
 # dep. Each route sets dependencies=[] explicitly so it stays public even if
 # route ordering changes.
 
+# FP-1: the refresh token lives in an HttpOnly cookie so it can't be exfiltrated
+# by XSS (localStorage theft was the pre-fix vector). SameSite=Strict blocks
+# cross-site sends; the SPA additionally gates all state-changing calls behind
+# a custom header, so the CSRF surface is closed for the cookie path.
+_REFRESH_COOKIE = "pf_refresh"
+
+
+def _set_refresh_cookie(resp: Response, token: str) -> None:
+    resp.set_cookie(
+        _REFRESH_COOKIE,
+        token,
+        max_age=auth_refresh_ttl(),
+        httponly=True,
+        samesite="strict",
+        secure=settings.auth_cookie_secure,
+        path="/",
+    )
+
+
+def _clear_refresh_cookie(resp: Response) -> None:
+    resp.delete_cookie(_REFRESH_COOKIE, path="/", samesite="strict")
+
+
 @app.post("/api/auth/login", dependencies=[])
 def api_login(request: Request, body: dict = Body(...)):
     """Exchange username+password for an access+refresh token pair.
@@ -458,6 +487,11 @@ def api_login(request: Request, body: dict = Body(...)):
     When the user has 2FA enabled, no tokens are issued yet: the response
     carries ``2fa_required: true`` and a short-lived ``pending_token`` that
     must be exchanged for the real pair at ``POST /api/auth/2fa/verify``.
+
+    The refresh token is returned in the JSON body (backwards-compatible)
+    AND set as an HttpOnly SameSite=Strict cookie (FP-1). The cookie is the
+    primary channel for the browser SPA; the body field exists for API
+    consumers and the hardening script.
     """
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
@@ -477,7 +511,7 @@ def api_login(request: Request, body: dict = Body(...)):
                 "role": user.role,
             },
         }
-    return {
+    resp = JSONResponse({
         "access_token": access,
         "refresh_token": refresh,
         "token_type": "Bearer",
@@ -488,7 +522,9 @@ def api_login(request: Request, body: dict = Body(...)):
             "display_name": user.display_name,
             "role": user.role,
         },
-    }
+    })
+    _set_refresh_cookie(resp, refresh)
+    return resp
 
 
 @app.post("/api/auth/2fa/verify", dependencies=[])
@@ -506,7 +542,7 @@ def api_2fa_verify(request: Request, body: dict = Body(...)):
     ua = request.headers.get("user-agent")
     ip = request.client.host if request.client else None
     access, refresh, user = verify_2fa(pending, code, user_agent=ua, ip=ip)
-    return {
+    resp = JSONResponse({
         "access_token": access,
         "refresh_token": refresh,
         "token_type": "Bearer",
@@ -517,7 +553,9 @@ def api_2fa_verify(request: Request, body: dict = Body(...)):
             "display_name": user.display_name,
             "role": user.role,
         },
-    }
+    })
+    _set_refresh_cookie(resp, refresh)
+    return resp
 
 
 @app.post("/api/auth/2fa/setup")
@@ -597,19 +635,25 @@ def api_2fa_disable(request: Request, body: dict = Body(default={}),
 
 
 @app.post("/api/auth/refresh", dependencies=[])
-def api_refresh(request: Request, body: dict = Body(...)):
+def api_refresh(request: Request, body: dict = Body(default={})):
     """Issue a new (access, refresh) pair. The refresh token is **rotated**
     on every successful call (P-02 from the 2026-09-01 pen test):
     the old refresh token is revoked and a new one is minted. The front-end
     MUST overwrite its stored refresh token with the new one.
+
+    The refresh token is read from the HttpOnly cookie (FP-1) with a
+    fallback to the JSON body for backwards compatibility with API
+    consumers and the hardening script.
     """
-    rt = (body.get("refresh_token") or "").strip()
+    rt = (request.cookies.get(_REFRESH_COOKIE) or "").strip()
+    if not rt:
+        rt = (body.get("refresh_token") or "").strip()
     if not rt:
         raise HTTPException(400, "refresh_token required")
     ua = request.headers.get("user-agent")
     ip = request.client.host if request.client else None
     access, new_refresh, user = refresh_tokens(rt, user_agent=ua, ip=ip)
-    return {
+    resp = JSONResponse({
         "access_token": access,
         "refresh_token": new_refresh,
         "token_type": "Bearer",
@@ -620,17 +664,28 @@ def api_refresh(request: Request, body: dict = Body(...)):
             "display_name": user.display_name,
             "role": user.role,
         },
-    }
+    })
+    _set_refresh_cookie(resp, new_refresh)
+    return resp
 
 
 @app.post("/api/auth/logout")
 def api_logout(request: Request, user: CurrentUser = Depends(require_user)):
-    """Invalidate the bearer token used for this request."""
+    """Invalidate the bearer token used for this request.
+
+    Also revokes the refresh token (F-08) and clears the refresh cookie
+    (FP-1) so a logout ends the whole session, not just the access token.
+    """
     auth_header = request.headers.get("Authorization", "")
     token = auth_header.split(None, 1)[1].strip() if auth_header.lower().startswith("bearer ") else None
     if token:
         revoke_token(token)
-    return {"ok": True}
+    rt = (request.cookies.get(_REFRESH_COOKIE) or "").strip()
+    if rt:
+        revoke_token(rt)
+    resp = JSONResponse({"ok": True})
+    _clear_refresh_cookie(resp)
+    return resp
 
 
 @app.get("/api/auth/me")
@@ -1765,6 +1820,11 @@ def api_face_suggest(face_id: int, limit: int = 5):
     sims = M @ fe
     order = np.argsort(-sims)
     top_n = max(1, min(limit, 50))
+    # Drop people deleted by a merge from the cached matrix (sidecar rewrite
+    # lags on the indexer's debounced schedule) so ghosts never surface as
+    # `person <id>` suggestions.
+    live = set(live_person_ids([int(pids[i]) for i in order[:top_n]]))
+    order = order[[int(pids[i]) in live for i in order[:top_n]]]
     # Batch fetch ONLY the top-N people by PK (plus face/photo counts). Never
     # the 37 s all-people aggregation: typeahead and grid already warm this via
     # `_people_cache`, but a cold cache must not stall the popover.
@@ -1959,10 +2019,19 @@ def api_people_similar(person_id: int, threshold: float = 0.40, limit: int = 50,
     fe = M[tgt[0]]
     sims = M @ fe
     hits = np.flatnonzero((sims >= threshold) & (pids != person_id))
-    total = int(hits.size)
+    if hits.size == 0:
+        return {"similar": [], "total": 0}
+    order = hits[np.argsort(-sims[hits])]
+    # The cached matrix can reference people deleted by a merge (the sidecar
+    # rewrite lags on the indexer's debounced schedule). Filter to live rows
+    # so ghosts never render as `person <id> · 0 photos` and `total` reflects
+    # only people that still exist.
+    live = set(live_person_ids([int(pids[i]) for i in order]))
+    order = order[[int(pids[i]) in live for i in order]]
+    total = int(order.size)
     if total == 0:
         return {"similar": [], "total": 0}
-    order = hits[np.argsort(-sims[hits])][offset : offset + limit]
+    order = order[offset : offset + limit]
     top_pids = [int(pids[i]) for i in order]
     top_sims = [float(sims[i]) for i in order]
     by_id = {r["id"]: r for r in people_by_ids(top_pids)}
@@ -2053,6 +2122,12 @@ def api_people_merge_all_similar(target_id: int, body: dict,
     sims = M @ fe
     hits = np.flatnonzero((sims >= threshold) & (pids != target_id))
     order = hits[np.argsort(-sims[hits])]
+    # Filter to live people rows: the cached matrix can reference people
+    # already deleted by a previous merge (sidecar rewrite lags on the
+    # indexer's debounced schedule). Re-merging a deleted id is a DB no-op
+    # that would report `merged_count: 0` and leave the ghost in the list.
+    live = set(live_person_ids([int(pids[i]) for i in order]))
+    order = order[[int(pids[i]) in live for i in order]]
     source_ids = [int(pids[i]) for i in order[:max_sources]]
     if not source_ids:
         return {"ok": True, "target_id": target_id, "merged_count": 0, "assigned_similar": 0,

@@ -243,6 +243,9 @@ services:
       # worker. REQUIRED: compose refuses to start without it (`:?` fails
       # loudly) so a known default can't be used to forge signed URLs.
       - SIGNING_SECRET=${SIGNING_SECRET:?set SIGNING_SECRET in .env}
+      # FP-1: the refresh-token cookie is Secure-only. Prod is behind Traefik
+      # TLS, so the cookie must not be sent over plain http.
+      - AUTH_COOKIE_SECURE=1
     networks:
       - internal
 

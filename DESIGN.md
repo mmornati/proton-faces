@@ -175,7 +175,7 @@ One typeface family keeps the operator surface fast and native; type hierarchy i
 - Photo grid: `repeat(auto-fill, minmax(200px, 1fr))` with 8px gaps — dense but legible; each tile is `aspect-ratio: 4/3`.
 - People grid: `minmax(164px, 1fr)`; places `minmax(150px, 1fr)`; albums `minmax(200px, 1fr)`; all 12px gaps.
 - Detail/meta panel is fixed-width `320px` beside the image, wrapping under it on narrow widths.
-- **Single breakpoint `940px`** flips to mobile: rail becomes a bottom nav (backdrop-blur, safe-area bottom padding), grids go 3-up at 2px gutter (people 2-up, places/albums 2-up), detail becomes a stacked sheet with a sticky bar, statusbar and date rail are hidden, toast floats at `bottom: 84px`.
+- **Single breakpoint `940px`** flips to mobile: rail becomes a bottom nav (backdrop-blur, safe-area bottom padding), grids go 3-up at 2px gutter (people 2-up, places/albums 2-up), detail becomes a stacked sheet with a sticky bar, statusbar and date rail are hidden, toast floats at `bottom: 84px`. Mobile trims for photo-first browsing: "Search by example" and the Duplicates/Unassigned nav links are hidden, and photo tiles drop their bottom date/place pills (full metadata lives in the detail sheet).
 - Spacing rhythm: 4/8/12/16/24px, `main` padded `18px 24px 64px` desktop, `12px 10px 84px` mobile.
 
 ## Elevation & Depth
@@ -221,7 +221,7 @@ A hybrid: **tonal layering** is the primary depth cue; one soft elevation shadow
 
 ### Navigation
 - **Rail link:** muted text, `8px` radius, 11px icon gap; hover brightens text; **active** = accent-soft fill + accent-strong text, 640 weight.
-- **Mobile nav:** equal-width column links with 21px glyphs, `9px` label, active same green pair. Bottom-mounted, frosted, `overflow-x: auto`, hairline top border.
+- **Mobile nav:** equal-width column links with 21px glyphs, `9px` label, active same green pair. Bottom-mounted, frosted, `overflow-x: auto`, hairline top border. Labels ellipsize rather than collide; Duplicates and Unassigned are hidden on mobile (7 links).
 
 ### Modals & Overlays
 - Scrims are always `color-mix(in srgb, var(--bg) 80%, rgba(6,7,9,.7))` + `backdrop-filter: blur(12px)`.

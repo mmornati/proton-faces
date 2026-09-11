@@ -45,7 +45,7 @@ users fetch full-resolution Proton photos if they know a UID.
 | F-05 | High | `/api/admin/backup*` returns full SQLite snapshot containing every user + embedding + photo UID | `app/src/api.py:1568` (pre-fix) |
 | F-06 | High | `ensure_default_admin()` logs plaintext demo password at WARN | `app/src/demo.py:239-244` (pre-fix) |
 | F-07 | Medium | `purge_expired_tokens()` defined but never called on a schedule — DB bloat | `app/src/store.py:1200`, `app/src/main.py` (pre-fix) |
-| F-08 | Medium | Refresh-token not revoked on logout (only the access token is) | `app/src/auth.py:api_logout` |
+| F-08 | Medium | Refresh-token not revoked on logout (only the access token is) | `app/src/auth.py:api_logout` — **fixed** (see §3, FP-1 PR) |
 | F-09 | Medium | `/api/search/face` accepts arbitrary `UploadFile` with no size cap (CPU DoS) | `app/src/api.py:1283` (pre-fix) |
 | F-10 | Medium | `_face_similarity` iterates ALL face embeddings O(N) per request (CPU DoS) | `app/src/api.py:1358` (pre-fix) |
 | F-11 | Low | Refresh token does not rotate on `/api/auth/refresh` (long-lived theft window) | `app/src/auth.py:refresh` |
@@ -143,6 +143,53 @@ users fetch full-resolution Proton photos if they know a UID.
 - File is picked up by Traefik's file provider via `--providers.file.watch=true`
   — **no Traefik restart needed**. Verified via `tail /data/coolify/proxy/traefik.log`:
   no errors.
+
+### Applied in this PR (`feat/refresh-token-http-only-cookie`)
+
+**FP-1 — refresh token moved out of XSS-exfiltratable localStorage into an
+HttpOnly cookie** (`app/src/api.py`, `app/src/config.py`,
+`app/src/static/index.html`):
+
+- `POST /api/auth/login` and `POST /api/auth/refresh` now set the refresh
+  token as the `pf_refresh` cookie: `HttpOnly`, `SameSite=Strict`,
+  `Path=/`, `Max-Age=AUTH_REFRESH_TTL`, and `Secure` when
+  `AUTH_COOKIE_SECURE=1` (default `0` so local `http://` testing and the
+  demo keep working; the `app` compose service sets it behind TLS).
+- The refresh token is **still returned in the JSON body** for
+  backwards-compatibility with API consumers and
+  `scripts/verify-hardening.sh`; the cookie is the primary channel for the
+  browser SPA.
+- `POST /api/auth/refresh` reads the token from the cookie first, falling
+  back to the `{refresh_token}` body field. Rotation (P-02) is unchanged:
+  the old refresh token is revoked before a new pair is minted, and the new
+  token is re-set as the cookie.
+- The SPA (`index.html`) no longer stores `refresh_token` in `localStorage`
+  (`pf.auth` holds only `access_token` + `user`), sends `credentials:
+  "include"` on every auth fetch so the cookie round-trips, and refreshes
+  with an empty body.
+- `__Host-` prefix deliberately NOT used: it requires the `Secure` flag,
+  which would break the default local-http path. `SameSite=Strict` +
+  HttpOnly closes the XSS-exfiltration vector; the SPA gates state-changing
+  calls behind a custom header, closing the CSRF surface for the cookie
+  path.
+
+**F-08 — logout now revokes the refresh token too**
+(`app/src/api.py:api_logout`):
+
+- `POST /api/auth/logout` revokes the bearer access token AND the refresh
+  token from the `pf_refresh` cookie, then clears the cookie. A logout ends
+  the whole session, not just the access token.
+
+**Tests (`tests/test_api.py::TestAuthEndpoints`):**
+
+- `test_login_sets_http_only_cookie` — cookie carries `HttpOnly`,
+  `SameSite=Strict`, `Path=/`, and the body still returns `refresh_token`.
+- `test_login_cookie_secure_when_flag_on` / `test_login_cookie_not_secure_by_default`
+  — `AUTH_COOKIE_SECURE` toggles the `Secure` flag.
+- `test_refresh_rotates` — refresh via cookie (empty body) rotates and
+  re-sets the cookie; the old token is revoked.
+- `test_logout_clears_cookie_and_revokes_refresh` — logout clears the
+  cookie and revokes the live refresh token.
 
 ### Operator checklist (you apply on the VPS)
 
@@ -305,7 +352,6 @@ These are NOT in scope for this hardening pass but worth noting:
 
 | ID | Title | Effort |
 |---|---|---|
-| FP-1 | Cookie-based refresh token (`__Host-` HttpOnly Secure SameSite=Strict) | M |
 | FP-2 | `/api/search/face` UploadFile size cap (8 MB) | S |
 | FP-3 | `_face_similarity` per-user-per-minute counter | M |
 | FP-4 | Refresh-token rotation on `/api/auth/refresh` | S |

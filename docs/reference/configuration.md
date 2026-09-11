@@ -62,6 +62,7 @@ Set inside `compose.yml` for each service. Most match the compose-level defaults
 | `AUTH_ACCESS_TTL` | `28800` (8 hours) | Bearer access-token lifetime in seconds. Set `0` for effectively no expiry during a session (not recommended). |
 | `AUTH_REFRESH_TTL` | `2592000` (30 days) | Bearer refresh-token lifetime in seconds. |
 | `AUTH_2FA_PENDING_TTL` | `300` (5 minutes) | How long a pending 2FA token stays valid (seconds) during the two-step login. After this window the user must re-enter username + password. |
+| `AUTH_COOKIE_SECURE` | `0` | FP-1: set the `Secure` flag on the HttpOnly refresh-token cookie (`pf_refresh`). Default `0` so local `http://` testing and the demo work; set `1` behind TLS (the `app` compose service does). A `Secure` cookie is only sent over HTTPS, so leaving it `0` behind TLS is a regression of the XSS-exfiltration fix. |
 | `ADMIN_PASSWORD` | unset → prompt | Pre-set the first admin's password so `--create-admin` runs non-interactively (e.g. from an init container). At least 8 characters or the command rejects it. |
 
 ## Performance tuning

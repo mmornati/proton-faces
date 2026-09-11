@@ -146,6 +146,14 @@ class Settings:
         # call so monkeypatch.setattr takes effect without a reload).
         self.indexer_token = os.environ.get("INDEXER_TOKEN", "")
 
+        # FP-1: set the `Secure` flag on the HttpOnly refresh-token cookie.
+        # Default OFF so local `http://` testing and the demo work out of the
+        # box; production deployments behind TLS should set AUTH_COOKIE_SECURE=1
+        # (the `app` compose service does). A `Secure` cookie is only sent over
+        # HTTPS, so flipping it on against a plain-http install would silently
+        # break refresh.
+        self.auth_cookie_secure = _env_bool("AUTH_COOKIE_SECURE", False)
+
         # Derived paths
         self.work_dir = self.data_dir / "work"
         self.thumb_dir = self.data_dir / "thumbs"

@@ -919,16 +919,22 @@ main { padding: 18px 24px 64px; min-width: 0; }
   #rail nav { flex-direction: row; gap: 2px; overflow-x: auto; padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); scrollbar-width: none; justify-content: space-around; }
   #rail nav::-webkit-scrollbar { display: none; }
   #rail nav a { flex: 1 1 0; min-width: 0; flex-direction: column; gap: 3px; font-size: 9px; font-weight: 650; padding: 5px 2px; border-radius: 10px; text-align: center; line-height: 1.1; }
+  #rail nav a span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #rail nav a[data-view="duplicates"], #rail nav a[data-view="unassigned"] { display: none; }
   #rail nav a svg { width: 21px; height: 21px; }
   #rail nav a.active { color: var(--accent-strong); background: var(--accent-soft); }
   #topbar { padding: 11px 16px; gap: 10px; }
   #viewtitle { font-size: 17px; }
   #searchbar { order: 3; flex-basis: 100%; justify-content: stretch; }
-  #q { flex: 1; min-width: 0; }
+  #q { flex: 1; min-width: 0; font-size: 16px; padding: 9px 12px; }
+  #btn-face { display: none; }
   main { padding: 12px 10px 84px; }
   #counts { font-size: 11.5px; margin-bottom: 8px; }
   .grid { grid-template-columns: repeat(3, 1fr); gap: 2px; }
   .card { border-radius: 4px; }
+  /* Photos are the point on a phone: drop the bottom date/place pills that
+     covered each tile — full metadata lives in the detail sheet. */
+  .card .cardmeta { display: none; }
   .memgrid { grid-template-columns: repeat(3, 1fr); gap: 2px; }
   .people-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .albums-grid, .places-grid, .dupgrid { grid-template-columns: repeat(2, 1fr); gap: 6px; }
@@ -984,15 +990,15 @@ main { padding: 18px 24px 64px; min-width: 0; }
     <span class="pill-local">local</span>
   </div>
   <nav aria-label="Views">
-    <a href="#" data-view="photos" class="active" data-label="Photos"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Photos</a>
-    <a href="#" data-view="favorites" data-label="Favorites"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.5s-7.5-4.6-9.3-9.2C1.4 8.1 3.4 5 6.7 5c2 0 3.6 1.1 4.4 2.7 0 0 0 0 0 0C11.9 6.1 13.5 5 15.4 5c3.4 0 5.4 3.1 4.1 6.3-1.9 4.6-9.5 9.2-9.5 9.2z"/></svg>Favorites</a>
-    <a href="#" data-view="archive" data-label="Archive"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M2 4h20v4H2z"/><path d="M10 12h4"/></svg>Archive</a>
-    <a href="#" data-view="people" data-label="People"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a7 7 0 0 1 7-7h2a7 7 0 0 1 7 7v1"/></svg>People</a>
-    <a href="#" data-view="places" data-label="Places"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-5.7-7-11a7 7 0 0 1 14 0c0 5.3-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>Places</a>
-    <a href="#" data-view="albums" data-label="Albums"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="1.6"/><path d="m16 17-4-5-3 4"/></svg>Albums</a>
-    <a href="#" data-view="tags" data-label="Tags"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 11 3.8A2 2 0 0 0 9.6 3.2H4a1 1 0 0 0-1 1v5.6c0 .5.2 1 .6 1.4l9.6 9.6a2 2 0 0 0 2.8 0l4.6-4.6a2 2 0 0 0 0-2.8z"/><circle cx="7.5" cy="7.5" r="1.2"/></svg>Tags</a>
-    <a href="#" data-view="duplicates" data-label="Duplicates"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Duplicates</a>
-    <a href="#" data-view="unassigned" data-label="Unassigned"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5s1 2 3.5 2 3.5-2 3.5-2"/><circle cx="9" cy="9.5" r=".9" fill="currentColor" stroke="none"/><circle cx="15" cy="9.5" r=".9" fill="currentColor" stroke="none"/></svg>Unassigned</a>
+    <a href="#" data-view="photos" class="active" data-label="Photos"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Photos</span></a>
+    <a href="#" data-view="favorites" data-label="Favorites"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.5s-7.5-4.6-9.3-9.2C1.4 8.1 3.4 5 6.7 5c2 0 3.6 1.1 4.4 2.7 0 0 0 0 0 0C11.9 6.1 13.5 5 15.4 5c3.4 0 5.4 3.1 4.1 6.3-1.9 4.6-9.5 9.2-9.5 9.2z"/></svg><span>Favorites</span></a>
+    <a href="#" data-view="archive" data-label="Archive"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M2 4h20v4H2z"/><path d="M10 12h4"/></svg><span>Archive</span></a>
+    <a href="#" data-view="people" data-label="People"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a7 7 0 0 1 7-7h2a7 7 0 0 1 7 7v1"/></svg><span>People</span></a>
+    <a href="#" data-view="places" data-label="Places"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-5.7-7-11a7 7 0 0 1 14 0c0 5.3-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg><span>Places</span></a>
+    <a href="#" data-view="albums" data-label="Albums"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="1.6"/><path d="m16 17-4-5-3 4"/></svg><span>Albums</span></a>
+    <a href="#" data-view="tags" data-label="Tags"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 11 3.8A2 2 0 0 0 9.6 3.2H4a1 1 0 0 0-1 1v5.6c0 .5.2 1 .6 1.4l9.6 9.6a2 2 0 0 0 2.8 0l4.6-4.6a2 2 0 0 0 0-2.8z"/><circle cx="7.5" cy="7.5" r="1.2"/></svg><span>Tags</span></a>
+    <a href="#" data-view="duplicates" data-label="Duplicates"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Duplicates</span></a>
+    <a href="#" data-view="unassigned" data-label="Unassigned"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5s1 2 3.5 2 3.5-2 3.5-2"/><circle cx="9" cy="9.5" r=".9" fill="currentColor" stroke="none"/><circle cx="15" cy="9.5" r=".9" fill="currentColor" stroke="none"/></svg><span>Unassigned</span></a>
   </nav>
   <div class="rail-spacer"></div>
   <div class="userchip">
@@ -1188,9 +1194,10 @@ async function adminFetch(path) {
 }
 
 // auth.js — bearer-token wrapper + login screen glue.
-// Stores access + refresh tokens in localStorage; transparently refreshes
-// the access token on 401 and shows the login screen if the refresh fails.
-// Public endpoints (login/refresh/health/status/limits) skip auth entirely.
+// Stores the short-lived ACCESS token in localStorage; the refresh token lives
+// in an HttpOnly cookie (FP-1) so XSS can't exfiltrate it. Transparently
+// refreshes the access token on 401 and shows the login screen if the refresh
+// fails. Public endpoints (login/refresh/health/status/limits) skip auth.
 const AUTH_STORAGE = "pf.auth";
 let _me = null;
 let _refreshInflight = null;
@@ -1215,6 +1222,9 @@ function _isAuthFreePath(path) {
 
 async function authFetch(path, opts = {}) {
   opts.headers = { ...(opts.headers || {}) };
+  // The refresh cookie must ride along on every request so an auto-refresh on
+  // 401 can work; include credentials for same-origin cookie round-trips.
+  opts.credentials = "include";
   const a = _loadAuth();
   if (a && a.access_token && !_isAuthFreePath(path)) {
     opts.headers["Authorization"] = `Bearer ${a.access_token}`;
@@ -1230,15 +1240,13 @@ async function authFetch(path, opts = {}) {
     return r.json();
   }
   // 401: try refreshing once. The server ROTATES the refresh token
-  // (P-02 fix) so we MUST overwrite the stored refresh token with the
-  // new one — otherwise the next refresh will fail with 401.
-  if (a && a.refresh_token) {
+  // (P-02 fix) and returns the new one in the HttpOnly cookie, so the
+  // stored refresh token is NOT carried forward — only the access token
+  // is updated.
+  if (a && a.access_token) {
     try {
-      const refreshed = await _refreshAccess(a.refresh_token);
+      const refreshed = await _refreshAccess();
       const next = { ...a, access_token: refreshed.access_token };
-      if (refreshed.refresh_token) {
-        next.refresh_token = refreshed.refresh_token;
-      }
       _saveAuth(next);
       opts.headers["Authorization"] = `Bearer ${refreshed.access_token}`;
       r = await fetch(path, opts);
@@ -1260,12 +1268,15 @@ async function authFetch(path, opts = {}) {
   return r.json();
 }
 
-async function _refreshAccess(refreshToken) {
+async function _refreshAccess() {
+  // No body — the server reads the refresh token from the HttpOnly cookie
+  // that's sent automatically with credentials: "include".
   if (!_refreshInflight) {
     _refreshInflight = fetch("/api/auth/refresh", {
       method: "POST",
+      credentials: "include",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      body: "{}",
     }).finally(() => { _refreshInflight = null; });
   }
   const r = await _refreshInflight;
@@ -1276,6 +1287,7 @@ async function _refreshAccess(refreshToken) {
 async function login(username, password) {
   const r = await fetch("/api/auth/login", {
     method: "POST",
+    credentials: "include",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password }),
   });
@@ -1283,12 +1295,13 @@ async function login(username, password) {
     const t = await r.text();
     throw new Error(t || "login failed");
   }
-  return r.json();
+return r.json();
 }
 
 async function verify2fa(pendingToken, code) {
   const r = await fetch("/api/auth/2fa/verify", {
     method: "POST",
+    credentials: "include",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ pending_token: pendingToken, code }),
   });
@@ -1300,9 +1313,10 @@ async function verify2fa(pendingToken, code) {
 }
 
 function _applyAuth(data) {
+  // Only the short-lived access token goes to localStorage; the refresh
+  // token is held server-side in an HttpOnly cookie.
   _saveAuth({
     access_token: data.access_token,
-    refresh_token: data.refresh_token,
     user: data.user,
   });
   _me = data.user;
@@ -1315,6 +1329,7 @@ async function logout() {
     if (a && a.access_token) {
       await fetch("/api/auth/logout", {
         method: "POST",
+        credentials: "include",
         headers: { Authorization: `Bearer ${a.access_token}` },
       });
     }
@@ -1331,11 +1346,10 @@ async function fetchMe() {
   const a = _loadAuth();
   if (!a || !a.access_token) return null;
   try {
-    const r = await fetch("/api/auth/me", {
-      headers: { Authorization: `Bearer ${a.access_token}` },
-    });
-    if (!r.ok) return null;
-    return r.json();
+    // authFetch transparently refreshes a stale access token via the
+    // HttpOnly refresh cookie (FP-1), so a returning user with a valid
+    // cookie is re-authenticated without re-entering their password.
+    return await authFetch("/api/auth/me");
   } catch { return null; }
 }
 
@@ -2650,6 +2664,14 @@ async function mergeSelectedSimilar() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source_ids: sourceIds }),
     });
+    if (r.merged_count === 0) {
+      // Nothing was actually merged (e.g. the sources were already merged
+      // away and only lingered in a stale cache). Tell the user and refresh
+      // the candidate list so the ghosts disappear instead of re-rendering.
+      toast("Nothing to merge — those people were already merged.");
+      await loadSimilarPeople();
+      return;
+    }
     closeSimilarPeople();
     toast(`Merged ${r.merged_count} people into "${$("#sptargetname").textContent}". Auto-tagged ${r.assigned_similar || 0} faces.`);
     refreshAfterBatchMerge(spTargetId, sourceIds, r);

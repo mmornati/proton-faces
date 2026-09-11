@@ -215,6 +215,22 @@ def _write_atomic_npy(path: Path, arr: np.ndarray) -> None:
     tmp.rename(path)
 
 
+def invalidate_face_cache() -> None:
+    """Drop the cached face sidecar mmap so the next read re-maps from disk.
+
+    Called by `store.invalidate_embedding_cache` after a merge or face
+    reassignment changes the face->person mapping. The face matrix itself is
+    immutable, but its `person_ids` column is baked into the metadata the
+    indexer rewrites on its own debounced schedule; dropping the mmap here
+    lets a subsequent read pick up the indexer's rewrite as soon as it lands.
+    Keeps `_SIDECAR_DIR` (and the CLIP mmap) untouched.
+    """
+    global _face_mmap, _face_mmap_ts
+    with _face_mmap_lock:
+        _face_mmap = None
+        _face_mmap_ts = 0.0
+
+
 # --- test helpers ----------------------------------------------------------
 
 
