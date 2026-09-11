@@ -46,6 +46,7 @@ jobs:
             scripts/rebuild-faces-from-commons.py \
             scripts/fetch-demo-assets.py \
             scripts/capture_screenshots.py \
+            scripts/capture_mobile_gif.py \
             scripts/perf_check_issue5.py \
             scripts/perf_check_live.py
 

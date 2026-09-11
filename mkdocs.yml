@@ -18,15 +18,15 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: amber
-      accent: amber
+      primary: green
+      accent: green
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: amber
-      accent: amber
+      primary: green
+      accent: green
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
@@ -124,6 +124,7 @@ nav:
       - Places: user-guide/places.md
       - Albums & tags: user-guide/albums-tags.md
       - Favorites & archive: user-guide/favorites-archive.md
+      - Mobile & PWA: user-guide/mobile.md
       - Admin area: user-guide/admin.md
       - Status & diagnostics: user-guide/status.md
   - Reference:

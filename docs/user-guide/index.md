@@ -1,6 +1,6 @@
 # User guide
 
-The web UI is a single-page vanilla-JS application. There are nine top-level views plus the gear-icon admin modal, the "Search by example" modal, and the bottom status bar.
+The web UI is a single-page vanilla-JS application. There are nine top-level views plus the gear-icon admin modal, the "Search by example" modal, and the bottom status bar. On phones it installs as a **progressive web app** with a bottom navigation bar — see [Mobile & PWA](mobile.md).
 
 <div class="pf-cards" markdown>
 
@@ -40,6 +40,11 @@ Star, archive, hide, content-hash duplicates.
 </div>
 
 <div class="pf-card" markdown>
+### 📱 [Mobile & PWA](mobile.md)
+Install on iOS/Android/desktop, offline app shell, the phone-first layout.
+</div>
+
+<div class="pf-card" markdown>
 ### ⚙️ [Admin area](admin.md)
 Gear-icon modal: server info, health checks, backups, schedule, users.
 </div>
@@ -59,6 +64,8 @@ The header bar has:
 - **View tabs** — Photos · ★ Favorites · Archive · People · Places · Albums · Tags · Duplicates · Unassigned
 - **Search bar** — `<input id="q">` + **Search** button + **Search by example** button
 - **⚙ gear** (admin only) — opens the admin modal
+
+On phones (below 940px) the view tabs move to a **fixed bottom bar** and Duplicates/Unassigned are hidden — see [Mobile & PWA](mobile.md).
 
 The bottom status bar shows:
 
