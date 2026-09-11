@@ -765,9 +765,15 @@ main { padding: 18px 24px 64px; min-width: 0; }
 #detail.open { display: block; }
 #detailbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; max-width: 1180px; }
 #detailbar .name { font-family: var(--mono); font-size: 12px; color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#dpos { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
 #detailbody { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; max-width: 1180px; margin: 0 auto; }
 #detailimgwrap { position: relative; display: inline-block; max-width: 100%; border-radius: var(--radius); overflow: hidden; background: var(--bg2); box-shadow: var(--shadow-lg); }
 #detailimgwrap img { display: block; max-width: 100%; max-height: 72vh; }
+.dnav { position: absolute; top: 50%; transform: translateY(-50%); z-index: 3; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: rgba(8,9,11,.55); border: 1px solid rgba(255,255,255,.18); color: #fff; font-size: 20px; line-height: 1; cursor: pointer; padding: 0; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.dnav:hover { background: rgba(8,9,11,.8); filter: none; }
+.dnav.prev { left: 10px; }
+.dnav.next { right: 10px; }
+.dnav[hidden] { display: none; }
 #metapanel { flex: 0 0 320px; min-width: 260px; max-width: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; }
 #metapanel h3 { font-size: 15px; font-weight: 700; margin: 0 0 6px; letter-spacing: -.01em; }
 #metapanel .meta { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-bottom: 2px; word-break: break-word; }
@@ -955,6 +961,7 @@ main { padding: 18px 24px 64px; min-width: 0; }
   #detailimgwrap img { width: 100%; max-height: 52vh; object-fit: cover; }
   #metapanel { flex: 1 1 auto; min-width: 0; max-width: none; width: 100%; border: 0; border-top: 1px solid var(--border); border-radius: 0; box-shadow: none; }
   #lightbox { padding: 12px; }
+  .dnav { display: none; }
   .modalbox { max-height: 92vh; border-radius: 14px; }
   .toast { bottom: 84px; width: calc(100vw - 24px); max-width: none; justify-content: center; }
 }
@@ -1041,17 +1048,23 @@ main { padding: 18px 24px 64px; min-width: 0; }
   <div id="detailbar">
     <button id="dclose" class="secondary">Close</button>
     <span class="name" id="dname"></span>
+    <span id="dpos"></span>
     <button id="dfav" class="secondary" title="Toggle favorite">☆</button>
     <button id="darch" class="secondary" title="Toggle archive">▦</button>
     <button id="dfull" class="secondary">View full resolution</button>
   </div>
   <div id="detailbody">
-    <div id="detailimgwrap"><img id="dimg" alt=""><video id="dvideo" controls preload="metadata" playsinline style="display:none"></video></div>
+    <div id="detailimgwrap"><img id="dimg" alt=""><video id="dvideo" controls preload="metadata" playsinline style="display:none"></video>
+      <button class="dnav prev" id="dprev" title="Previous (←)">‹</button>
+      <button class="dnav next" id="dnext" title="Next (→)">›</button>
+    </div>
     <div id="metapanel"></div>
   </div>
 </div>
 <div id="lightbox">
   <button id="lbclose">&times;</button>
+  <button class="dnav prev" id="lbprev" title="Previous (←)">‹</button>
+  <button class="dnav next" id="lbnext" title="Next (→)">›</button>
   <img id="lbimg" alt="">
   <video id="lbvideo" controls preload="metadata" playsinline style="display:none"></video>
 </div>
@@ -1169,6 +1182,10 @@ let state = {
 };
 let popoverFace = null;
 let map = null, markerGroup = null;
+// Prev/next navigation context for the photo viewer. Anchored to the in-memory
+// photo list whenever a card is opened, so albums and every list view navigate.
+let _navUids = [];
+let _navIdx = -1;
 // infinite scroll for the Photos view
 let photoOffset = 0;
 let photoLoading = false;
@@ -1566,6 +1583,7 @@ async function _signPaths(paths) {
 }
 
 async function openLightbox(uid, kindHint) {
+  _updateNav();
   $("#lightbox").classList.add("open");
   const img = $("#lbimg");
   const vid = $("#lbvideo");
@@ -1612,7 +1630,42 @@ async function openLightbox(uid, kindHint) {
   }
 }
 
+function _setNavFromPhotos(uid) {
+  _navUids = (state.photos || []).map((p) => p.uid);
+  _navIdx = _navUids.indexOf(uid);
+}
+
+function _updateNav() {
+  const has = _navUids.length > 1 && _navIdx >= 0;
+  const prev = has && _navIdx > 0;
+  const next = has && _navIdx < _navUids.length - 1;
+  $("#dprev").hidden = !prev;
+  $("#dnext").hidden = !next;
+  $("#lbprev").hidden = !prev;
+  $("#lbnext").hidden = !next;
+  const pos = $("#dpos");
+  if (has) {
+    pos.textContent = `${_navIdx + 1} / ${_navUids.length}`;
+    pos.style.display = "";
+  } else {
+    pos.textContent = "";
+    pos.style.display = "none";
+  }
+}
+
+function _goNav(dir) {
+  if (_navUids.length < 2 || _navIdx < 0) return;
+  const next = _navIdx + dir;
+  if (next < 0 || next >= _navUids.length) return;
+  _navIdx = next;
+  const uid = _navUids[next];
+  if ($("#lightbox").classList.contains("open")) openLightbox(uid);
+  else openDetail(uid);
+}
+
 async function openDetail(uid) {
+  _setNavFromPhotos(uid);
+  _updateNav();
   $("#detail").classList.add("open");
   $("#dname").textContent = "Loading…";
   $("#dfull").onclick = () => openLightbox(uid, meta?.kind);
@@ -3859,6 +3912,13 @@ document.addEventListener("keydown", (e) => {
     if ($("#statusmodal").classList.contains("open")) closeStatusModal();
     else if ($("#adminmodal").classList.contains("open")) closeAdminModal();
     else if ($("#facemodal").classList.contains("open")) closeFaceModal();
+  } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    const detailOpen = $("#detail").classList.contains("open");
+    const lbOpen = $("#lightbox").classList.contains("open");
+    if (detailOpen || lbOpen) {
+      e.preventDefault();
+      _goNav(e.key === "ArrowLeft" ? -1 : 1);
+    }
   }
 });
 
@@ -3905,6 +3965,36 @@ async function refresh() {
 
 $("#dclose").addEventListener("click", () => $("#detail").classList.remove("open"));
 $("#lbclose").addEventListener("click", () => $("#lightbox").classList.remove("open"));
+$("#dprev").addEventListener("click", () => _goNav(-1));
+$("#dnext").addEventListener("click", () => _goNav(1));
+$("#lbprev").addEventListener("click", () => _goNav(-1));
+$("#lbnext").addEventListener("click", () => _goNav(1));
+
+// Horizontal swipe to move prev/next in the photo viewer (mobile).
+function _wireSwipe(el) {
+  let sx = 0, sy = 0, tracking = false;
+  el.addEventListener("touchstart", (e) => {
+    const t = e.changedTouches[0];
+    sx = t.clientX; sy = t.clientY; tracking = true;
+  }, { passive: true });
+  el.addEventListener("touchmove", (e) => {
+    if (!tracking) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - sx, dy = t.clientY - sy;
+    // Cancel once the gesture is clearly vertical (scroll/pinch); keep tracking horizontal swipes.
+    if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 12) tracking = false;
+  }, { passive: true });
+  el.addEventListener("touchend", (e) => {
+    if (!tracking) return;
+    tracking = false;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - sx, dy = t.clientY - sy;
+    if (Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy)) return;
+    _goNav(dx < 0 ? 1 : -1);
+  }, { passive: true });
+}
+_wireSwipe($("#detailimgwrap"));
+_wireSwipe($("#lightbox"));
 $("#lightbox").addEventListener("click", (e) => { if (e.target.id === "lightbox") $("#lightbox").classList.remove("open"); });
 $("#mpclose").addEventListener("click", closeMergePicker);
 $("#cpclose").addEventListener("click", closeCoverPicker);
