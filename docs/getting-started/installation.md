@@ -144,6 +144,28 @@ docker compose up -d
 
 The data volume is preserved across updates. The schema migrates automatically on `init_db()`.
 
+### Pinning images to a version or digest
+
+`compose.yml` references `ghcr.io/mmornati/proton-faces-*:latest` by default, so `docker compose pull` always fetches the newest published image. For a supply-chain-conscious deployment you can pin to an immutable reference instead:
+
+- **Versioned tag** — every `v*` git tag publishes `ghcr.io/mmornati/proton-faces-{bridge,app}:<tag>` (in addition to `:latest`). Pin a release:
+
+  ```yaml
+  image: ghcr.io/mmornati/proton-faces-app:v1.2.3
+  ```
+
+- **Digest pin** — the strongest guarantee: the image is identified by its content hash, so a compromised or broken publish can never be pulled silently. Resolve the digest of a known-good tag, then pin it:
+
+  ```bash
+  docker buildx imagetools inspect ghcr.io/mmornati/proton-faces-app:v1.2.3
+  ```
+
+  ```yaml
+  image: ghcr.io/mmornati/proton-faces-app@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+  ```
+
+  With a digest pin, `docker compose pull` only updates when the digest itself changes — bump it deliberately when you want to upgrade.
+
 ## Uninstalling
 
 ```bash
