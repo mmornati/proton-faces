@@ -7,14 +7,21 @@ hide:
 # Private, self-hosted face · object · location search for your Proton Photos
 
 <div class="pf-hero">
-  <h1>Search your photo library<br>like Google Photos — but private.</h1>
-  <p class="pf-tagline">Proton Faces indexes your end-to-end encrypted Proton Photos locally so you can search faces, places, and objects without ever uploading a single byte back.</p>
-  <div class="pf-cta">
-    <a class="pf-cta-primary" href="getting-started/quickstart/">Get started in 5 minutes →</a>
-    <a class="pf-cta-secondary" href="https://protonface.mornati.ovh">Try the live demo →</a>
-    <a class="pf-cta-secondary" href="https://github.com/mmornati/proton-faces">View on GitHub</a>
+  <div class="pf-hero-grid">
+    <div class="pf-hero-copy">
+      <h1>Search your photo library<br>like Google Photos — but private.</h1>
+      <p class="pf-tagline">Proton Faces indexes your end-to-end encrypted Proton Photos locally so you can search faces, places, and objects without ever uploading a single byte back.</p>
+      <div class="pf-cta">
+        <a class="pf-cta-primary" href="getting-started/quickstart/">Get started in 5 minutes →</a>
+        <a class="pf-cta-secondary" href="https://protonface.mornati.ovh">Try the live demo →</a>
+        <a class="pf-cta-secondary" href="https://github.com/mmornati/proton-faces">View on GitHub</a>
+      </div>
+      <p class="pf-demo-credentials"><strong>Live demo login</strong> — username <code>demo</code> · password <code>protonface-demo-2026-Q9vK3m</code></p>
+    </div>
+    <div class="pf-hero-phone">
+      <img src="assets/screencasts/mobile-browse.gif" alt="Browsing the Proton Faces mobile app inside an iPhone frame" loading="eager">
+    </div>
   </div>
-  <p class="pf-demo-credentials"><strong>Live demo login</strong> — username <code>demo</code> · password <code>protonface-demo-2026-Q9vK3m</code></p>
 </div>
 
 <div class="pf-gallery" markdown>
@@ -117,6 +124,7 @@ Or run the same demo locally: proton-faces ships with a built-in **demo mode** t
 | [Quickstart](getting-started/quickstart.md) | 5-minute tour: log in, search "dog", open People, name a face |
 | [Demo mode](getting-started/demo-mode.md) | Run the full app without a Proton account |
 | [User guide](user-guide/index.md) | Walk through every view, feature, and shortcut |
+| [Mobile & PWA](user-guide/mobile.md) | Install the app on your phone, offline shell, mobile layout |
 | [Architecture](reference/architecture.md) | Three containers, two SQLite writers, zero telemetry |
 | [API reference](reference/api.md) | Every REST endpoint |
 | [Configuration](reference/configuration.md) | Every environment variable |

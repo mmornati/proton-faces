@@ -1,31 +1,40 @@
-/* Proton Faces docs — Immich-inspired dark slate + amber */
+/* Proton Faces docs — "Nocturne" theme.
+ * Mirrors the app's design tokens (app/src/static/index.html):
+ * graphite neutrals, green accent #5AC272, dark-first with a light variant.
+ */
 
 :root {
-  --pf-amber: #f59e0b;
-  --pf-amber-light: #fbbf24;
-  --pf-amber-dim: #b45309;
-  --pf-slate-950: #0a0e13;
-  --pf-slate-900: #0f1419;
-  --pf-slate-800: #151a21;
-  --pf-slate-700: #1a1f26;
-  --pf-slate-600: #20262e;
-  --pf-slate-500: #2a323c;
-  --pf-slate-400: #3b4452;
-  --pf-slate-300: #5a6573;
-  --pf-slate-200: #8a96a8;
-  --pf-slate-100: #c3cbd6;
-  --pf-text: #e6e6e6;
-  --pf-text-muted: #a0a8b4;
-  --pf-hero-text: #dbe3ec;
+  --pf-bg: #101114;
+  --pf-bg2: #15161a;
+  --pf-panel: #17181d;
+  --pf-panel2: #1e2026;
+  --pf-border: #26282f;
+  --pf-border2: #32353e;
+  --pf-text: #f2f3f5;
+  --pf-muted: #9aa0ab;
+  --pf-faint: #5c616d;
+  --pf-accent: #5ac272;
+  --pf-accent-strong: #7edb93;
+  --pf-accent-soft: rgba(90, 194, 114, 0.14);
+  --pf-on-accent: #04140a;
+  --pf-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
 }
 
-/* Light-mode overrides */
+/* Light-mode overrides — same hue family, app's light tokens. */
 [data-md-color-scheme="default"] {
-  --pf-text: #1a1f26;
-  --pf-text-muted: #4a5260;
-  --pf-slate-700: #f4f5f7;
-  --pf-slate-600: #ebecf0;
-  --pf-slate-500: #dde0e6;
+  --pf-bg: #f4f5f7;
+  --pf-bg2: #eef0f3;
+  --pf-panel: #ffffff;
+  --pf-panel2: #f0f2f5;
+  --pf-border: #e3e5ea;
+  --pf-border2: #d5d8df;
+  --pf-text: #17191d;
+  --pf-muted: #6b7078;
+  --pf-faint: #9aa0ab;
+  --pf-accent: #1f9d4d;
+  --pf-accent-strong: #17803e;
+  --pf-accent-soft: rgba(31, 157, 77, 0.12);
+  --pf-on-accent: #ffffff;
 }
 
 /* Force a denser, more app-like UI */
@@ -61,41 +70,24 @@
   margin: -1.5rem -1.5rem 2rem;
   padding: 4rem 1.5rem 3rem;
   background:
-    radial-gradient(ellipse at top right, rgba(245, 158, 11, 0.18), transparent 60%),
-    radial-gradient(ellipse at bottom left, rgba(245, 158, 11, 0.08), transparent 50%),
-    linear-gradient(135deg, var(--pf-slate-900) 0%, var(--pf-slate-800) 50%, var(--pf-slate-700) 100%);
+    radial-gradient(ellipse at top right, var(--pf-accent-soft), transparent 60%),
+    radial-gradient(ellipse at bottom left, rgba(90, 194, 114, 0.06), transparent 50%),
+    linear-gradient(135deg, var(--pf-bg2) 0%, var(--pf-panel) 50%, var(--pf-panel2) 100%);
   border-radius: 16px;
   overflow: hidden;
-  border: 1px solid rgba(245, 158, 11, 0.18);
-}
-
-.pf-hero::after {
-  content: "";
-  position: absolute;
-  top: -50%;
-  right: -10%;
-  width: 60%;
-  height: 200%;
-  background: radial-gradient(ellipse at center, rgba(251, 191, 36, 0.18), transparent 60%);
-  filter: blur(40px);
-  pointer-events: none;
+  border: 1px solid var(--pf-border2);
 }
 
 .pf-hero h1 {
   font-size: 3rem;
   line-height: 1.05;
   margin: 0 0 0.5rem;
-  background: linear-gradient(135deg, #ffffff 0%, #fbbf24 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+  color: var(--pf-text);
 }
 
 .pf-hero .pf-tagline {
   font-size: 1.25rem;
-  color: var(--pf-hero-text);
-  opacity: 0.95;
+  color: var(--pf-muted);
   margin: 0 0 1.5rem;
   max-width: 720px;
 }
@@ -132,40 +124,76 @@
 }
 
 .pf-hero .pf-cta-primary {
-  background: var(--pf-amber);
-  color: var(--pf-slate-950);
-  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.35);
+  background: var(--pf-accent);
+  color: var(--pf-on-accent);
+  box-shadow: 0 4px 14px rgba(90, 194, 114, 0.3);
 }
 
 .pf-hero .pf-cta-primary:hover {
-  box-shadow: 0 6px 20px rgba(245, 158, 11, 0.5);
-  color: var(--pf-slate-950);
+  box-shadow: 0 6px 20px rgba(90, 194, 114, 0.45);
+  color: var(--pf-on-accent);
 }
 
 .pf-hero .pf-cta-secondary {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--pf-hero-text);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--pf-panel2);
+  color: var(--pf-text);
+  border: 1px solid var(--pf-border2);
 }
 
 .pf-hero .pf-cta-secondary:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
+  background: var(--pf-panel);
+  color: var(--pf-accent-strong);
 }
 
 /* Login hint shown under the hero call-to-action buttons */
 .pf-hero .pf-demo-credentials {
   margin-top: 0.9rem;
   font-size: 0.85rem;
-  color: var(--pf-hero-text);
-  opacity: 0.9;
+  color: var(--pf-muted);
 }
 .pf-hero .pf-demo-credentials code {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--pf-amber);
+  background: var(--pf-accent-soft);
+  color: var(--pf-accent-strong);
   padding: 0.05rem 0.35rem;
   border-radius: 4px;
   font-weight: 600;
+}
+
+/* Hero split: copy on the left, phone GIF on the right */
+.pf-hero-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 2.5rem;
+  align-items: center;
+}
+
+.pf-hero-copy {
+  min-width: 0;
+}
+
+.pf-hero-phone {
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+}
+
+.pf-hero-phone img {
+  width: 100%;
+  max-width: 300px;
+  height: auto;
+  border-radius: 24px;
+  border: 1px solid var(--pf-border2);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+
+@media (max-width: 900px) {
+  .pf-hero-grid {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+  .pf-hero-phone img {
+    max-width: 240px;
+  }
 }
 
 /* Card grids */
@@ -177,8 +205,8 @@
 }
 
 .pf-card {
-  background: var(--pf-slate-700);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--pf-panel);
+  border: 1px solid var(--pf-border);
   border-radius: 12px;
   padding: 1.1rem 1.2rem;
   transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
@@ -186,7 +214,7 @@
 
 .pf-card:hover {
   transform: translateY(-2px);
-  border-color: rgba(245, 158, 11, 0.4);
+  border-color: var(--pf-accent);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
 }
 
@@ -206,7 +234,7 @@
 
 .pf-card p {
   margin: 0;
-  color: var(--pf-text-muted);
+  color: var(--pf-muted);
   font-size: 0.88rem;
   line-height: 1.5;
 }
@@ -217,7 +245,7 @@
   height: 1.6rem;
   line-height: 1.6rem;
   text-align: center;
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.05));
+  background: var(--pf-accent-soft);
   border-radius: 8px;
   margin-bottom: 0.5rem;
   font-size: 1rem;
@@ -228,9 +256,9 @@
   margin: 1.5rem 0;
   border-radius: 12px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--pf-border2);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
-  background: var(--pf-slate-800);
+  background: var(--pf-panel);
 }
 
 .pf-shot img,
@@ -243,9 +271,9 @@
 .pf-shot-caption {
   padding: 0.6rem 1rem;
   font-size: 0.85rem;
-  color: var(--pf-text-muted);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(0, 0, 0, 0.15);
+  color: var(--pf-muted);
+  border-top: 1px solid var(--pf-border);
+  background: var(--pf-bg2);
 }
 
 /* Screenshot gallery (auto-fit 2-up) */
@@ -265,7 +293,7 @@
   margin: 1.5rem 0;
   border-radius: 12px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--pf-border2);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
 }
 
@@ -275,13 +303,30 @@
   height: auto;
 }
 
-/* Inline amber pills */
+/* Mobile GIF — centered, capped width, on a subtle panel */
+.pf-mobile-gif {
+  margin: 1.5rem auto;
+  max-width: 420px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--pf-border2);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  background: var(--pf-panel);
+}
+
+.pf-mobile-gif img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Inline accent pills */
 .pf-pill {
   display: inline-block;
   padding: 0.15rem 0.55rem;
-  background: rgba(245, 158, 11, 0.15);
-  color: var(--pf-amber-light);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: var(--pf-accent-soft);
+  color: var(--pf-accent-strong);
+  border: 1px solid var(--pf-accent);
   border-radius: 999px;
   font-size: 0.78rem;
   font-weight: 600;
@@ -292,9 +337,9 @@
 .pf-banner {
   margin: 1.5rem 0;
   padding: 1rem 1.2rem;
-  background: linear-gradient(90deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.04));
-  border-left: 4px solid var(--pf-amber);
-  border-radius: 0 8px 8px 0;
+  background: var(--pf-accent-soft);
+  border: 1px solid var(--pf-accent);
+  border-radius: 8px;
   font-size: 0.92rem;
 }
 
@@ -303,17 +348,17 @@
   font-size: 0.88rem;
   border-radius: 8px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--pf-border);
 }
 
 .md-typeset table:not([class]) th {
-  background: var(--pf-slate-700);
+  background: var(--pf-panel2);
   font-weight: 600;
-  color: var(--pf-amber-light);
+  color: var(--pf-accent-strong);
 }
 
 .md-typeset table:not([class]) tr:nth-child(2n) {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--pf-bg2);
 }
 
 /* Admonition tweaks */
@@ -322,17 +367,17 @@
   border-width: 1px;
 }
 
-/* Navigation: amber accent */
+/* Navigation: green accent */
 .md-tabs__link--active {
-  color: var(--pf-amber-light) !important;
+  color: var(--pf-accent-strong) !important;
 }
 
 .md-nav__link--active {
-  color: var(--pf-amber-light) !important;
+  color: var(--pf-accent-strong) !important;
 }
 
 .md-nav__link:hover {
-  color: var(--pf-amber-light);
+  color: var(--pf-accent-strong);
 }
 
 /* Code blocks */
@@ -348,11 +393,11 @@
 
 /* Footer */
 .md-footer {
-  background: var(--pf-slate-950);
+  background: var(--pf-bg);
 }
 
 .md-footer-meta {
-  background: var(--pf-slate-950);
+  background: var(--pf-bg);
 }
 
 /* Hide repo-edit on certain pages */
