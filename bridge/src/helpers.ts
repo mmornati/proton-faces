@@ -88,6 +88,19 @@ export function sweepStaleWorkFiles(
 export const MAX_UID_BATCH = 5000;
 
 /**
+ * Parse a JSON request body, returning `null` when the body is not valid JSON
+ * so callers can answer 400 instead of letting the parse error bubble up as a
+ * 500. A `null`/empty body also yields `null` (callers already tolerate that).
+ */
+export async function parseJsonBody(request: Request): Promise<unknown | null> {
+    try {
+        return await request.json();
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Validate a Proton photo uid before it is used to build filesystem paths,
  * temp filenames, or response headers. Uids are opaque base64url-ish
  * identifiers; anything else (path separators, `..`, whitespace, control
