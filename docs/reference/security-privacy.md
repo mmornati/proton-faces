@@ -122,6 +122,7 @@ If you run a reverse proxy in front, its own security headers (see
 | Someone accesses `localhost:8080` while you're away | Bearer tokens are required for every API endpoint — including the binary media endpoints (`/thumb`, `/full`, `/cover`, `/crop`), which additionally accept short-lived signed URLs from `/api/sign`. These are world-readable only when you explicitly set `DEMO_ALLOW_PUBLIC_THUMBS=1`. The `?` overlay shows who's signed in. Sign out from another device via the admin **Users** tab. |
 | Bug in the bridge | The bridge is read-only by construction; even a bug can't write back to Proton. Pin the SDK tag in your fork if you're paranoid. |
 | Malicious auth-session.json | Only the bridge reads it. It authenticates to Proton and streams the encrypted timeline — it can't be used to delete or upload. Revoke the session on Proton's website to invalidate. |
+| Compromised or broken image publish | `compose.yml` defaults to `:latest`, which is mutable. Pin images to a versioned tag or a content digest (`image@sha256:...`) for an immutable deploy — see [Pinning images to a version or digest](../getting-started/installation.md#pinning-images-to-a-version-or-digest). |
 
 ## What we don't do
 
