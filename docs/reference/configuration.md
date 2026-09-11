@@ -100,6 +100,11 @@ The `proton-bridge` container reads these (set in `compose.yml`):
 | `PROTON_BRIDGE_RATE_LIMIT` | `0` (image default; `3` in `compose.yml`) | Sustained outbound requests/second at the *operation* layer: one token per bridge operation start (timeline sync, node listing, album sync, thumbnail batch, full-res download). Honors `Retry-After` on 429 responses. |
 | `PROTON_BRIDGE_RATE_BURST` | `Math.max(1, ceil(rate × 2))` | Burst allowance for the operation-layer bucket (`2` in `compose.yml`). |
 | `PROTON_BRIDGE_RATE_LIMIT_HTTP` | derived: `RATE_LIMIT × 10` | Requests/second at the SDK's HTTP transport — the patched `HTTPClient` acquires a token before **every** upstream HTTPS call (paginated listings, block downloads, thumbnail requests), not just operation starts (issue #44). Unset/empty derives as `PROTON_BRIDGE_RATE_LIMIT × 10` (default compose: 3 ops/s → 30 HTTP req/s); explicit `0` disables this layer. Also honors `Retry-After` on 429/503. |
+| `PROTON_BRIDGE_FULL_RES_TIMEOUT_MS` | `300000` | Full-res download queue-slot clamp and the `/full` MIME-lookup deadline (issue #55). The client can further clamp via the `X-Timeout-Ms` header. |
+| `PROTON_BRIDGE_TIMELINE_TIMEOUT_MS` | `1800000` | Deadline for a full `/timeline` sync (pagination + node-key decrypt) (issue #55). |
+| `PROTON_BRIDGE_NODES_TIMEOUT_MS` | `300000` | Deadline for the `/nodes` metadata lookup (issue #55). |
+| `PROTON_BRIDGE_ALBUMS_TIMEOUT_MS` | `300000` | Deadline for the `/albums` listing (issue #55). |
+| `PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS` | `300000` | Deadline for a `/thumbnails` batch download (issue #55). |
 
 ## Local dev (single-process)
 
