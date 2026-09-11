@@ -90,6 +90,7 @@ from store import (
     get_user_by_username,
     is_favorite,
     list_users,
+    live_person_ids,
     map_markers,
     memories_for_today,
     merge_people_bulk,
@@ -1684,6 +1685,11 @@ def api_face_suggest(face_id: int, limit: int = 5):
     sims = M @ fe
     order = np.argsort(-sims)
     top_n = max(1, min(limit, 50))
+    # Drop people deleted by a merge from the cached matrix (sidecar rewrite
+    # lags on the indexer's debounced schedule) so ghosts never surface as
+    # `person <id>` suggestions.
+    live = set(live_person_ids([int(pids[i]) for i in order[:top_n]]))
+    order = order[[int(pids[i]) in live for i in order[:top_n]]]
     # Batch fetch ONLY the top-N people by PK (plus face/photo counts). Never
     # the 37 s all-people aggregation: typeahead and grid already warm this via
     # `_people_cache`, but a cold cache must not stall the popover.
@@ -1878,10 +1884,19 @@ def api_people_similar(person_id: int, threshold: float = 0.40, limit: int = 50,
     fe = M[tgt[0]]
     sims = M @ fe
     hits = np.flatnonzero((sims >= threshold) & (pids != person_id))
-    total = int(hits.size)
+    if hits.size == 0:
+        return {"similar": [], "total": 0}
+    order = hits[np.argsort(-sims[hits])]
+    # The cached matrix can reference people deleted by a merge (the sidecar
+    # rewrite lags on the indexer's debounced schedule). Filter to live rows
+    # so ghosts never render as `person <id> · 0 photos` and `total` reflects
+    # only people that still exist.
+    live = set(live_person_ids([int(pids[i]) for i in order]))
+    order = order[[int(pids[i]) in live for i in order]]
+    total = int(order.size)
     if total == 0:
         return {"similar": [], "total": 0}
-    order = hits[np.argsort(-sims[hits])][offset : offset + limit]
+    order = order[offset : offset + limit]
     top_pids = [int(pids[i]) for i in order]
     top_sims = [float(sims[i]) for i in order]
     by_id = {r["id"]: r for r in people_by_ids(top_pids)}
@@ -1972,6 +1987,12 @@ def api_people_merge_all_similar(target_id: int, body: dict,
     sims = M @ fe
     hits = np.flatnonzero((sims >= threshold) & (pids != target_id))
     order = hits[np.argsort(-sims[hits])]
+    # Filter to live people rows: the cached matrix can reference people
+    # already deleted by a previous merge (sidecar rewrite lags on the
+    # indexer's debounced schedule). Re-merging a deleted id is a DB no-op
+    # that would report `merged_count: 0` and leave the ghost in the list.
+    live = set(live_person_ids([int(pids[i]) for i in order]))
+    order = order[[int(pids[i]) in live for i in order]]
     source_ids = [int(pids[i]) for i in order[:max_sources]]
     if not source_ids:
         return {"ok": True, "target_id": target_id, "merged_count": 0, "assigned_similar": 0,

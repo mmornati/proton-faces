@@ -2592,6 +2592,14 @@ async function mergeSelectedSimilar() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source_ids: sourceIds }),
     });
+    if (r.merged_count === 0) {
+      // Nothing was actually merged (e.g. the sources were already merged
+      // away and only lingered in a stale cache). Tell the user and refresh
+      // the candidate list so the ghosts disappear instead of re-rendering.
+      toast("Nothing to merge — those people were already merged.");
+      await loadSimilarPeople();
+      return;
+    }
     closeSimilarPeople();
     toast(`Merged ${r.merged_count} people into "${$("#sptargetname").textContent}". Auto-tagged ${r.assigned_similar || 0} faces.`);
     refreshAfterBatchMerge(spTargetId, sourceIds, r);
