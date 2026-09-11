@@ -1380,6 +1380,16 @@ class TestUsersAndTokens:
         assert store.lookup_token(t1) is None
         assert store.lookup_token(t2) is None
 
+    def test_revoke_all_tokens_except(self, tmp_db):
+        uid = store.create_user("grace", "hash")
+        keep = store.issue_token(uid, "access", 3600)
+        t2 = store.issue_token(uid, "access", 3600)
+        t3 = store.issue_token(uid, "refresh", 86400)
+        assert store.revoke_all_tokens_except(uid, keep) == 2
+        assert store.lookup_token(keep) is not None
+        assert store.lookup_token(t2) is None
+        assert store.lookup_token(t3) is None
+
     def test_purge_expired_tokens(self, tmp_db):
         uid = store.create_user("henry", "hash")
         store.issue_token(uid, "access", -1)  # already expired

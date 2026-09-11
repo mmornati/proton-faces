@@ -542,6 +542,7 @@ body { padding-bottom: 34px; }
 #adminmodalbody h4 { margin: 12px 0 6px; font-size: 13px; font-weight: 600; color: var(--text); }
 #adminmodalbody h4:first-child { margin-top: 0; }
 #adminmodalbody table { width: 100%; border-collapse: collapse; }
+#adminmodalbody th { text-align: left; font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 #adminmodalbody td { padding: 4px 6px; vertical-align: top; }
 #adminmodalbody td.k { color: var(--muted); white-space: nowrap; }
 #adminmodalbody td.v { color: var(--text); word-break: break-all; font-variant-numeric: tabular-nums; }
@@ -629,7 +630,33 @@ body {
 #rail nav a:hover { color: var(--text); }
 #rail nav a.active { background: var(--accent-soft); color: var(--accent-strong); font-weight: 640; }
 .rail-spacer { flex: 1; min-height: 12px; }
-.userchip { display: flex; align-items: center; gap: 9px; padding: 8px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel); min-width: 0; }
+.userchip { display: flex; align-items: center; gap: 9px; padding: 8px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel); min-width: 0; cursor: pointer; }
+.userchip:hover { border-color: var(--border2); }
+.userchip .chev { margin-left: auto; color: var(--muted); font-size: 10px; flex: none; }
+#usermenu {
+  position: fixed; z-index: 200; display: none; min-width: 240px; max-width: 92vw;
+  max-height: calc(100vh - 16px); overflow-y: auto; overscroll-behavior: contain;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow); padding: 6px; font-size: 13px;
+}
+#usermenu.open { display: block; }
+#usermenu .um-head { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); padding: 6px 9px 4px; }
+#usermenu .um-item { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; padding: 8px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: 13px; cursor: pointer; }
+#usermenu .um-item:hover { background: var(--accent-soft); color: var(--accent-strong); }
+#usermenu .um-item.danger { color: var(--bad); }
+#usermenu .um-item.danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+#usermenu .um-sep { border-top: 1px solid var(--border); margin: 4px 0; }
+#usermenu .um-form { display: flex; flex-direction: column; gap: 8px; padding: 6px 9px; }
+#usermenu .um-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+#usermenu .um-form input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 8px; border-radius: 6px; font-size: 13px; }
+#usermenu .um-actions { display: flex; gap: 8px; }
+#usermenu .um-actions button { flex: 1; }
+#usermenu .sec2fa { padding: 6px 9px; }
+#usermenu .sec2fa .qr { width: 160px; height: 160px; }
+#usermenu .sec2fa .secret { font-family: var(--mono); font-size: 11.5px; word-break: break-all; user-select: all; }
+#usermenu .sec2fa .hint { color: var(--muted); font-size: 12px; }
+#usermenu .sec2fa label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+#usermenu .sec2fa input[type="text"] { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 8px; border-radius: 6px; font-size: 13px; font-family: var(--mono); letter-spacing: .2em; }
 .avatar { width: 26px; height: 26px; border-radius: 50%; flex: none; display: grid; place-items: center; color: #04140a; font-size: 11px; font-weight: 700; background: linear-gradient(135deg, var(--accent-strong), var(--accent)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.16); }
 .who { font-size: 12.5px; font-weight: 640; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .role { font-family: var(--mono); font-size: 10px; color: var(--muted); text-transform: capitalize; }
@@ -1001,14 +1028,16 @@ main { padding: 18px 24px 64px; min-width: 0; }
     <a href="#" data-view="unassigned" data-label="Unassigned"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5s1 2 3.5 2 3.5-2 3.5-2"/><circle cx="9" cy="9.5" r=".9" fill="currentColor" stroke="none"/><circle cx="15" cy="9.5" r=".9" fill="currentColor" stroke="none"/></svg><span>Unassigned</span></a>
   </nav>
   <div class="rail-spacer"></div>
-  <div class="userchip">
+  <div class="userchip" id="userchip" role="button" tabindex="0" aria-haspopup="menu" aria-expanded="false" title="Account">
     <div class="avatar" id="rail-avatar" aria-hidden="true">?</div>
     <div>
       <div class="who" id="rail-who">…</div>
       <div class="role" id="rail-role">…</div>
     </div>
+    <span class="chev" aria-hidden="true">▾</span>
   </div>
 </aside>
+<div id="usermenu" role="menu" aria-label="Account menu"></div>
 <div id="maincol">
 <header id="topbar">
   <h2 id="viewtitle">Photos</h2>
@@ -3357,6 +3386,7 @@ let adminSchedule = { enabled: false, hour: 3, minute: 0, keep: 7 };
 let adminSync = { config: {} };
 let adminUsers = [];
 let adminBusy = false;
+let adminEditId = null;
 
 function openAdminModal() {
   $("#adminmodal").classList.add("open");
@@ -3535,6 +3565,7 @@ function renderAdminUsersSection() {
     const tfa = u.totp_enabled
       ? `<span class="pill ok">on</span> <button class="small admin-2fa-disable-user" data-id="${u.id}" data-name="${esc(u.username)}">Disable</button>`
       : `<span class="pill">off</span>`;
+    const editing = adminEditId === u.id;
     rows += `<tr>
       <td class="v">${esc(u.username)}</td>
       <td class="v">${esc(u.display_name || "")}</td>
@@ -3542,18 +3573,36 @@ function renderAdminUsersSection() {
       <td class="v">${tfa}</td>
       <td class="v">${esc(fmtRelative(Date.now() / 1000 - u.created_at))}</td>
       <td class="v">
-        <button class="small admin-edit-user" data-id="${u.id}">Edit</button>
+        <button class="small admin-edit-user" data-id="${u.id}">${editing ? "Cancel" : "Edit"}</button>
         <button class="small admin-logout-user" data-id="${u.id}">Revoke</button>
         <button class="small secondary admin-del-user" data-id="${u.id}">Delete</button>
       </td>
     </tr>`;
+    if (editing) {
+      rows += `<tr class="admin-edit-row" data-id="${u.id}">
+        <td colspan="6">
+          <div class="userform">
+            <span class="hint">Editing <b>${esc(u.username)}</b></span>
+            <input type="text" id="admin-edit-display" placeholder="display name" value="${esc(u.display_name || "")}">
+            <input type="password" id="admin-edit-password" placeholder="new password (blank = keep)" autocomplete="new-password">
+            <select id="admin-edit-role">
+              <option value="read" ${u.role === "read" ? "selected" : ""}>read</option>
+              <option value="write" ${u.role === "write" ? "selected" : ""}>write</option>
+              <option value="admin" ${u.role === "admin" ? "selected" : ""}>admin</option>
+            </select>
+            <button class="small" id="admin-save-user">Save</button>
+            <button class="small secondary" id="admin-cancel-edit">Cancel</button>
+          </div>
+        </td>
+      </tr>`;
+    }
   }
   return `
     <h4>Users</h4>
     <div class="userform">
       <input type="text" id="admin-new-username" placeholder="username">
       <input type="text" id="admin-new-display" placeholder="display name (optional)">
-      <input type="password" id="admin-new-password" placeholder="password">
+      <input type="password" id="admin-new-password" placeholder="password" autocomplete="new-password">
       <select id="admin-new-role">
         <option value="read">read</option>
         <option value="write" selected>write</option>
@@ -3561,19 +3610,19 @@ function renderAdminUsersSection() {
       </select>
       <button class="small" id="admin-create-user" ${usersDisabled ? "disabled title='User management disabled in demo mode'" : ""}>Create</button>
     </div>
-    <table>${usersDisabled ? `<tr><td colspan="6" class="empty">User management disabled in demo mode.</td></tr>` : (rows || `<tr><td colspan="6" class="empty">No users.</td></tr>`)}</table>
-    <div id="admin-edit-row" style="display:none" class="userform">
-      <span class="hint">Editing user <span id="admin-edit-id"></span></span>
-      <input type="text" id="admin-edit-display" placeholder="display name">
-      <input type="password" id="admin-edit-password" placeholder="new password (blank = keep)">
-      <select id="admin-edit-role">
-        <option value="read">read</option>
-        <option value="write">write</option>
-        <option value="admin">admin</option>
-      </select>
-      <button class="small" id="admin-save-user">Save</button>
-      <button class="small secondary" id="admin-cancel-edit">Cancel</button>
-    </div>`;
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Display name</th>
+          <th>Role</th>
+          <th>2FA</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>${usersDisabled ? `<tr><td colspan="6" class="empty">User management disabled in demo mode.</td></tr>` : (rows || `<tr><td colspan="6" class="empty">No users.</td></tr>`)}</tbody>
+    </table>`;
 }
 
 function wireAdminHandlers() {
@@ -3744,22 +3793,26 @@ function wireAdminHandlers() {
   });
 
   document.querySelectorAll(".admin-edit-user").forEach((b) =>
-    b.addEventListener("click", () => {
-      const u = adminUsers.find((x) => x.id === parseInt(b.dataset.id, 10));
-      if (!u) return;
-      $("#admin-edit-id").textContent = u.username;
-      $("#admin-edit-display").value = u.display_name || "";
-      $("#admin-edit-password").value = "";
-      $("#admin-edit-role").value = u.role;
-      $("#admin-edit-row").style.display = "";
+    b.addEventListener("click", async () => {
+      const id = parseInt(b.dataset.id, 10);
+      adminEditId = adminEditId === id ? null : id;
+      await renderAdminModal();
+      if (adminEditId !== null) {
+        const row = document.querySelector(`.admin-edit-row[data-id="${id}"]`);
+        if (row) row.scrollIntoView({ block: "nearest" });
+      }
     })
   );
 
-  $("#admin-cancel-edit").addEventListener("click", () => { $("#admin-edit-row").style.display = "none"; });
+  const cancelEditBtn = $("#admin-cancel-edit");
+  if (cancelEditBtn) cancelEditBtn.addEventListener("click", () => {
+    adminEditId = null;
+    renderAdminModal();
+  });
 
-  $("#admin-save-user").addEventListener("click", async () => {
-    const username = $("#admin-edit-id").textContent;
-    const u = adminUsers.find((x) => x.username === username);
+  const saveUserBtn = $("#admin-save-user");
+  if (saveUserBtn) saveUserBtn.addEventListener("click", async () => {
+    const u = adminUsers.find((x) => x.id === adminEditId);
     if (!u) { toast("No user selected"); return; }
     const obj = {
       display_name: $("#admin-edit-display").value.trim(),
@@ -3769,9 +3822,9 @@ function wireAdminHandlers() {
     if (pw) obj.password = pw;
     try {
       await api(`/api/admin/users/${u.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(obj) });
-      toast(`User ${username} updated`);
+      toast(`User ${u.username} updated`);
+      adminEditId = null;
       adminUsers = await api("/api/admin/users");
-      $("#admin-edit-row").style.display = "none";
       renderAdminModal();
     } catch (e) { toast("Update failed: " + (e.message || e)); }
   });
@@ -3817,6 +3870,244 @@ function wireAdminHandlers() {
     })
   );
 }
+
+// --- User menu (bottom-left account chip) ----------------------------------
+
+let _umView = "menu";        // "menu" | "password" | "2fa"
+let _um2faSetup = null;      // { secret, otpauth_uri } while enrolling
+let _um2faDisableOpen = false;
+
+function positionUserMenu() {
+  const chip = $("#userchip");
+  const menu = $("#usermenu");
+  const r = chip.getBoundingClientRect();
+  menu.style.visibility = "hidden";
+  menu.classList.add("open");
+  const mh = menu.offsetHeight;
+  const mw = menu.offsetWidth;
+  // Vertical: open downward when there is room, otherwise upward; always keep it on screen.
+  let top;
+  const spaceBelow = window.innerHeight - r.bottom;
+  if (spaceBelow < mh + 8 && r.top > mh + 8) top = r.top - mh - 6;
+  else top = Math.max(8, Math.min(r.bottom + 6, window.innerHeight - mh - 8));
+  // Horizontal: keep it inside the window, anchored to the chip edge.
+  let left = Math.max(8, r.left);
+  if (left + mw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - mw - 8);
+  menu.style.top = top + "px";
+  menu.style.left = left + "px";
+  menu.style.visibility = "";
+}
+function openUserMenu() {
+  _umView = "menu";
+  _um2faSetup = null;
+  _um2faDisableOpen = false;
+  renderUserMenu();
+  positionUserMenu();
+  $("#userchip").setAttribute("aria-expanded", "true");
+}
+function closeUserMenu() {
+  const menu = $("#usermenu");
+  if (menu) menu.classList.remove("open");
+  const chip = $("#userchip");
+  if (chip) chip.setAttribute("aria-expanded", "false");
+}
+function toggleUserMenu() {
+  if ($("#usermenu").classList.contains("open")) closeUserMenu();
+  else openUserMenu();
+}
+
+function renderUserMenu() {
+  const menu = $("#usermenu");
+  const enabled = !!(_me && _me.totp_enabled);
+  let body;
+  if (_umView === "password") {
+    body = `
+      <div class="um-head">Change password</div>
+      <div class="um-form">
+        <label><span>Current password</span>
+          <input type="password" id="um-pw-current" autocomplete="current-password">
+        </label>
+        <label><span>New password</span>
+          <input type="password" id="um-pw-new" autocomplete="new-password" minlength="8">
+        </label>
+        <div class="um-actions">
+          <button class="small" id="um-pw-save">Save</button>
+          <button class="small secondary" id="um-back">Back</button>
+        </div>
+      </div>`;
+  } else if (_umView === "2fa") {
+    if (_um2faSetup) {
+      const qr = qrcode(0, "M");
+      qr.addData(_um2faSetup.otpauth_uri);
+      qr.make();
+      body = `
+        <div class="um-head">Enable 2FA</div>
+        <div class="sec2fa">
+          <div class="hint">Scan this QR with your authenticator app.</div>
+          <div class="adminactions"><div class="qr">${qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true })}</div></div>
+          <div class="hint">Or enter this secret manually:</div>
+          <div class="secret">${esc(_um2faSetup.secret)}</div>
+          <label><span>Confirm with a 6-digit code</span>
+            <input type="text" id="um-2fa-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456">
+          </label>
+          <div class="um-actions">
+            <button class="small" id="um-2fa-confirm">Activate 2FA</button>
+            <button class="small secondary" id="um-back">Cancel</button>
+          </div>
+        </div>`;
+    } else if (enabled) {
+      body = `
+        <div class="um-head">Two-factor authentication</div>
+        <div class="sec2fa">
+          <div class="hint">2FA is <b>on</b> for your account. A 6-digit code is required at every login.</div>
+          ${_um2faDisableOpen
+            ? `<label><span>Confirm with a 6-digit code</span>
+                <input type="text" id="um-2fa-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456">
+              </label>
+              <div class="um-actions">
+                <button class="small" id="um-2fa-disable-confirm">Disable 2FA</button>
+                <button class="small secondary" id="um-2fa-disable-cancel">Cancel</button>
+              </div>`
+            : `<div class="um-actions">
+                <button class="small secondary" id="um-2fa-disable-start">Disable 2FA</button>
+                <button class="small secondary" id="um-back">Back</button>
+              </div>`}
+        </div>`;
+    } else {
+      body = `
+        <div class="um-head">Two-factor authentication</div>
+        <div class="sec2fa">
+          <div class="hint">2FA is <b>off</b>. Enable it to require a 6-digit code from an authenticator app at every login.</div>
+          <div class="um-actions">
+            <button class="small" id="um-2fa-enable">Enable 2FA</button>
+            <button class="small secondary" id="um-back">Back</button>
+          </div>
+        </div>`;
+    }
+  } else {
+    body = `
+      <div class="um-head">${esc(_me ? (_me.display_name || _me.username) : "")} · ${esc(_me ? _me.role : "")}</div>
+      <button class="um-item" id="um-password" role="menuitem">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        Change password
+      </button>
+      <button class="um-item" id="um-2fa" role="menuitem">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1.4"/></svg>
+        ${enabled ? "Disable 2FA" : "Enable 2FA"}
+      </button>
+      <div class="um-sep"></div>
+      <button class="um-item danger" id="um-signout" role="menuitem">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+        Sign out
+      </button>`;
+  }
+  menu.innerHTML = body;
+  wireUserMenuHandlers();
+  if (menu.classList.contains("open")) positionUserMenu();
+}
+
+function wireUserMenuHandlers() {
+  const back = $("#um-back");
+  if (back) back.addEventListener("click", () => { _umView = "menu"; renderUserMenu(); });
+
+  const pwBtn = $("#um-password");
+  if (pwBtn) pwBtn.addEventListener("click", () => { _umView = "password"; renderUserMenu(); });
+
+  const tfaBtn = $("#um-2fa");
+  if (tfaBtn) tfaBtn.addEventListener("click", () => { _umView = "2fa"; renderUserMenu(); });
+
+  const signoutBtn = $("#um-signout");
+  if (signoutBtn) signoutBtn.addEventListener("click", async () => {
+    closeUserMenu();
+    await logout();
+    location.reload();
+  });
+
+  const pwSave = $("#um-pw-save");
+  if (pwSave) pwSave.addEventListener("click", async () => {
+    const current = $("#um-pw-current").value;
+    const next = $("#um-pw-new").value;
+    if (!current) { toast("Enter your current password"); return; }
+    if (next.length < 8) { toast("New password must be at least 8 characters"); return; }
+    pwSave.disabled = true;
+    try {
+      const r = await api("/api/auth/password", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ current_password: current, new_password: next }) });
+      toast(`Password changed (${r.revoked_sessions} other session${r.revoked_sessions === 1 ? "" : "s"} signed out)`);
+      _umView = "menu";
+      renderUserMenu();
+    } catch (e) { toast("Password change failed: " + (e.message || e)); }
+    finally { pwSave.disabled = false; }
+  });
+
+  const tfaEnable = $("#um-2fa-enable");
+  if (tfaEnable) tfaEnable.addEventListener("click", async () => {
+    tfaEnable.disabled = true;
+    try {
+      _um2faSetup = await api("/api/auth/2fa/setup", { method: "POST" });
+      renderUserMenu();
+    } catch (e) { toast("Setup failed: " + (e.message || e)); }
+    finally { tfaEnable.disabled = false; }
+  });
+
+  const tfaConfirm = $("#um-2fa-confirm");
+  if (tfaConfirm) tfaConfirm.addEventListener("click", async () => {
+    const code = $("#um-2fa-code").value.trim();
+    if (!/^[0-9]{6}$/.test(code)) { toast("Enter your 6-digit code"); return; }
+    tfaConfirm.disabled = true;
+    try {
+      await api("/api/auth/2fa/confirm", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
+      _um2faSetup = null;
+      if (_me) _me.totp_enabled = true;
+      toast("2FA enabled");
+      _umView = "menu";
+      renderUserMenu();
+    } catch (e) { toast("Confirmation failed: " + (e.message || e)); }
+    finally { tfaConfirm.disabled = false; }
+  });
+
+  const tfaDisableStart = $("#um-2fa-disable-start");
+  if (tfaDisableStart) tfaDisableStart.addEventListener("click", () => { _um2faDisableOpen = true; renderUserMenu(); });
+
+  const tfaDisableCancel = $("#um-2fa-disable-cancel");
+  if (tfaDisableCancel) tfaDisableCancel.addEventListener("click", () => { _um2faDisableOpen = false; renderUserMenu(); });
+
+  const tfaDisableConfirm = $("#um-2fa-disable-confirm");
+  if (tfaDisableConfirm) tfaDisableConfirm.addEventListener("click", async () => {
+    const code = $("#um-2fa-code").value.trim();
+    if (!/^[0-9]{6}$/.test(code)) { toast("Enter your 6-digit code"); return; }
+    tfaDisableConfirm.disabled = true;
+    try {
+      await api("/api/auth/2fa/disable", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
+      _um2faDisableOpen = false;
+      if (_me) _me.totp_enabled = false;
+      toast("2FA disabled");
+      _umView = "menu";
+      renderUserMenu();
+    } catch (e) { toast("Disable failed: " + (e.message || e)); }
+    finally { tfaDisableConfirm.disabled = false; }
+  });
+}
+
+$("#userchip").addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleUserMenu();
+});
+$("#userchip").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleUserMenu(); }
+});
+document.addEventListener("click", (e) => {
+  const menu = $("#usermenu");
+  if (!menu || !menu.classList.contains("open")) return;
+  // If the click target was removed from the DOM (menu re-rendered during
+  // the same click), treat it as an inside-click, not an outside-click.
+  if (!e.target.isConnected) return;
+  if (!e.target.closest("#usermenu") && !e.target.closest("#userchip")) {
+    closeUserMenu();
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("#usermenu").classList.contains("open")) closeUserMenu();
+});
 
 $("#btn-admin").addEventListener("click", () => {
   if (!(_me && _me.role === "admin")) { toast("Admin only"); return; }

@@ -310,6 +310,48 @@ class TestAuthEndpoints:
     def test_me_requires_auth(self, client):
         assert client.get("/api/auth/me").status_code == 401
 
+    def test_change_password(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        r = client.post("/api/auth/password", headers=headers,
+                        json={"current_password": "password123", "new_password": "NewPass123!"})
+        assert r.status_code == 200, r.text
+        assert r.json()["ok"] is True
+        # Old password no longer works; new one does.
+        assert client.post("/api/auth/login", json={"username": "admin", "password": "password123"}).status_code == 401
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "NewPass123!"})
+        assert r.status_code == 200, r.text
+
+    def test_change_password_wrong_current(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        r = client.post("/api/auth/password", headers=headers,
+                        json={"current_password": "wrong-password", "new_password": "NewPass123!"})
+        assert r.status_code == 401
+
+    def test_change_password_short_new(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        r = client.post("/api/auth/password", headers=headers,
+                        json={"current_password": "password123", "new_password": "short"})
+        assert r.status_code == 400
+
+    def test_change_password_requires_auth(self, client):
+        r = client.post("/api/auth/password",
+                        json={"current_password": "x", "new_password": "NewPass123!"})
+        assert r.status_code == 401
+
+    def test_change_password_revokes_other_sessions(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        other = _bearer(client)
+        r = client.post("/api/auth/password", headers=headers,
+                        json={"current_password": "password123", "new_password": "NewPass123!"})
+        assert r.status_code == 200, r.text
+        # The other session is revoked; the one that changed the password survives.
+        assert client.get("/api/auth/me", headers=other).status_code == 401
+        assert client.get("/api/auth/me", headers=headers).status_code == 200
+
     def test_logout_revokes_token(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         headers = _bearer(client)
