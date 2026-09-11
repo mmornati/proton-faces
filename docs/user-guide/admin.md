@@ -117,6 +117,16 @@ docker compose exec app python main.py --reset-password mom
 
 You'll be prompted for a new password on stdin (or set `ADMIN_PASSWORD=...` first). All that user's existing tokens are revoked automatically.
 
+## Recovering a lost authenticator (2FA)
+
+If a user loses their authenticator app (or the only admin is locked out), 2FA can be stripped from the CLI — no code needed:
+
+```bash
+docker compose exec app python main.py --disable-2fa mom
+```
+
+This clears the TOTP secret, turns 2FA off, and revokes any half-finished pending login, so the user can sign in with just their password and re-enroll from **Status & diagnostics → Security**. The same recovery is available to an admin through the UI (Admin → users → *Disable 2FA*).
+
 ---
 
 **Next:** [Status & diagnostics](status.md) covers the bottom status bar and the `?` overlay.

@@ -22,6 +22,8 @@ import time
 from dataclasses import dataclass
 
 import bcrypt
+import pyotp
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import Depends, HTTPException, Request, status
 
 import store
@@ -76,6 +78,73 @@ def verify_password(plain: str, hashed: str) -> bool:
 # as a real failed attempt — a cheaper dummy (e.g. rounds=4) leaks whether a
 # username exists via measurable wall-time (username enumeration).
 _DUMMY_PASSWORD_HASH = "$2b$12$tZrnftPg/8ElL8NnFYB1ZuDhHAgEZNfArIC70mLxQgX9qY8MnnaAG"
+
+
+# --- TOTP 2FA --------------------------------------------------------------
+# Optional app-based 2FA (RFC 6238). The TOTP secret is encrypted at rest with
+# AES-GCM using a key derived from SIGNING_SECRET, so a DB/backup disclosure
+# does not yield usable secrets. The key derivation is deterministic (HKDF
+# with a fixed info string) so all uvicorn workers and restarts agree on it.
+
+_2FA_KEY_INFO = b"proton-faces:totp-secret:v1"
+_2FA_NONCE_BYTES = 12
+_2FA_TOTP_ISSUER = "proton-faces"
+
+
+def _2fa_secret_key() -> bytes:
+    """AES-256 key for TOTP secrets, derived from SIGNING_SECRET via HKDF."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=_2FA_KEY_INFO,
+    )
+    return hkdf.derive(_signing_secret())
+
+
+def encrypt_totp_secret(secret_b32: str) -> str:
+    """AES-GCM-encrypt a base32 TOTP secret. Returns ``nonce|ciphertext`` hex."""
+    nonce = os.urandom(_2FA_NONCE_BYTES)
+    ct = AESGCM(_2fa_secret_key()).encrypt(nonce, secret_b32.encode("ascii"), None)
+    return (nonce + ct).hex()
+
+
+def decrypt_totp_secret(secret_enc: str) -> str:
+    """Decrypt a value produced by ``encrypt_totp_secret``. Raises on tamper."""
+    raw = bytes.fromhex(secret_enc)
+    nonce, ct = raw[:_2FA_NONCE_BYTES], raw[_2FA_NONCE_BYTES:]
+    return AESGCM(_2fa_secret_key()).decrypt(nonce, ct, None).decode("ascii")
+
+
+def generate_totp_secret() -> str:
+    """Fresh random base32 TOTP secret (160 bits)."""
+    return pyotp.random_base32()
+
+
+def totp_uri(secret_b32: str, username: str) -> str:
+    """otpauth:// URI for the authenticator app QR code."""
+    return pyotp.TOTP(secret_b32).provisioning_uri(name=username, issuer_name=_2FA_TOTP_ISSUER)
+
+
+def verify_totp_code(secret_b32: str, code: str) -> bool:
+    """Constant-time-ish check of a 6-digit TOTP code (accepts ±1 window)."""
+    if not code or not code.isdigit() or len(code) != 6:
+        return False
+    return pyotp.TOTP(secret_b32).verify(code, valid_window=1)
+
+
+def _2fa_pending_ttl() -> int:
+    """How long a pending 2FA token lives before it must be redeemed."""
+    return int(os.environ.get("AUTH_2FA_PENDING_TTL", "300"))  # 5 minutes
+
+
+# Brute-force budget for the 6-digit code. The code space is 1e6, so a
+# per-(ip, username) budget of 5 attempts with the same exponential lockout
+# as the password step keeps online guessing impractical.
+_2FA_MAX_ATTEMPTS = 5
+_2FA_LOCKOUT_SEC = 900
 
 
 # --- FastAPI dependencies --------------------------------------------------
@@ -272,6 +341,7 @@ def verify_signed_token(path: str, sig: str | None, exp: int | None) -> bool:
 _AUTH_FREE_PATHS = frozenset({
     "/api/auth/login",
     "/api/auth/refresh",
+    "/api/auth/2fa/verify",
     "/api/auth/limits",
     "/api/health",
     "/api/status",
@@ -481,8 +551,12 @@ def record_login_success(ip: str | None, username: str) -> None:
 
 
 def login(username: str, password: str, *, user_agent: str | None = None,
-           ip: str | None = None) -> tuple[str, str, CurrentUser]:
-    """Verify credentials, mint access + refresh tokens, return (access, refresh, user).
+           ip: str | None = None) -> tuple[str | None, str | None, CurrentUser, bool, str | None]:
+    """Verify credentials; return (access, refresh, user, needs_2fa, pending_token).
+
+    When the user has 2FA enabled, ``access``/``refresh`` are None and a
+    short-lived ``pending_token`` is returned instead — the caller must then
+    call ``verify_2fa`` with the 6-digit code to obtain the real token pair.
 
     On bad credentials: raises 401 (caller decides the response shape).
     On lockout: raises 429 with a Retry-After header.
@@ -496,16 +570,67 @@ def login(username: str, password: str, *, user_agent: str | None = None,
             verify_password("probe", _DUMMY_PASSWORD_HASH)
         record_login_failure(ip, username)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
+    if row["totp_enabled"]:
+        # The login is NOT complete yet — the 2FA code is still to come. Do
+        # not reset the failure counter here: a wrong code in verify_2fa must
+        # accumulate against the same budget as a wrong password, and a fresh
+        # pending token (from re-login) must not wipe prior 2FA failures.
+        pending = store.create_pending_2fa(row["id"], _2fa_pending_ttl())
+        return None, None, _user_from_row(row), True, pending
     record_login_success(ip, username)
     access = store.issue_token(row["id"], "access", access_ttl(),
                                 user_agent=user_agent, ip=ip)
     refresh = store.issue_token(row["id"], "refresh", refresh_ttl(),
                                  user_agent=user_agent, ip=ip)
     store.touch_last_login(row["id"])
-    user = CurrentUser(id=row["id"], username=row["username"],
+    return access, refresh, _user_from_row(row), False, None
+
+
+def _user_from_row(row) -> CurrentUser:
+    return CurrentUser(id=row["id"], username=row["username"],
                        display_name=row["display_name"] or row["username"],
                        role=row["role"])
-    return access, refresh, user
+
+
+def verify_2fa(pending_token: str, code: str, *, user_agent: str | None = None,
+               ip: str | None = None) -> tuple[str, str, CurrentUser]:
+    """Redeem a pending 2FA token + TOTP code for a real (access, refresh) pair.
+
+    The pending token is single-use: it is consumed on the first attempt,
+    whether the code is right or wrong, so a stolen token can't be replayed.
+    Wrong codes count against the same per-(ip, username) login budget as the
+    password step.
+    """
+    row = store.consume_pending_2fa(pending_token)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid or expired 2FA session")
+    if row["expires_at"] < time.time():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="2FA session expired")
+    user_row = store.get_user_by_id(row["user_id"])
+    if user_row is None or user_row["disabled"]:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid or expired 2FA session")
+    username = user_row["username"]
+    check_login_rate_limit(ip, username)
+    secret_enc = store.get_totp_secret(user_row["id"])
+    if not user_row["totp_enabled"] or not secret_enc:
+        # 2FA was disabled between the two steps — treat as a fresh login.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="2FA not enabled")
+    try:
+        secret_b32 = decrypt_totp_secret(secret_enc)
+    except Exception:
+        # Tampered ciphertext (e.g. SIGNING_SECRET changed) — fail closed.
+        log.error("failed to decrypt TOTP secret for user_id=%r", user_row["id"])
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid or expired 2FA session")
+    if not verify_totp_code(secret_b32, code):
+        record_login_failure(ip, username)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid 2FA code")
+    record_login_success(ip, username)
+    access = store.issue_token(user_row["id"], "access", access_ttl(),
+                                user_agent=user_agent, ip=ip)
+    refresh = store.issue_token(user_row["id"], "refresh", refresh_ttl(),
+                                 user_agent=user_agent, ip=ip)
+    store.touch_last_login(user_row["id"])
+    return access, refresh, _user_from_row(user_row)
 
 
 def refresh(refresh_token: str, *, user_agent: str | None = None,

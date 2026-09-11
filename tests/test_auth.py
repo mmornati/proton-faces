@@ -2,6 +2,7 @@
 import logging
 import time
 
+import pyotp
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -173,8 +174,10 @@ class TestLoginRefresh:
     def test_login_success_issues_tokens(self, tmp_db):
         h = auth.hash_password("s3cret!")
         store.create_user("bob", h, role="admin", display_name="Bob")
-        access, refresh, user = auth.login("bob", "s3cret!", user_agent="t", ip="1.2.3.4")
+        access, refresh, user, needs_2fa, pending = auth.login("bob", "s3cret!", user_agent="t", ip="1.2.3.4")
         assert user.username == "bob"
+        assert needs_2fa is False
+        assert pending is None
         assert store.lookup_token(access)["kind"] == "access"
         assert store.lookup_token(refresh)["kind"] == "refresh"
 
@@ -239,7 +242,7 @@ class TestLoginRefresh:
 
     def test_refresh_rotates_token(self, tmp_db):
         store.create_user("dave", auth.hash_password("s3cret!"))
-        access, refresh, _ = auth.login("dave", "s3cret!")
+        access, refresh, _, _, _ = auth.login("dave", "s3cret!")
         new_access, new_refresh, user = auth.refresh(refresh)
         assert user.username == "dave"
         assert store.lookup_token(refresh) is None  # old refresh revoked
@@ -248,18 +251,144 @@ class TestLoginRefresh:
 
     def test_refresh_rejects_access_token(self, tmp_db):
         store.create_user("erin", auth.hash_password("s3cret!"))
-        access, _, _ = auth.login("erin", "s3cret!")
+        access, _, _, _, _ = auth.login("erin", "s3cret!")
         with pytest.raises(HTTPException) as exc:
             auth.refresh(access)
         assert exc.value.status_code == 401
 
     def test_refresh_rejects_expired(self, tmp_db):
         store.create_user("frank", auth.hash_password("s3cret!"))
-        _, refresh, _ = auth.login("frank", "s3cret!")
+        _, refresh, _, _, _ = auth.login("frank", "s3cret!")
         store.revoke_token(refresh)
         with pytest.raises(HTTPException) as exc:
             auth.refresh(refresh)
         assert exc.value.status_code == 401
+
+
+class TestLogin2FA:
+    def _enroll(self, username="bob", password="s3cret!"):
+        """Create a user with 2FA fully enabled. Returns (uid, secret_b32)."""
+        uid = store.create_user(username, auth.hash_password(password))
+        secret = auth.generate_totp_secret()
+        store.set_totp_secret(uid, auth.encrypt_totp_secret(secret))
+        store.set_totp_enabled(uid, True)
+        return uid, secret
+
+    def _code(self, secret):
+        return pyotp.TOTP(secret).now()
+
+    def test_login_returns_pending_when_2fa_enabled(self, tmp_db):
+        self._enroll()
+        access, refresh, user, needs_2fa, pending = auth.login("bob", "s3cret!")
+        assert needs_2fa is True
+        assert pending is not None
+        assert access is None and refresh is None
+        assert user.username == "bob"
+
+    def test_login_issues_tokens_when_2fa_off(self, tmp_db):
+        store.create_user("bob", auth.hash_password("s3cret!"))
+        access, refresh, _, needs_2fa, pending = auth.login("bob", "s3cret!")
+        assert needs_2fa is False
+        assert pending is None
+        assert store.lookup_token(access)["kind"] == "access"
+        assert store.lookup_token(refresh)["kind"] == "refresh"
+
+    def test_verify_2fa_issues_tokens(self, tmp_db):
+        _, secret = self._enroll()
+        _, _, _, _, pending = auth.login("bob", "s3cret!")
+        access, refresh, user = auth.verify_2fa(pending, self._code(secret))
+        assert user.username == "bob"
+        assert store.lookup_token(access)["kind"] == "access"
+        assert store.lookup_token(refresh)["kind"] == "refresh"
+
+    def test_verify_2fa_wrong_code_401(self, tmp_db):
+        _, secret = self._enroll()
+        _, _, _, _, pending = auth.login("bob", "s3cret!")
+        with pytest.raises(HTTPException) as exc:
+            auth.verify_2fa(pending, "000000")
+        assert exc.value.status_code == 401
+
+    def test_pending_token_single_use(self, tmp_db):
+        _, secret = self._enroll()
+        _, _, _, _, pending = auth.login("bob", "s3cret!")
+        auth.verify_2fa(pending, self._code(secret))
+        # The token was consumed by the first (successful) redemption.
+        with pytest.raises(HTTPException) as exc:
+            auth.verify_2fa(pending, self._code(secret))
+        assert exc.value.status_code == 401
+
+    def test_pending_token_consumed_on_wrong_code(self, tmp_db):
+        _, secret = self._enroll()
+        _, _, _, _, pending = auth.login("bob", "s3cret!")
+        with pytest.raises(HTTPException):
+            auth.verify_2fa(pending, "000000")
+        # Even with the right code, the consumed token is dead.
+        with pytest.raises(HTTPException) as exc:
+            auth.verify_2fa(pending, self._code(secret))
+        assert exc.value.status_code == 401
+
+    def test_pending_token_expired(self, tmp_db, monkeypatch):
+        _, secret = self._enroll()
+        _, _, _, _, pending = auth.login("bob", "s3cret!")
+        state = {"now": time.time()}
+        monkeypatch.setattr(auth.time, "time", lambda: state["now"])
+        state["now"] += auth._2fa_pending_ttl() + 1
+        with pytest.raises(HTTPException) as exc:
+            auth.verify_2fa(pending, self._code(secret))
+        assert exc.value.status_code == 401
+
+    def test_verify_2fa_unknown_token_401(self, tmp_db):
+        with pytest.raises(HTTPException) as exc:
+            auth.verify_2fa("bogus-token", "123456")
+        assert exc.value.status_code == 401
+
+    def test_2fa_disabled_between_steps_401(self, tmp_db):
+        uid, secret = self._enroll()
+        _, _, _, _, pending = auth.login("bob", "s3cret!")
+        store.set_totp_enabled(uid, False)
+        with pytest.raises(HTTPException) as exc:
+            auth.verify_2fa(pending, self._code(secret))
+        assert exc.value.status_code == 401
+
+    def test_wrong_code_counts_against_rate_limit(self, tmp_db, monkeypatch):
+        self._enroll()
+        state = {"now": 1_000_000.0}
+        monkeypatch.setattr(auth.time, "time", lambda: state["now"])
+        for _ in range(auth._2FA_MAX_ATTEMPTS):
+            _, _, _, _, pending = auth.login("bob", "s3cret!")
+            with pytest.raises(HTTPException):
+                auth.verify_2fa(pending, "000000", ip="1.2.3.4")
+        # The budget is exhausted: even a correct password is now locked out
+        # (the counter is shared with the password step and is not reset by a
+        # pending 2FA login).
+        with pytest.raises(HTTPException) as exc:
+            auth.login("bob", "s3cret!", ip="1.2.3.4")
+        assert exc.value.status_code == 429
+
+    def test_encrypt_decrypt_roundtrip(self):
+        secret = auth.generate_totp_secret()
+        enc = auth.encrypt_totp_secret(secret)
+        assert enc != secret
+        assert auth.decrypt_totp_secret(enc) == secret
+
+    def test_encrypted_secret_is_not_plaintext(self, tmp_db):
+        uid, secret = self._enroll()
+        stored = store.get_totp_secret(uid)
+        assert secret not in stored
+        assert auth.decrypt_totp_secret(stored) == secret
+
+    def test_totp_uri_shape(self):
+        uri = auth.totp_uri("JBSWY3DPEHPK3PXP", "bob")
+        assert uri.startswith("otpauth://totp/")
+        assert "issuer=proton-faces" in uri
+        assert "secret=JBSWY3DPEHPK3PXP" in uri
+
+    def test_verify_totp_code_rejects_garbage(self):
+        secret = auth.generate_totp_secret()
+        assert auth.verify_totp_code(secret, "") is False
+        assert auth.verify_totp_code(secret, "abc123") is False
+        assert auth.verify_totp_code(secret, "12345") is False
+        assert auth.verify_totp_code(secret, "1234567") is False
 
 
 class TestLoginRateLimit:
@@ -287,7 +416,7 @@ class TestLoginRateLimit:
             with pytest.raises(HTTPException):
                 auth.login("bob", "wrong", ip="1.2.3.4")
         state["now"] += auth._LOGIN_LOCKOUT_SEC + 1
-        access, _, _ = auth.login("bob", "s3cret!", ip="1.2.3.4")
+        access, _, _, _, _ = auth.login("bob", "s3cret!", ip="1.2.3.4")
         assert store.lookup_token(access)["kind"] == "access"
 
     def test_different_username_unaffected(self, tmp_db, monkeypatch):
@@ -297,7 +426,7 @@ class TestLoginRateLimit:
         for _ in range(auth._LOGIN_MAX_FAILURES):
             with pytest.raises(HTTPException):
                 auth.login("bob", "wrong", ip="1.2.3.4")
-        access, _, _ = auth.login("carol", "s3cret!", ip="1.2.3.4")
+        access, _, _, _, _ = auth.login("carol", "s3cret!", ip="1.2.3.4")
         assert store.lookup_token(access)["kind"] == "access"
 
     def test_success_resets_counter(self, tmp_db, monkeypatch):

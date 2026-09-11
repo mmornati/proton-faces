@@ -883,6 +883,15 @@ main { padding: 18px 24px 64px; min-width: 0; }
 #statusmodalbody .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
 #statusmodalbody .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
 #statusmodalbody .kbd { font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border: 1px solid var(--border2); border-radius: 6px; background: var(--panel2); color: var(--text); box-shadow: 0 1px 0 var(--border); }
+#statusmodalbody .sec2fa { display: flex; flex-direction: column; gap: 10px; padding: 7px 0; }
+#statusmodalbody .sec2fa .qr { image-rendering: pixelated; width: 180px; height: 180px; background: #fff; padding: 8px; border: 1px solid var(--border); border-radius: 8px; }
+#statusmodalbody .sec2fa .secret { font-family: var(--mono); font-size: 12px; word-break: break-all; user-select: all; }
+#statusmodalbody .sec2fa input[type="text"] { font-family: var(--mono); letter-spacing: 0.2em; }
+#statusmodalbody .sec2fa .adminactions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 2px; }
+#statusmodalbody .sec2fa .adminactions button.small { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+#statusmodalbody .sec2fa .hint { color: var(--muted); font-size: 12px; }
+#statusmodalbody .sec2fa label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+#statusmodalbody .sec2fa input[type="text"] { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 8px; border-radius: 6px; }
 
 /* ===== Leaflet / map ===== */
 .leaflet-container { background: var(--bg2); font-family: var(--sans); }
@@ -956,9 +965,13 @@ main { padding: 18px 24px 64px; min-width: 0; }
         <span>Username</span>
         <input id="login-username" name="username" type="text" autocomplete="username" required minlength="2">
       </label>
-      <label>
+      <label id="login-password-wrap">
         <span>Password</span>
         <input id="login-password" name="password" type="password" autocomplete="current-password" required minlength="8">
+      </label>
+      <label id="login-code-wrap" style="display:none">
+        <span>Authenticator code</span>
+        <input id="login-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code" required>
       </label>
       <button id="login-submit" type="submit">Sign in</button>
       <div id="login-error" class="login-error"></div>
@@ -1135,6 +1148,7 @@ main { padding: 18px 24px 64px; min-width: 0; }
   <span class="sbseg" id="sb-sync">sync: …</span>
   <span class="sbhint clickable" id="sb-hint">Press <kbd>?</kbd> for details</span>
 </div>
+<script src="qrcode.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 let state = {
@@ -1187,6 +1201,7 @@ async function adminFetch(path) {
 const AUTH_STORAGE = "pf.auth";
 let _me = null;
 let _refreshInflight = null;
+let _pending2fa = null;   // pending_token held between the two login steps
 
 function _loadAuth() {
   try { return JSON.parse(localStorage.getItem(AUTH_STORAGE) || "null"); }
@@ -1198,6 +1213,7 @@ function _saveAuth(a) {
 }
 function _isAuthFreePath(path) {
   return path === "/api/auth/login"
+      || path === "/api/auth/2fa/verify"
       || path === "/api/auth/refresh"
       || path === "/api/auth/limits"
       || path === "/api/health"
@@ -1279,7 +1295,24 @@ async function login(username, password) {
     const t = await r.text();
     throw new Error(t || "login failed");
   }
-  const data = await r.json();
+return r.json();
+}
+
+async function verify2fa(pendingToken, code) {
+  const r = await fetch("/api/auth/2fa/verify", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pending_token: pendingToken, code }),
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || "2FA verification failed");
+  }
+  return r.json();
+}
+
+function _applyAuth(data) {
   // Only the short-lived access token goes to localStorage; the refresh
   // token is held server-side in an HttpOnly cookie.
   _saveAuth({
@@ -1327,6 +1360,17 @@ function showLogin() {
   if (lm) lm.classList.add("open");
   const root = $("#approot");
   if (root) root.style.display = "none";
+  // Reset any half-finished 2FA flow from a previous session.
+  _pending2fa = null;
+  $("#login-password-wrap").style.display = "";
+  $("#login-password").required = true;
+  $("#login-code-wrap").style.display = "none";
+  $("#login-code").value = "";
+  // The code field is `required` but hidden during the password step;
+  // leave it non-required so native form validation doesn't block login
+  // with an un-focusable required control.
+  $("#login-code").required = false;
+  $("#loginmodaltitle").textContent = "Sign in to proton-faces";
   // Focus the username field on first show.
   setTimeout(() => { const u = $("#login-username"); if (u) u.focus(); }, 0);
 }
@@ -1360,11 +1404,39 @@ async function doLoginSubmit(ev) {
   errEl.textContent = "";
   const username = $("#login-username").value.trim();
   const password = $("#login-password").value;
+  const code = $("#login-code").value.trim();
   const btn = $("#login-submit");
   btn.disabled = true;
   btn.textContent = "Signing in…";
   try {
-    await login(username, password);
+    if (_pending2fa) {
+      const data = await verify2fa(_pending2fa, code);
+      _pending2fa = null;
+      _applyAuth(data);
+      hideLogin();
+      $("#login-password").value = "";
+      $("#login-code").value = "";
+      location.reload();   // cleanest way to drop stale cached payloads from a previous account
+      return;
+    }
+    const data = await login(username, password);
+    if (data["2fa_required"]) {
+      _pending2fa = data.pending_token;
+      $("#login-password").value = "";
+      $("#login-password-wrap").style.display = "none";
+      // The password field is `required` but hidden during the 2FA step;
+      // drop `required` so native form validation doesn't block the code
+      // submit with an un-focusable required control.
+      $("#login-password").required = false;
+      $("#login-code-wrap").style.display = "";
+      $("#login-code").required = true;
+      $("#loginmodaltitle").textContent = "Enter your authenticator code";
+      btn.disabled = false;
+      btn.textContent = "Verify";
+      setTimeout(() => { const c = $("#login-code"); if (c) c.focus(); }, 0);
+      return;
+    }
+    _applyAuth(data);
     hideLogin();
     $("#login-password").value = "";
     location.reload();   // cleanest way to drop stale cached payloads from a previous account
@@ -3134,12 +3206,134 @@ function renderStatusModal(s) {
     <h4>Snapshot</h4>
     <table>
       <tr><td class="k">Fetched at</td><td class="v">${fmtAbs(s.now)}</td></tr>
-    </table>`;
+    </table>
+    ${render2FASection()}`;
+  wire2FAHandlers();
+}
+
+// --- 2FA self-service ------------------------------------------------------
+
+let _2faSetup = null;      // { secret, otpauth_uri } while enrollment is in progress
+let _2faDisableOpen = false;
+
+function render2FASection() {
+  const enabled = !!(_me && _me.totp_enabled);
+  let body;
+  if (_2faSetup) {
+    const qr = qrcode(0, "M");
+    qr.addData(_2faSetup.otpauth_uri);
+    qr.make();
+    body = `
+      <div class="sec2fa">
+        <div class="hint">Scan this QR code with your authenticator app (e.g. Google Authenticator, 1Password, Ente Auth).</div>
+        <div class="adminactions">
+          <div class="qr">${qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true })}</div>
+        </div>
+        <div class="hint">Or enter this secret manually:</div>
+        <div class="secret">${esc(_2faSetup.secret)}</div>
+        <label>
+          <span>Confirm with a 6-digit code</span>
+          <input type="text" id="sec2fa-confirm-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456">
+        </label>
+        <div class="adminactions">
+          <button class="small" id="sec2fa-confirm">Activate 2FA</button>
+          <button class="small secondary" id="sec2fa-cancel">Cancel</button>
+        </div>
+      </div>`;
+  } else if (enabled) {
+    body = `
+      <div class="sec2fa">
+        <div class="hint">Two-factor authentication is <b>on</b> for your account. A 6-digit code is required at every login.</div>
+        <div class="adminactions">
+          ${_2faDisableOpen
+            ? `<label>
+                <span>Confirm with a 6-digit code</span>
+                <input type="text" id="sec2fa-disable-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456">
+              </label>
+              <button class="small" id="sec2fa-disable-confirm">Disable 2FA</button>
+              <button class="small secondary" id="sec2fa-disable-cancel">Cancel</button>`
+            : `<button class="small secondary" id="sec2fa-disable-start">Disable 2FA</button>`}
+        </div>
+      </div>`;
+  } else {
+    body = `
+      <div class="sec2fa">
+        <div class="hint">Two-factor authentication is <b>off</b>. Enable it to require a 6-digit code from an authenticator app at every login.</div>
+        <div class="adminactions">
+          <button class="small" id="sec2fa-enable">Enable 2FA</button>
+        </div>
+      </div>`;
+  }
+  return `
+    <h4>Security</h4>
+    ${body}`;
+}
+
+function wire2FAHandlers() {
+  const enableBtn = $("#sec2fa-enable");
+  if (enableBtn) enableBtn.addEventListener("click", async () => {
+    enableBtn.disabled = true;
+    try {
+      _2faSetup = await api("/api/auth/2fa/setup", { method: "POST" });
+      renderStatusModal(lastStatus);
+    } catch (e) { toast("Setup failed: " + (e.message || e)); }
+    finally { enableBtn.disabled = false; }
+  });
+
+  const cancelBtn = $("#sec2fa-cancel");
+  if (cancelBtn) cancelBtn.addEventListener("click", () => {
+    _2faSetup = null;
+    renderStatusModal(lastStatus);
+  });
+
+  const confirmBtn = $("#sec2fa-confirm");
+  if (confirmBtn) confirmBtn.addEventListener("click", async () => {
+    const code = $("#sec2fa-confirm-code").value.trim();
+    if (!/^[0-9]{6}$/.test(code)) { toast("Enter your 6-digit code"); return; }
+    confirmBtn.disabled = true;
+    try {
+      const r = await api("/api/auth/2fa/confirm", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
+      _2faSetup = null;
+      if (_me) _me.totp_enabled = true;
+      toast("2FA enabled");
+      renderStatusModal(lastStatus);
+    } catch (e) { toast("Confirmation failed: " + (e.message || e)); }
+    finally { confirmBtn.disabled = false; }
+  });
+
+  const disableStartBtn = $("#sec2fa-disable-start");
+  if (disableStartBtn) disableStartBtn.addEventListener("click", () => {
+    _2faDisableOpen = true;
+    renderStatusModal(lastStatus);
+  });
+
+  const disableCancelBtn = $("#sec2fa-disable-cancel");
+  if (disableCancelBtn) disableCancelBtn.addEventListener("click", () => {
+    _2faDisableOpen = false;
+    renderStatusModal(lastStatus);
+  });
+
+  const disableConfirmBtn = $("#sec2fa-disable-confirm");
+  if (disableConfirmBtn) disableConfirmBtn.addEventListener("click", async () => {
+    const code = $("#sec2fa-disable-code").value.trim();
+    if (!/^[0-9]{6}$/.test(code)) { toast("Enter your 6-digit code"); return; }
+    disableConfirmBtn.disabled = true;
+    try {
+      const r = await api("/api/auth/2fa/disable", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
+      _2faDisableOpen = false;
+      if (_me) _me.totp_enabled = false;
+      toast("2FA disabled");
+      renderStatusModal(lastStatus);
+    } catch (e) { toast("Disable failed: " + (e.message || e)); }
+    finally { disableConfirmBtn.disabled = false; }
+  });
 }
 
 function openStatusModal() {
   $("#statusmodal").classList.add("open");
-  if (lastStatus) renderStatusModal(lastStatus);
+  if (lastStatus) {
+    renderStatusModal(lastStatus);
+  }
 }
 function closeStatusModal() { $("#statusmodal").classList.remove("open"); }
 function toggleStatusModal() {
@@ -3338,10 +3532,14 @@ function renderAdminUsersSection() {
   const usersDisabled = adminUsersWrap === null;
   let rows = "";
   for (const u of adminUsers) {
+    const tfa = u.totp_enabled
+      ? `<span class="pill ok">on</span> <button class="small admin-2fa-disable-user" data-id="${u.id}" data-name="${esc(u.username)}">Disable</button>`
+      : `<span class="pill">off</span>`;
     rows += `<tr>
       <td class="v">${esc(u.username)}</td>
       <td class="v">${esc(u.display_name || "")}</td>
       <td class="v">${pillFor(u.role, ["read", "write", "admin"])}</td>
+      <td class="v">${tfa}</td>
       <td class="v">${esc(fmtRelative(Date.now() / 1000 - u.created_at))}</td>
       <td class="v">
         <button class="small admin-edit-user" data-id="${u.id}">Edit</button>
@@ -3363,7 +3561,7 @@ function renderAdminUsersSection() {
       </select>
       <button class="small" id="admin-create-user" ${usersDisabled ? "disabled title='User management disabled in demo mode'" : ""}>Create</button>
     </div>
-    <table>${usersDisabled ? `<tr><td colspan="5" class="empty">User management disabled in demo mode.</td></tr>` : (rows || `<tr><td colspan="5" class="empty">No users.</td></tr>`)}</table>
+    <table>${usersDisabled ? `<tr><td colspan="6" class="empty">User management disabled in demo mode.</td></tr>` : (rows || `<tr><td colspan="6" class="empty">No users.</td></tr>`)}</table>
     <div id="admin-edit-row" style="display:none" class="userform">
       <span class="hint">Editing user <span id="admin-edit-id"></span></span>
       <input type="text" id="admin-edit-display" placeholder="display name">
@@ -3587,6 +3785,24 @@ function wireAdminHandlers() {
     })
   );
 
+  document.querySelectorAll(".admin-2fa-disable-user").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const u = adminUsers.find((x) => x.id === parseInt(b.dataset.id, 10));
+      if (!u || !u.totp_enabled) return;
+      if (!confirm(
+        `Force-disable 2FA for user ${u.username}?\n\n` +
+        "Only do this as a recovery path (e.g. they lost their authenticator device). " +
+        "They'll be able to log in with just their password and re-enroll."
+      )) return;
+      try {
+        await api(`/api/admin/users/${b.dataset.id}/2fa/disable`, { method: "POST" });
+        toast(`2FA disabled for ${u.username}`);
+        adminUsers = await api("/api/admin/users");
+        renderAdminModal();
+      } catch (e) { toast("Disable failed: " + (e.message || e)); }
+    })
+  );
+
   document.querySelectorAll(".admin-del-user").forEach((b) =>
     b.addEventListener("click", async () => {
       const u = adminUsers.find((x) => x.id === parseInt(b.dataset.id, 10));
@@ -3646,7 +3862,15 @@ async function refresh() {
       return parts.join(" · ");
     })();
     renderStatusBar(s);
-    if ($("#statusmodal").classList.contains("open")) renderStatusModal(s);
+    if ($("#statusmodal").classList.contains("open")) {
+      // Don't clobber a 2FA code the user is mid-typing (e.g. enrollment
+      // confirm or disable proof) when the 60s poll refreshes the modal.
+      const ae = document.activeElement;
+      const editing = ae && ae.closest && ae.closest("#statusmodalbody") && (ae.tagName === "INPUT" || ae.tagName === "SELECT" || ae.tagName === "TEXTAREA");
+      if (!editing) {
+        renderStatusModal(s);
+      }
+    }
   } catch (e) {
     lastStatus = null;
     $("#sb-dot").className = "dot bad";

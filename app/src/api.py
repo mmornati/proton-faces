@@ -21,12 +21,16 @@ from fastapi.staticfiles import StaticFiles
 import clip
 import faces
 import indexer
+import store
 from auth import (
     ROLE_RANK,
     CurrentUser,
     allow_public_thumbs,
+    decrypt_totp_secret,
     demo_disable_admin_user_management,
     demo_disable_backups,
+    encrypt_totp_secret,
+    generate_totp_secret,
     hash_password,
     login,
     make_signed_token,
@@ -34,6 +38,10 @@ from auth import (
     require_signing_secret,
     require_user,
     signed_or_token,
+    totp_uri,
+    verify_2fa,
+    verify_password,
+    verify_totp_code,
 )
 from auth import (
     access_ttl as auth_access_ttl,
@@ -106,12 +114,15 @@ from store import (
     place_stats,
     rename_person,
     revoke_all_tokens,
+    revoke_pending_2fa_for_user,
     revoke_token,
     search_photos_by_place,
     set_archived,
     set_hidden,
     set_person_cover_face,
     set_tags,
+    set_totp_enabled,
+    set_totp_secret,
     similar_faces,
     stats,
     unassign_face,
@@ -473,6 +484,10 @@ def _clear_refresh_cookie(resp: Response) -> None:
 def api_login(request: Request, body: dict = Body(...)):
     """Exchange username+password for an access+refresh token pair.
 
+    When the user has 2FA enabled, no tokens are issued yet: the response
+    carries ``2fa_required: true`` and a short-lived ``pending_token`` that
+    must be exchanged for the real pair at ``POST /api/auth/2fa/verify``.
+
     The refresh token is returned in the JSON body (backwards-compatible)
     AND set as an HttpOnly SameSite=Strict cookie (FP-1). The cookie is the
     primary channel for the browser SPA; the body field exists for API
@@ -484,7 +499,18 @@ def api_login(request: Request, body: dict = Body(...)):
         raise HTTPException(400, "username and password required")
     ua = request.headers.get("user-agent")
     ip = request.client.host if request.client else None
-    access, refresh, user = login(username, password, user_agent=ua, ip=ip)
+    access, refresh, user, needs_2fa, pending = login(username, password, user_agent=ua, ip=ip)
+    if needs_2fa:
+        return {
+            "2fa_required": True,
+            "pending_token": pending,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "role": user.role,
+            },
+        }
     resp = JSONResponse({
         "access_token": access,
         "refresh_token": refresh,
@@ -499,6 +525,113 @@ def api_login(request: Request, body: dict = Body(...)):
     })
     _set_refresh_cookie(resp, refresh)
     return resp
+
+
+@app.post("/api/auth/2fa/verify", dependencies=[])
+def api_2fa_verify(request: Request, body: dict = Body(...)):
+    """Second step of a 2FA login: redeem a pending token + 6-digit code.
+
+    Returns the same shape as a successful ``/api/auth/login``. The pending
+    token is single-use and short-lived; wrong codes count against the same
+    per-(ip, username) login rate limit as the password step.
+    """
+    pending = (body.get("pending_token") or "").strip()
+    code = (body.get("code") or "").strip()
+    if not pending or not code:
+        raise HTTPException(400, "pending_token and code required")
+    ua = request.headers.get("user-agent")
+    ip = request.client.host if request.client else None
+    access, refresh, user = verify_2fa(pending, code, user_agent=ua, ip=ip)
+    resp = JSONResponse({
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "Bearer",
+        "expires_in": auth_access_ttl(),
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "display_name": user.display_name,
+            "role": user.role,
+        },
+    })
+    _set_refresh_cookie(resp, refresh)
+    return resp
+
+
+@app.post("/api/auth/2fa/setup")
+def api_2fa_setup(request: Request, user: CurrentUser = Depends(require_user)):
+    """Start 2FA enrollment: generate a fresh TOTP secret and return the
+    otpauth URI + base32 secret for the authenticator app.
+
+    The secret is stored (encrypted at rest) but NOT yet active — the user
+    must confirm a valid code at ``/api/auth/2fa/confirm`` before 2FA turns
+    on. Calling setup again rotates the secret, invalidating any previous
+    half-finished enrollment.
+    """
+    secret_b32 = generate_totp_secret()
+    store.set_totp_secret(user.id, encrypt_totp_secret(secret_b32))
+    store.set_totp_enabled(user.id, False)
+    return {
+        "secret": secret_b32,
+        "otpauth_uri": totp_uri(secret_b32, user.username),
+        "issuer": "proton-faces",
+    }
+
+
+@app.post("/api/auth/2fa/confirm")
+def api_2fa_confirm(request: Request, body: dict = Body(...),
+                    user: CurrentUser = Depends(require_user)):
+    """Activate 2FA after the user confirms a valid code from their app.
+
+    Prevents lockout from a mistyped/mis-scanned secret: the code must match
+    the stored secret before ``totp_enabled`` flips on.
+    """
+    code = (body.get("code") or "").strip()
+    if not code:
+        raise HTTPException(400, "code required")
+    secret_enc = store.get_totp_secret(user.id)
+    if not secret_enc:
+        raise HTTPException(400, "no 2FA setup in progress — call /api/auth/2fa/setup first")
+    try:
+        secret_b32 = decrypt_totp_secret(secret_enc)
+    except Exception:
+        raise HTTPException(400, "invalid 2FA setup state")
+    if not verify_totp_code(secret_b32, code):
+        raise HTTPException(400, "invalid code — check the time on your device and try again")
+    store.set_totp_enabled(user.id, True)
+    return {"ok": True, "totp_enabled": True}
+
+
+@app.post("/api/auth/2fa/disable")
+def api_2fa_disable(request: Request, body: dict = Body(default={}),
+                    user: CurrentUser = Depends(require_user)):
+    """Turn off 2FA for the current user.
+
+    Requires the current 6-digit code (or the account password) as proof of
+    control, so a stolen bearer token alone can't silently strip 2FA.
+    """
+    code = (body.get("code") or "").strip()
+    password = body.get("password") or ""
+    secret_enc = store.get_totp_secret(user.id)
+    if not secret_enc:
+        raise HTTPException(400, "2FA is not enabled")
+    if code:
+        try:
+            secret_b32 = decrypt_totp_secret(secret_enc)
+        except Exception:
+            raise HTTPException(400, "invalid 2FA state")
+        if not verify_totp_code(secret_b32, code):
+            raise HTTPException(400, "invalid code")
+    elif password:
+        row = store.get_user_by_username(user.username)
+        if row is None or not verify_password(password, row["password_hash"]):
+            raise HTTPException(400, "invalid password")
+    else:
+        raise HTTPException(400, "code or password required to disable 2FA")
+    store.set_totp_secret(user.id, None)
+    store.set_totp_enabled(user.id, False)
+    store.revoke_pending_2fa_for_user(user.id)
+    return {"ok": True, "totp_enabled": False}
 
 
 @app.post("/api/auth/refresh", dependencies=[])
@@ -557,11 +690,13 @@ def api_logout(request: Request, user: CurrentUser = Depends(require_user)):
 
 @app.get("/api/auth/me")
 def api_me(user: CurrentUser = Depends(require_user)):
+    row = store.get_user_by_id(user.id)
     return {
         "id": user.id,
         "username": user.username,
         "display_name": user.display_name,
         "role": user.role,
+        "totp_enabled": bool(row and row["totp_enabled"]),
     }
 
 
@@ -2506,6 +2641,7 @@ def _user_row_public(row) -> dict:
         "created_at": row["created_at"],
         "last_login_at": row["last_login_at"],
         "disabled": bool(row["disabled"]),
+        "totp_enabled": bool(row["totp_enabled"]),
     }
 
 
@@ -2598,6 +2734,25 @@ def api_admin_revoke_user_tokens(user_id: int,
         raise HTTPException(404, "not found")
     n = revoke_all_tokens(user_id)
     return {"ok": True, "revoked": n}
+
+
+@app.post("/api/admin/users/{user_id}/2fa/disable")
+def api_admin_disable_user_2fa(user_id: int,
+                                _: CurrentUser = Depends(require_role("admin"))):
+    """Force-disable 2FA for a user (e.g. lost authenticator device).
+
+    Recovery path: an admin can strip 2FA so the user can log in with just
+    their password and re-enroll. The user's pending 2FA tokens are revoked
+    so a half-finished login can't complete.
+    """
+    if demo_disable_admin_user_management():
+        raise HTTPException(404, "not found")
+    if get_user_by_id(user_id) is None:
+        raise HTTPException(404, "user not found")
+    set_totp_secret(user_id, None)
+    set_totp_enabled(user_id, False)
+    revoke_pending_2fa_for_user(user_id)
+    return {"ok": True, "totp_enabled": False}
 
 
 # --- admin: server ops (backup / disk / checks / schedule) -----------------
