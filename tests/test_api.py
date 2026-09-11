@@ -12,6 +12,7 @@ from collections import OrderedDict
 
 import httpx
 import numpy as np
+import pyotp
 import pytest
 from fastapi.testclient import TestClient
 
@@ -188,6 +189,19 @@ def _bearer(client, username="admin", password="password123"):
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
+def _bearer_2fa(client, secret, username="admin", password="password123"):
+    """Login as a 2FA-enabled user and complete the second step."""
+    r = client.post("/api/auth/login", json={"username": username, "password": password})
+    assert r.status_code == 200, r.text
+    pending = r.json()["pending_token"]
+    r = client.post(
+        "/api/auth/2fa/verify",
+        json={"pending_token": pending, "code": pyotp.TOTP(secret).now()},
+    )
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
 def _seed_done_photo(uid, *, thumb=True, thumb_bytes=None,
                      capture_time=1700000000, tags=None, place=None, gps=None,
                      archived=0, hidden=0, favorited=0, media_type="image/jpeg",
@@ -331,6 +345,138 @@ class TestAuthEndpoints:
         assert client.post("/api/sign", json={"paths": ["/etc/passwd"]}, headers=headers).status_code == 400
         assert client.post("/api/sign", json={"paths": ["/api/photos/x/full"], "ttl": 999999},
                            headers=headers).status_code == 200  # ttl clamped
+
+
+class Test2FAEndpoints:
+    def _enroll_via_api(self, client, password_hash, username="admin"):
+        """Full self-service enrollment: setup → confirm. Returns the secret."""
+        _seed_user(username=username, password_hash=password_hash)
+        headers = _bearer(client, username=username)
+        r = client.post("/api/auth/2fa/setup", headers=headers)
+        assert r.status_code == 200, r.text
+        secret = r.json()["secret"]
+        assert r.json()["otpauth_uri"].startswith("otpauth://totp/")
+        code = pyotp.TOTP(secret).now()
+        r = client.post("/api/auth/2fa/confirm", json={"code": code}, headers=headers)
+        assert r.status_code == 200, r.text
+        return secret
+
+    def test_login_requires_2fa_when_enabled(self, client, password_hash):
+        self._enroll_via_api(client, password_hash)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["2fa_required"] is True
+        assert body["pending_token"]
+        assert "access_token" not in body
+
+    def test_2fa_verify_completes_login(self, client, password_hash):
+        secret = self._enroll_via_api(client, password_hash)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        pending = r.json()["pending_token"]
+        r = client.post("/api/auth/2fa/verify", json={"pending_token": pending, "code": pyotp.TOTP(secret).now()})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["access_token"]
+        assert body["refresh_token"]
+        assert body["user"]["username"] == "admin"
+
+    def test_2fa_verify_wrong_code(self, client, password_hash):
+        self._enroll_via_api(client, password_hash)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        pending = r.json()["pending_token"]
+        r = client.post("/api/auth/2fa/verify", json={"pending_token": pending, "code": "000000"})
+        assert r.status_code == 401
+
+    def test_2fa_verify_missing_fields(self, client, password_hash):
+        self._enroll_via_api(client, password_hash)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        pending = r.json()["pending_token"]
+        assert client.post("/api/auth/2fa/verify", json={}).status_code == 400
+        assert client.post("/api/auth/2fa/verify", json={"pending_token": pending}).status_code == 400
+        assert client.post("/api/auth/2fa/verify", json={"code": "123456"}).status_code == 400
+
+    def test_setup_requires_auth(self, client):
+        assert client.post("/api/auth/2fa/setup").status_code == 401
+        assert client.post("/api/auth/2fa/confirm", json={"code": "123456"}).status_code == 401
+        assert client.post("/api/auth/2fa/disable", json={}).status_code == 401
+
+    def test_confirm_wrong_code_does_not_enable(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        r = client.post("/api/auth/2fa/setup", headers=headers)
+        secret = r.json()["secret"]
+        r = client.post("/api/auth/2fa/confirm", json={"code": "000000"}, headers=headers)
+        assert r.status_code == 400
+        # 2FA is still off — login works without a code.
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        assert r.json().get("2fa_required") is not True
+        # And the right code still works (setup state is preserved).
+        r = client.post("/api/auth/2fa/confirm", json={"code": pyotp.TOTP(secret).now()}, headers=headers)
+        assert r.status_code == 200
+
+    def test_confirm_without_setup(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        r = client.post("/api/auth/2fa/confirm", json={"code": "123456"}, headers=headers)
+        assert r.status_code == 400
+
+    def test_disable_with_code(self, client, password_hash):
+        secret = self._enroll_via_api(client, password_hash)
+        headers = _bearer_2fa(client, secret)
+        r = client.post("/api/auth/2fa/disable", json={"code": "000000"}, headers=headers)
+        assert r.status_code == 400  # wrong code rejected
+        code = pyotp.TOTP(secret).now()
+        r = client.post("/api/auth/2fa/disable", json={"code": code}, headers=headers)
+        assert r.status_code == 200
+        assert r.json()["totp_enabled"] is False
+        # Login no longer requires 2FA.
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        assert r.json().get("2fa_required") is not True
+
+    def test_disable_with_password(self, client, password_hash):
+        secret = self._enroll_via_api(client, password_hash)
+        headers = _bearer_2fa(client, secret)
+        r = client.post("/api/auth/2fa/disable", json={"password": "password123"}, headers=headers)
+        assert r.status_code == 200
+        assert r.json()["totp_enabled"] is False
+
+    def test_disable_requires_proof(self, client, password_hash):
+        secret = self._enroll_via_api(client, password_hash)
+        headers = _bearer_2fa(client, secret)
+        r = client.post("/api/auth/2fa/disable", json={}, headers=headers)
+        assert r.status_code == 400
+
+    def test_user_row_exposes_totp_enabled(self, client, password_hash):
+        secret = self._enroll_via_api(client, password_hash)
+        headers = _bearer_2fa(client, secret)
+        r = client.get("/api/admin/users", headers=headers)
+        assert r.status_code == 200
+        users = r.json()["users"]
+        assert users[0]["totp_enabled"] is True
+
+    def test_admin_can_disable_user_2fa(self, client, password_hash):
+        secret = self._enroll_via_api(client, password_hash)
+        uid = store.get_user_by_username("admin")["id"]
+        headers = _bearer_2fa(client, secret)
+        r = client.post(f"/api/admin/users/{uid}/2fa/disable", headers=headers)
+        assert r.status_code == 200
+        assert r.json()["totp_enabled"] is False
+        # Login no longer requires 2FA.
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        assert r.json().get("2fa_required") is not True
+
+    def test_admin_disable_unknown_user(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        r = client.post("/api/admin/users/99999/2fa/disable", headers=headers)
+        assert r.status_code == 404
+
+    def test_admin_disable_requires_admin(self, client, password_hash):
+        _seed_user(username="reader", role="read", password_hash=password_hash)
+        headers = _bearer(client, username="reader")
+        r = client.post("/api/admin/users/1/2fa/disable", headers=headers)
+        assert r.status_code == 403
 
 
 class TestPublicEndpoints:
@@ -2000,3 +2146,4 @@ class TestPeopleCacheLru:
         api._invalidate_people_cache()
         api.api_people(limit=10, offset=0, q="al")
         assert calls == ["al", "al"]
+

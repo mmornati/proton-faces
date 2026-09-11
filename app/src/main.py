@@ -89,6 +89,26 @@ def _reset_password(username: str) -> int:
     return 0
 
 
+def _disable_2fa(username: str) -> int:
+    """One-shot recovery: strip 2FA from a user so they can log in again.
+
+    Use when the authenticator app is lost and the user (or the only admin)
+    is locked out. Mirrors the admin API force-disable path: clears the TOTP
+    secret, flips totp_enabled off, and revokes any half-finished pending
+    2FA login tokens.
+    """
+    store.init_db()
+    row = store.get_user_by_username(username)
+    if row is None:
+        print(f"user '{username}' not found", file=sys.stderr)
+        return 2
+    store.set_totp_secret(row["id"], None)
+    store.set_totp_enabled(row["id"], False)
+    n = store.revoke_pending_2fa_for_user(row["id"])
+    print(f"2FA disabled for '{username}'; {n} pending login(s) revoked")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="proton-faces")
     parser.add_argument(
@@ -120,6 +140,12 @@ def main() -> None:
         metavar="USERNAME",
         help="One-shot: reset an existing user's password.",
     )
+    parser.add_argument(
+        "--disable-2fa",
+        default=None,
+        metavar="USERNAME",
+        help="One-shot: strip 2FA from a user (recovery when the authenticator is lost).",
+    )
     args = parser.parse_args()
 
     if args.create_admin is not None:
@@ -130,6 +156,9 @@ def main() -> None:
 
     if args.reset_password is not None:
         sys.exit(_reset_password(args.reset_password))
+
+    if args.disable_2fa is not None:
+        sys.exit(_disable_2fa(args.disable_2fa))
 
     if args.backfill_gps:
         from indexer import backfill_gps, enrich_places

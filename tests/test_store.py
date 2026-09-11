@@ -1332,6 +1332,58 @@ class TestUsersAndTokens:
         assert store.get_photo("p1")["favorited"] == 0
 
 
+class TestTotpStore:
+    def test_secret_roundtrip(self, tmp_db):
+        uid = store.create_user("jane", "hash")
+        assert store.get_totp_secret(uid) is None
+        store.set_totp_secret(uid, "ciphertext")
+        assert store.get_totp_secret(uid) == "ciphertext"
+        store.set_totp_secret(uid, None)
+        assert store.get_totp_secret(uid) is None
+
+    def test_enabled_flag(self, tmp_db):
+        uid = store.create_user("jane", "hash")
+        assert store.totp_enabled(uid) is False
+        store.set_totp_enabled(uid, True)
+        assert store.totp_enabled(uid) is True
+        store.set_totp_enabled(uid, False)
+        assert store.totp_enabled(uid) is False
+
+    def test_new_users_default_to_no_2fa(self, tmp_db):
+        uid = store.create_user("jane", "hash")
+        row = store.get_user_by_id(uid)
+        assert row["totp_enabled"] == 0
+        assert row["totp_secret_enc"] is None
+
+    def test_pending_2fa_create_consume(self, tmp_db):
+        uid = store.create_user("jane", "hash")
+        token = store.create_pending_2fa(uid, 300)
+        row = store.consume_pending_2fa(token)
+        assert row is not None
+        assert row["user_id"] == uid
+        # Single-use: a second consume returns nothing.
+        assert store.consume_pending_2fa(token) is None
+
+    def test_pending_2fa_new_login_invalidates_old(self, tmp_db):
+        uid = store.create_user("jane", "hash")
+        old = store.create_pending_2fa(uid, 300)
+        new = store.create_pending_2fa(uid, 300)
+        assert store.consume_pending_2fa(old) is None
+        assert store.consume_pending_2fa(new) is not None
+
+    def test_pending_2fa_revoke_for_user(self, tmp_db):
+        uid = store.create_user("jane", "hash")
+        token = store.create_pending_2fa(uid, 300)
+        assert store.revoke_pending_2fa_for_user(uid) == 1
+        assert store.consume_pending_2fa(token) is None
+
+    def test_pending_2fa_cascade_on_user_delete(self, tmp_db):
+        uid = store.create_user("jane", "hash")
+        token = store.create_pending_2fa(uid, 300)
+        store.delete_user(uid)
+        assert store.consume_pending_2fa(token) is None
+
+
 class TestClips:
     def test_insert_clip_upsert(self, tmp_db):
         store.upsert_photos([_photo("p1")])

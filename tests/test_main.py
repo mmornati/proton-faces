@@ -52,6 +52,32 @@ class TestResetPassword:
         assert auth.verify_password("brand-new-pass", updated["password_hash"])
 
 
+class TestDisable2FA:
+    def test_disables_and_revokes_pending(self, tmp_db, monkeypatch):
+        monkeypatch.setenv("ADMIN_PASSWORD", "supersecret1")
+        assert main._create_admin("boss", "The Boss") == 0
+        user = store.get_user_by_username("boss")
+        store.set_totp_secret(user["id"], "encrypted-secret")
+        store.set_totp_enabled(user["id"], True)
+        store.create_pending_2fa(user["id"], 3600)
+        assert main._disable_2fa("boss") == 0
+        updated = store.get_user_by_username("boss")
+        assert updated["totp_enabled"] == 0
+        assert updated["totp_secret_enc"] is None
+        # pending token was revoked
+        assert store.revoke_pending_2fa_for_user(user["id"]) == 0
+
+    def test_missing_user_returns_2(self, tmp_db):
+        assert main._disable_2fa("ghost") == 2
+
+    def test_noop_when_2fa_off(self, tmp_db, monkeypatch):
+        monkeypatch.setenv("ADMIN_PASSWORD", "supersecret1")
+        assert main._create_admin("boss", "The Boss") == 0
+        assert main._disable_2fa("boss") == 0
+        updated = store.get_user_by_username("boss")
+        assert updated["totp_enabled"] == 0
+
+
 class TestUvicornWorkers:
     def test_default_is_two(self, monkeypatch):
         monkeypatch.delenv("RUN_INDEXER", raising=False)

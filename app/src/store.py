@@ -17,7 +17,7 @@ from sidecar import read_face_sidecar
 # schema objects that old DBs must also gain. init_db() records this in
 # `PRAGMA user_version` once migrations have run, so each backfill runs at
 # most once per database.
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS photos (
@@ -167,7 +167,14 @@ CREATE TABLE IF NOT EXISTS users (
                   CHECK (role IN ('read','write','admin')),
     created_at    INTEGER NOT NULL,
     last_login_at INTEGER,
-    disabled      INTEGER NOT NULL DEFAULT 0
+    disabled      INTEGER NOT NULL DEFAULT 0,
+    -- Optional TOTP 2FA. The secret is AES-GCM-encrypted at rest with a key
+    -- derived from SIGNING_SECRET (see auth._2fa_secret_key); NULL means the
+    -- user has no 2FA enrolled. totp_enabled is the authoritative flag — a
+    -- secret can exist while disabled during the setup "confirm the code"
+    -- step, so a half-finished enrollment never locks anyone out.
+    totp_secret_enc TEXT,
+    totp_enabled   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS auth_tokens (
@@ -181,6 +188,19 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_exp  ON auth_tokens(expires_at);
+
+-- Short-lived, single-use tokens for the second step of a 2FA login. A user
+-- with 2FA enabled gets one of these after a correct username+password; the
+-- 6-digit TOTP code is then exchanged for the real access/refresh pair.
+-- Only the SHA-256 hash is stored (same scheme as auth_tokens).
+CREATE TABLE IF NOT EXISTS pending_2fa (
+    token      TEXT PRIMARY KEY,                  -- sha256(32 random bytes hex)
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pending_2fa_user ON pending_2fa(user_id);
+CREATE INDEX IF NOT EXISTS idx_pending_2fa_exp  ON pending_2fa(expires_at);
 
 CREATE TABLE IF NOT EXISTS user_favorites (
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -465,6 +485,13 @@ def migrate(conn: sqlite3.Connection) -> None:
     # re-issued as SHA-256 hashes on next login. Safe to run repeatedly.
     if "auth_tokens" in tables:
         conn.execute("DELETE FROM auth_tokens")
+    # Optional TOTP 2FA columns (additive). Existing users get totp_enabled=0
+    # and a NULL secret — no 2FA until they enroll.
+    ucols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+    if "totp_secret_enc" not in ucols:
+        conn.execute("ALTER TABLE users ADD COLUMN totp_secret_enc TEXT")
+    if "totp_enabled" not in ucols:
+        conn.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
 
 
 # --- photos ---------------------------------------------------------------
@@ -2235,8 +2262,8 @@ def create_user(username: str, password_hash: str, role: str = "read",
 def get_user_by_id(user_id: int) -> sqlite3.Row | None:
     with get_conn() as conn:
         return conn.execute(
-            "SELECT id, username, display_name, role, created_at, last_login_at, disabled "
-            "FROM users WHERE id=?",
+            "SELECT id, username, display_name, role, created_at, last_login_at, disabled, "
+            "totp_enabled, totp_secret_enc FROM users WHERE id=?",
             (user_id,),
         ).fetchone()
 
@@ -2252,8 +2279,8 @@ def get_user_by_username(username: str) -> sqlite3.Row | None:
 def list_users() -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
-            "SELECT id, username, display_name, role, created_at, last_login_at, disabled "
-            "FROM users ORDER BY username COLLATE NOCASE"
+            "SELECT id, username, display_name, role, created_at, last_login_at, disabled, "
+            "totp_enabled FROM users ORDER BY username COLLATE NOCASE"
         ).fetchall()
 
 
@@ -2358,6 +2385,88 @@ def revoke_all_tokens(user_id: int) -> int:
 def purge_expired_tokens() -> int:
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM auth_tokens WHERE expires_at < ?", (int(time.time()),))
+        return cur.rowcount
+
+
+# --- TOTP 2FA --------------------------------------------------------------
+
+def set_totp_secret(user_id: int, secret_enc: str | None) -> None:
+    """Store (or clear) the encrypted TOTP secret for a user.
+
+    ``secret_enc`` is the AES-GCM ciphertext produced by
+    ``auth.encrypt_totp_secret``. Setting it does NOT enable 2FA — callers
+    must also call ``set_totp_enabled`` once the user confirms a valid code.
+    """
+    with get_conn() as conn:
+        conn.execute("UPDATE users SET totp_secret_enc=? WHERE id=?", (secret_enc, user_id))
+
+
+def get_totp_secret(user_id: int) -> str | None:
+    """Return the encrypted TOTP secret for a user, or None if not enrolled."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT totp_secret_enc FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+    return row["totp_secret_enc"] if row else None
+
+
+def set_totp_enabled(user_id: int, enabled: bool) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET totp_enabled=? WHERE id=?", (1 if enabled else 0, user_id)
+        )
+
+
+def totp_enabled(user_id: int) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT totp_enabled FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+    return bool(row and row["totp_enabled"])
+
+
+def create_pending_2fa(user_id: int, expires_in: int) -> str:
+    """Mint a short-lived, single-use token for the second login step.
+
+    The raw token is returned to the caller; only its SHA-256 hash is stored
+    (same scheme as auth_tokens, issue #34). A user may hold at most one
+    pending token — a new login invalidates any previous one.
+    """
+    import secrets
+    token = secrets.token_hex(32)
+    now = int(time.time())
+    with get_conn() as conn:
+        conn.execute("DELETE FROM pending_2fa WHERE user_id=?", (user_id,))
+        conn.execute(
+            "INSERT INTO pending_2fa (token, user_id, expires_at, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (_hash_token(token), user_id, now + expires_in, now),
+        )
+    return token
+
+
+def consume_pending_2fa(token: str) -> sqlite3.Row | None:
+    """Atomically redeem a pending 2FA token.
+
+    Returns the (user_id, expires_at) row and deletes the token in the same
+    transaction, so a token can never be redeemed twice. The caller is
+    responsible for checking ``expires_at``.
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id, expires_at FROM pending_2fa WHERE token=?",
+            (_hash_token(token),),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM pending_2fa WHERE token=?", (_hash_token(token),))
+        return row
+
+
+def revoke_pending_2fa_for_user(user_id: int) -> int:
+    """Drop any outstanding pending token (e.g. on disable or logout)."""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM pending_2fa WHERE user_id=?", (user_id,))
         return cur.rowcount
 
 
