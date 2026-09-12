@@ -15,11 +15,11 @@ nothing is ever written back to Proton Drive.
 
 <br>
 
-[![Watch the demo — Proton Faces](https://res.cloudinary.com/blog-mornati-net/video/upload/so_3/v1788111273/aqarlh1taqbygcsode6o.jpg)](https://player.cloudinary.com/embed/?cloud_name=blog-mornati-net&public_id=aqarlh1taqbygcsode6o)
+<img src="docs/assets/screencasts/mobile-browse.gif" alt="Browsing the Proton Faces mobile app" width="300" style="border-radius: 24px; border: 1px solid #333; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);">
 
 <br>
 
-*Search your whole library like Google Photos — but 100% private and offline. Click the frame to play the demo.*
+*Search your whole library like Google Photos — but 100% private and offline.*
 
 </div>
 
@@ -32,16 +32,6 @@ look at them. That also means *you* have to do the searching. Proton Faces turns
 photo library into a fully searchable archive — people, places, objects, free text — without
 ever uploading a single byte back. The index and every ML model run on your own hardware; the
 only component that ever talks to Proton is a strictly **read-only** bridge.
-
----
-
-## Screenshots
-
-![Photos grid](docs/assets/screenshots/photos.png)
-![Places map](docs/assets/screenshots/places.png)
-![People](docs/assets/screenshots/people.png)
-![Face tagging](docs/assets/screenshots/face-tagging.png)
-![Free-text search](docs/assets/screenshots/search-dog.png)
 
 ---
 
