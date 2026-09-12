@@ -1098,6 +1098,9 @@ class TestPhotos:
         body = r.json()
         assert [a["uid"] for a in body["albums"]] == ["al1"]
         assert body["total"] == 2
+        # substring in the middle of the album name matches too.
+        r1b = client.get("/api/albums?q=Trip", headers=headers)
+        assert [a["uid"] for a in r1b.json()["albums"]] == ["al1"]
         r2 = client.get("/api/albums?q=nope", headers=headers)
         assert r2.json()["albums"] == []
         assert r2.json()["total"] == 2
@@ -1113,6 +1116,9 @@ class TestPhotos:
         body = r.json()
         assert [p["place"] for p in body["places"]] == ["Milano"]
         assert body["total"] == 2
+        # substring in the middle of the place name matches too.
+        r1b = client.get("/api/places?q=rance", headers=headers)
+        assert [p["place"] for p in r1b.json()["places"]] == ["Paris, France"]
         r2 = client.get("/api/places?q=nope", headers=headers)
         assert r2.json()["places"] == []
         assert r2.json()["total"] == 2
@@ -1124,6 +1130,9 @@ class TestPhotos:
         headers = _bearer(client)
         r = client.get("/api/map?q=mila", headers=headers)
         assert [m["place"] for m in r.json()["markers"]] == ["Milano"]
+        # substring in the middle of the place name matches too.
+        r1b = client.get("/api/map?q=rance", headers=headers)
+        assert [m["place"] for m in r1b.json()["markers"]] == ["Paris, France"]
         r2 = client.get("/api/map?q=nope", headers=headers)
         assert r2.json()["markers"] == []
 
@@ -1169,8 +1178,11 @@ class TestFacesAndPeople:
         headers = _bearer(client)
         r = client.get("/api/people", params={"q": "alic"}, headers=headers)
         assert r.json()["total"] == 1
-        r2 = client.get("/api/people", params={"q": "zzz"}, headers=headers)
-        assert r2.json()["total"] == 0
+        # substring in the middle of the name matches too.
+        r2 = client.get("/api/people", params={"q": "lic"}, headers=headers)
+        assert r2.json()["total"] == 1
+        r3 = client.get("/api/people", params={"q": "zzz"}, headers=headers)
+        assert r3.json()["total"] == 0
 
     def test_person_cover_thumb_fallback(self, client, password_hash):
         _seed_user(password_hash=password_hash)

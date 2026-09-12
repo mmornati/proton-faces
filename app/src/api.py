@@ -230,8 +230,8 @@ _anchors_cache: tuple[float, dict] | None = None
 
 _PEOPLE_CACHE_TTL = 10.0
 _PEOPLE_CACHE_MAX = 32
-# Small LRU keyed by the name prefix (None = the unfiltered full list).
-# Typeahead keystrokes that move forward/back between prefixes hit warm
+# Small LRU keyed by the name query (None = the unfiltered full list).
+# Typeahead keystrokes that move forward/back between queries hit warm
 # entries instead of re-running the people query on every keystroke.
 _people_cache: OrderedDict[str | None, tuple[float, list]] = OrderedDict()
 _people_cache_lock = threading.Lock()
@@ -1573,9 +1573,9 @@ def _people_all_cached() -> list:
 @app.get("/api/people")
 def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
     """People ordered by photo_count DESC. Paginated, optionally filtered by a
-    case-insensitive name prefix.
+    case-insensitive name substring.
 
-    Each `q` prefix is materialized once and cached in a small LRU, then each
+    Each `q` query is materialized once and cached in a small LRU, then each
     page just slices the list — so infinite scroll (new offset per page) and
     typeahead keystrokes no longer re-run the aggregation for every request.
     """

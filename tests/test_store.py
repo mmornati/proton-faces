@@ -596,16 +596,28 @@ class TestDenormalizedCounts:
         row = next(r for r in rows if r["id"] == pid)
         assert (row["face_count"], row["photo_count"]) == (3, 2)
 
-    def test_all_people_q_prefix_collate_nocase(self, tmp_db):
+    def test_all_people_q_substring_collate_nocase(self, tmp_db):
         self._seed_photo_done("p1")
         for name in ["Alice", "alice", "Bob", "Alicia", "xalicia"]:
             store.create_person(name, "p1", None)
         hits = store.all_people(q="al")
         names = sorted(r["name"] for r in hits)
-        # case-insensitive prefix: everything starting with "al"; the
-        # substring-but-not-prefix "xalicia" is excluded.
-        assert names == ["Alice", "Alicia", "alice"]
+        # case-insensitive substring: everything containing "al", including
+        # the non-prefix "xalicia".
+        assert names == ["Alice", "Alicia", "alice", "xalicia"]
+        # substring in the middle of the name matches too.
+        assert sorted(r["name"] for r in store.all_people(q="lici")) == ["Alicia", "xalicia"]
         assert store.all_people(q="zzz") == []
+
+    def test_all_people_q_escapes_wildcards(self, tmp_db):
+        self._seed_photo_done("p1")
+        for name in ["100% Real", "100X Real", "under_score", "underscore"]:
+            store.create_person(name, "p1", None)
+        # `%` and `_` in the query are matched literally, not as wildcards.
+        assert sorted(r["name"] for r in store.all_people(q="100%")) == ["100% Real"]
+        assert sorted(r["name"] for r in store.all_people(q="under_")) == ["under_score"]
+        assert store.count_people(q="100%") == 1
+        assert store.count_people(q="under_") == 1
 
     def test_all_people_q_prefix_uses_index(self, tmp_db):
         self._seed_photo_done("p1")
@@ -1170,8 +1182,11 @@ class TestPlacesAndMap:
         assert [r["place"] for r in store.place_stats(q="mila")] == ["Milano"]
         assert [r["place"] for r in store.place_stats(q="MIL")] == ["Milano"]
         assert [r["place"] for r in store.place_stats(q="paris")] == ["Paris, Île-de-France, France"]
+        # substring in the middle of the place name matches too.
+        assert [r["place"] for r in store.place_stats(q="de-france")] == ["Paris, Île-de-France, France"]
         assert store.place_stats(q="nope") == []
         assert [r["place"] for r in store.map_markers(q="mila")] == ["Milano"]
+        assert [r["place"] for r in store.map_markers(q="de-france")] == ["Paris, Île-de-France, France"]
         assert store.map_markers(q="nope") == []
         assert store.count_places() == 3
 
@@ -1228,6 +1243,8 @@ class TestAlbums:
         )
         assert [a["uid"] for a in store.all_albums(q="hol")] == ["al1"]
         assert [a["uid"] for a in store.all_albums(q="HOLIDAY")] == ["al1"]
+        # substring in the middle of the album name matches too.
+        assert [a["uid"] for a in store.all_albums(q="Trip")] == ["al1"]
         assert store.all_albums(q="nope") == []
         assert len(store.all_albums()) == 2
 
