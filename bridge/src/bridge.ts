@@ -36,7 +36,7 @@ import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, extractRetryAfter, type TokenBucket } from './rateLimit';
-import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseRange, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles } from './helpers';
+import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
 const BRIDGE_HOST = process.env.BRIDGE_HOST ?? '0.0.0.0';
@@ -681,7 +681,11 @@ async function main(): Promise<void> {
                     return await fetchTimeline(ctx, limiter, url, request, true);
                 }
                 if (url.pathname === '/nodes' && request.method === 'POST') {
-                    return await fetchNodes(ctx, limiter, await request.json(), request);
+                    const body = await parseJsonBody(request);
+                    if (body === null) {
+                        return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
+                    }
+                    return await fetchNodes(ctx, limiter, body, request);
                 }
                 if (url.pathname === '/albums') {
                     if (request.method !== 'GET') {
@@ -690,7 +694,11 @@ async function main(): Promise<void> {
                     return await fetchAlbums(ctx, limiter);
                 }
                 if (url.pathname === '/thumbnails' && request.method === 'POST') {
-                    return await fetchThumbnails(ctx, limiter, await request.json());
+                    const body = await parseJsonBody(request);
+                    if (body === null) {
+                        return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
+                    }
+                    return await fetchThumbnails(ctx, limiter, body);
                 }
                 if (url.pathname.startsWith('/photo/') && url.pathname.endsWith('/full')) {
                     if (request.method !== 'GET' && request.method !== 'HEAD') {

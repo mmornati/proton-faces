@@ -700,6 +700,32 @@ def api_me(user: CurrentUser = Depends(require_user)):
     }
 
 
+@app.post("/api/auth/password")
+def api_change_password(request: Request, body: dict = Body(...),
+                        user: CurrentUser = Depends(require_user)):
+    """Self-service password change.
+
+    Requires the current password (so a stolen bearer token alone can't
+    silently take over the account), validates the new password against the
+    same minimum-length rule as the login screen, and revokes every other
+    session so a leaked old password stops working everywhere except here.
+    """
+    current = body.get("current_password")
+    new = body.get("new_password")
+    if not isinstance(current, str) or not isinstance(new, str):
+        raise HTTPException(400, "current_password and new_password are required")
+    row = store.get_user_by_username(user.username)
+    if row is None or not verify_password(current, row["password_hash"]):
+        raise HTTPException(401, "current password is incorrect")
+    if len(new) < 8:
+        raise HTTPException(400, "new password must be at least 8 characters")
+    store.update_user(user.id, password_hash=hash_password(new))
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.split(None, 1)[1].strip() if auth_header.lower().startswith("bearer ") else None
+    revoked = store.revoke_all_tokens_except(user.id, token) if token else store.revoke_all_tokens(user.id)
+    return {"ok": True, "revoked_sessions": revoked}
+
+
 @app.get("/api/auth/limits", dependencies=[])
 def api_limits():
     """Public — UI uses this to render the login screen with the right labels."""

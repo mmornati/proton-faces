@@ -75,8 +75,9 @@ List every account, create new ones, edit display name / role / disabled / passw
 |---|---|---|
 | List users | See the table | `GET /api/admin/users` |
 | Create | Fill the form | `POST /api/admin/users` |
-| Edit | Click **Edit** on a row | `PATCH /api/admin/users/{id}` |
-| Reset password | Same dialog | (body `{"password":"…"}`) |
+| Edit | Click **Edit** on a row (inline row opens) | `PATCH /api/admin/users/{id}` |
+| Reset password | Same inline row | (body `{"password":"…"}`) |
+| Force-disable 2FA | Click **Disable** next to the 2FA pill (with confirm) | `POST /api/admin/users/{id}/2fa/disable` |
 | Sign out everywhere | Click **Logout** on a row | `POST /api/admin/users/{id}/logout` |
 | Delete | Click **Delete** (with confirm) | `DELETE /api/admin/users/{id}` |
 
@@ -125,7 +126,7 @@ If a user loses their authenticator app (or the only admin is locked out), 2FA c
 docker compose exec app python main.py --disable-2fa mom
 ```
 
-This clears the TOTP secret, turns 2FA off, and revokes any half-finished pending login, so the user can sign in with just their password and re-enroll from **Status & diagnostics → Security**. The same recovery is available to an admin through the UI (Admin → users → *Disable 2FA*).
+This clears the TOTP secret, turns 2FA off, and revokes any half-finished pending login, so the user can sign in with just their password and re-enroll from the account menu (click your username, bottom-left → **Enable 2FA**). The same recovery is available to an admin through the UI (Admin → users → *Disable 2FA*).
 
 ---
 

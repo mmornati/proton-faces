@@ -74,6 +74,16 @@ The bottom status bar shows:
 - Last sync timestamp
 - Press `?` for details
 
+## The account menu
+
+Click your username chip (bottom-left) to open the account menu. Every signed-in user can:
+
+- **Change password** — requires the current password; every other session is signed out.
+- **Enable / disable 2FA** — enroll with an authenticator app (QR code or manual secret), or disable with a 6-digit code.
+- **Sign out** — revokes the current session.
+
+Admins additionally get the gear icon and the **Users** tab (see [Admin area](admin.md)).
+
 ## Roles
 
 The login modal signs you in as one of three roles:

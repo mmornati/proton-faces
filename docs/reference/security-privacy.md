@@ -52,7 +52,7 @@ Proton doesn't publish an OAuth/OIDC provider, so each family member gets a **lo
 - **Refresh tokens** — TTL `AUTH_REFRESH_TTL` (default 30 d).
 - Tokens are stored in `auth_tokens` (SQLite). The short-lived **access** token is kept in `localStorage` under `pf.auth`; the **refresh** token is held in the HttpOnly `SameSite=Strict` `pf_refresh` cookie (FP-1) so page-level XSS cannot exfiltrate it. The cookie's `Secure` flag is controlled by `AUTH_COOKIE_SECURE`.
 - Failed username probes run a dummy bcrypt hash to keep wall time comparable to a real failure (defense against username enumeration).
-- **Optional per-user 2FA (TOTP, authenticator app).** Each user can enroll from the status modal (QR code or manual secret); a 6-digit code is then required at every login. The TOTP secret is encrypted at rest (AES-256-GCM, key derived from `SIGNING_SECRET`), and the pending-login token expires after `AUTH_2FA_PENDING_TTL` (default 5 minutes). Recovery paths: an admin can force-disable 2FA for a user from the UI, or anyone with host access can run `python main.py --disable-2fa <username>` from the CLI (e.g. when the only admin is locked out).
+- **Optional per-user 2FA (TOTP, authenticator app).** Each user can enroll from the account menu (click your username, bottom-left → **Enable 2FA**; QR code or manual secret); a 6-digit code is then required at every login. The TOTP secret is encrypted at rest (AES-256-GCM, key derived from `SIGNING_SECRET`), and the pending-login token expires after `AUTH_2FA_PENDING_TTL` (default 5 minutes). Recovery paths: an admin can force-disable 2FA for a user from the UI, or anyone with host access can run `python main.py --disable-2fa <username>` from the CLI (e.g. when the only admin is locked out).
 - Password reset (`--reset-password`) **revokes every active token** for that user.
 
 ### Roles
@@ -122,6 +122,7 @@ If you run a reverse proxy in front, its own security headers (see
 | Someone accesses `localhost:8080` while you're away | Bearer tokens are required for every API endpoint — including the binary media endpoints (`/thumb`, `/full`, `/cover`, `/crop`), which additionally accept short-lived signed URLs from `/api/sign`. These are world-readable only when you explicitly set `DEMO_ALLOW_PUBLIC_THUMBS=1`. The `?` overlay shows who's signed in. Sign out from another device via the admin **Users** tab. |
 | Bug in the bridge | The bridge is read-only by construction; even a bug can't write back to Proton. Pin the SDK tag in your fork if you're paranoid. |
 | Malicious auth-session.json | Only the bridge reads it. It authenticates to Proton and streams the encrypted timeline — it can't be used to delete or upload. Revoke the session on Proton's website to invalidate. |
+| Compromised or broken image publish | `compose.yml` defaults to `:latest`, which is mutable. Pin images to a versioned tag or a content digest (`image@sha256:...`) for an immutable deploy — see [Pinning images to a version or digest](../getting-started/installation.md#pinning-images-to-a-version-or-digest). |
 
 ## What we don't do
 

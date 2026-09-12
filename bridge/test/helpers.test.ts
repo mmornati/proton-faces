@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseRange, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike } from '../src/helpers';
+import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike } from '../src/helpers';
 
 function makeNode(overrides: Partial<PhotoNodeLike> = {}): PhotoNodeLike {
     return {
@@ -249,5 +249,22 @@ describe('parseRange', () => {
         expect(r.status).toBe(416);
         expect(r.contentRange).toBe('bytes */100');
         expect(r.range).toBeUndefined();
+    });
+});
+
+describe('parseJsonBody', () => {
+    test('parses a valid JSON body', async () => {
+        const req = new Request('http://localhost/nodes', { method: 'POST', body: '{"uids":["a"]}' });
+        expect(await parseJsonBody(req)).toEqual({ uids: ['a'] });
+    });
+
+    test('returns null for a malformed JSON body', async () => {
+        const req = new Request('http://localhost/nodes', { method: 'POST', body: '{' });
+        expect(await parseJsonBody(req)).toBeNull();
+    });
+
+    test('returns null for an empty body', async () => {
+        const req = new Request('http://localhost/nodes', { method: 'POST', body: '' });
+        expect(await parseJsonBody(req)).toBeNull();
     });
 });

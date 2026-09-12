@@ -291,6 +291,12 @@ them — no building on the server. To build from source instead, use
 `docker compose up -d --build`. On a shared box, `scripts/build.sh` shows how to cap BuildKit's
 CPU usage so a build never starves your other services.
 
+> **Persistence.** Compose mounts the named `data` volume at `/data` automatically, so your
+> index and thumbnails survive restarts. If you run an image directly with `docker run`
+> (quick tests, experiments), you **must** pass `-v proton-faces-data:/data` yourself — the
+> image no longer declares a `VOLUME`, so without that flag writes go to the container's
+> ephemeral filesystem and vanish when the container is removed.
+
 ### 5. Create your admin account
 
 ```bash
