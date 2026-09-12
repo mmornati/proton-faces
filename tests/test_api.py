@@ -1350,6 +1350,41 @@ class TestBinaryEndpointAuth:
         headers = _bearer(client)
         assert client.post(f"/api/faces/{face_id}/person", json={}, headers=headers).status_code == 400
 
+    def test_face_assign_keeps_existing_cover(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        cover_face = _seed_face("p1", bbox=(0.1, 0.1, 0.4, 0.4), emb=_emb(1))
+        new_face = _seed_face("p1", bbox=(0.5, 0.5, 0.8, 0.8), emb=_emb(2))
+        pid = store.create_person(name="Alice", cover_uid="p1", cover_face_id=cover_face)
+        store.assign_face_person(cover_face, pid)
+        headers = _bearer(client)
+        r = client.post(f"/api/faces/{new_face}/person", json={"person_id": pid}, headers=headers)
+        assert r.status_code == 200
+        assert store.get_person(pid)["cover_face_id"] == cover_face
+
+    def test_face_assign_sets_cover_when_unset(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        face_id = _seed_face("p1")
+        pid = store.create_person(name="Alice", cover_uid="p1", cover_face_id=None)
+        headers = _bearer(client)
+        r = client.post(f"/api/faces/{face_id}/person", json={"person_id": pid}, headers=headers)
+        assert r.status_code == 200
+        assert store.get_person(pid)["cover_face_id"] == face_id
+
+    def test_face_assign_by_name_keeps_existing_cover(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        cover_face = _seed_face("p1", bbox=(0.1, 0.1, 0.4, 0.4), emb=_emb(1))
+        new_face = _seed_face("p1", bbox=(0.5, 0.5, 0.8, 0.8), emb=_emb(2))
+        pid = store.create_person(name="Alice", cover_uid="p1", cover_face_id=cover_face)
+        store.assign_face_person(cover_face, pid)
+        headers = _bearer(client)
+        r = client.post(f"/api/faces/{new_face}/person", json={"name": "Alice"}, headers=headers)
+        assert r.status_code == 200
+        assert r.json()["merged"] is True
+        assert store.get_person(pid)["cover_face_id"] == cover_face
+
     def test_face_unassign(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1")

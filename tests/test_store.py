@@ -904,6 +904,20 @@ class TestMergePeopleBulk:
         store.merge_people_bulk([b], a)
         assert store.get_person(a)["name"] == "Target"
 
+    def test_set_person_cover_face_if_unset(self, tmp_db):
+        store.upsert_photos([_photo("p1"), _photo("p2")])
+        store.set_photo_done("p1", "t1.webp", None, None)
+        store.set_photo_done("p2", "t2.webp", None, None)
+        fa = store.insert_face("p1", None, 0.9, "[]", EMB.tobytes())
+        fb = store.insert_face("p2", None, 0.9, "[]", EMB.tobytes())
+        pid = store.create_person("Alice", "p1", None)
+        # unset -> sets the cover
+        store.set_person_cover_face_if_unset(pid, fa)
+        assert store.get_person(pid)["cover_face_id"] == fa
+        # already set -> no-op
+        store.set_person_cover_face_if_unset(pid, fb)
+        assert store.get_person(pid)["cover_face_id"] == fa
+
     def test_skips_self_missing_and_duplicates(self, tmp_db):
         a = self._seed_person("p1", "A")
         b = self._seed_person("p2", "B")
