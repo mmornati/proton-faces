@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { TokenBucket, createHttpRateLimiter, createRateLimiter, extractRetryAfter } from '../src/rateLimit';
+import { TokenBucket, createHttpRateLimiter, createRateLimiter, extractRetryAfter, noteRetryAfterIfPresent } from '../src/rateLimit';
 
 describe('TokenBucket', () => {
     test('rate <= 0 disables the bucket', () => {
@@ -240,5 +240,41 @@ describe('extractRetryAfter', () => {
 
     test('falls back to cause.response', () => {
         expect(extractRetryAfter({ cause: { response: makeResponse(429, '7') } })).toBe(7);
+    });
+});
+
+describe('noteRetryAfterIfPresent', () => {
+    test('a 429 with Retry-After advances the bucket', async () => {
+        const b = new TokenBucket(10, 1);
+        noteRetryAfterIfPresent(b, { response: makeResponse(429, '2') });
+        const t0 = Date.now();
+        await b.acquire();
+        expect(Date.now() - t0).toBeGreaterThanOrEqual(1500);
+    });
+
+    test('a 503 with Retry-After advances the bucket', async () => {
+        const b = new TokenBucket(10, 1);
+        noteRetryAfterIfPresent(b, { response: makeResponse(503, '2') });
+        const t0 = Date.now();
+        await b.acquire();
+        expect(Date.now() - t0).toBeGreaterThanOrEqual(1500);
+    });
+
+    test('a non-retry error leaves the bucket untouched', async () => {
+        const b = new TokenBucket(10, 1);
+        noteRetryAfterIfPresent(b, { response: makeResponse(500) });
+        noteRetryAfterIfPresent(b, new Error('boom'));
+        const t0 = Date.now();
+        await b.acquire();
+        expect(Date.now() - t0).toBeLessThan(100);
+    });
+
+    test('null/undefined errors are no-ops', async () => {
+        const b = new TokenBucket(10, 1);
+        noteRetryAfterIfPresent(b, null);
+        noteRetryAfterIfPresent(b, undefined);
+        const t0 = Date.now();
+        await b.acquire();
+        expect(Date.now() - t0).toBeLessThan(100);
     });
 });

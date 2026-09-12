@@ -148,3 +148,15 @@ export function extractRetryAfter(err: unknown): number | null {
     if (Number.isFinite(asDate)) return Math.max(1, (asDate - Date.now()) / 1000);
     return 1;
 }
+
+/**
+ * Feed a `Retry-After` from an upstream error into the bucket, when present.
+ *
+ * Shared by every SDK-consuming handler so a 429/503 observed on any path
+ * (timeline, nodes, albums, thumbnails) pauses the bucket instead of only the
+ * ones that remember to call `extractRetryAfter` themselves.
+ */
+export function noteRetryAfterIfPresent(limiter: TokenBucket, error: unknown): void {
+    const ra = extractRetryAfter(error);
+    if (ra !== null) limiter.noteRetryAfter(ra);
+}
