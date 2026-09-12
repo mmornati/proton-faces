@@ -123,6 +123,7 @@ from store import (
     set_archived,
     set_hidden,
     set_person_cover_face,
+    set_person_cover_face_if_unset,
     set_tags,
     set_totp_enabled,
     set_totp_secret,
@@ -1951,12 +1952,12 @@ def api_face_assign(face_id: int, body: dict,
         if existing is not None:
             person_id = existing["id"]
             merged = True
-            set_person_cover_face(person_id, face_id)
+            set_person_cover_face_if_unset(person_id, face_id)
         else:
             person_id = create_person(name=name, cover_uid=cover_uid, cover_face_id=face_id)
 
     assign_face_person(face_id, person_id)
-    set_person_cover_face(person_id, face_id)
+    set_person_cover_face_if_unset(person_id, face_id)
     _drop_crop_cache(face_id)
 
     # similarity propagation: tag unassigned look-alikes

@@ -1165,6 +1165,14 @@ def set_person_cover_face(person_id: int, cover_face_id: int) -> None:
         conn.execute("UPDATE people SET cover_face_id=? WHERE id=?", (cover_face_id, person_id))
 
 
+def set_person_cover_face_if_unset(person_id: int, cover_face_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE people SET cover_face_id=? WHERE id=? AND cover_face_id IS NULL",
+            (cover_face_id, person_id),
+        )
+
+
 def get_person(person_id: int) -> sqlite3.Row | None:
     with get_conn() as conn:
         return conn.execute("SELECT p.* FROM people p WHERE p.id=?", (person_id,)).fetchone()
