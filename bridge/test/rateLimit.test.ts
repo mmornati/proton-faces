@@ -12,6 +12,13 @@ describe('TokenBucket', () => {
     test('positive rate enables the bucket with a default burst', () => {
         const b = new TokenBucket(5);
         expect(b.isEnabled()).toBe(true);
+        expect(b.capacity).toBe(Math.max(1, Math.ceil(5 * 2)));
+    });
+
+    test('an explicit burst overrides the default capacity', () => {
+        const b = new TokenBucket(5, 2);
+        expect(b.isEnabled()).toBe(true);
+        expect(b.capacity).toBe(2);
     });
 
     test('acquire returns immediately while tokens remain', async () => {
@@ -66,6 +73,48 @@ describe('createRateLimiter', () => {
             expect(createRateLimiter().isEnabled()).toBe(true);
         } finally {
             if (prev !== undefined) process.env.PROTON_BRIDGE_RATE_LIMIT = prev;
+        }
+    });
+
+    test('uses the configured burst as capacity', () => {
+        const prevRate = process.env.PROTON_BRIDGE_RATE_LIMIT;
+        const prevBurst = process.env.PROTON_BRIDGE_RATE_BURST;
+        process.env.PROTON_BRIDGE_RATE_LIMIT = '3';
+        process.env.PROTON_BRIDGE_RATE_BURST = '2';
+        try {
+            const limiter = createRateLimiter();
+            expect(limiter.isEnabled()).toBe(true);
+            expect(limiter.capacity).toBe(2);
+        } finally {
+            if (prevRate !== undefined) process.env.PROTON_BRIDGE_RATE_LIMIT = prevRate;
+            else delete process.env.PROTON_BRIDGE_RATE_LIMIT;
+            if (prevBurst !== undefined) process.env.PROTON_BRIDGE_RATE_BURST = prevBurst;
+            else delete process.env.PROTON_BRIDGE_RATE_BURST;
+        }
+    });
+
+    test('startup log prints the configured burst, not the default', () => {
+        const prevRate = process.env.PROTON_BRIDGE_RATE_LIMIT;
+        const prevBurst = process.env.PROTON_BRIDGE_RATE_BURST;
+        const prevLog = console.log;
+        process.env.PROTON_BRIDGE_RATE_LIMIT = '3';
+        process.env.PROTON_BRIDGE_RATE_BURST = '2';
+        const messages: string[] = [];
+        console.log = (msg: unknown) => {
+            messages.push(String(msg));
+        };
+        try {
+            createRateLimiter();
+            const log = messages.find((m) => m.includes('rate limit enabled'));
+            expect(log).toBeDefined();
+            expect(log).toContain('burst 2');
+            expect(log).not.toContain('burst 6');
+        } finally {
+            console.log = prevLog;
+            if (prevRate !== undefined) process.env.PROTON_BRIDGE_RATE_LIMIT = prevRate;
+            else delete process.env.PROTON_BRIDGE_RATE_LIMIT;
+            if (prevBurst !== undefined) process.env.PROTON_BRIDGE_RATE_BURST = prevBurst;
+            else delete process.env.PROTON_BRIDGE_RATE_BURST;
         }
     });
 });

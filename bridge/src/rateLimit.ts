@@ -32,7 +32,7 @@ export class TokenBucket {
     private tokens: number;
     private lastRefill: number;
     private ratePerMs: number;
-    private capacity: number;
+    readonly capacity: number;
     private resumeAt = 0;
 
     constructor(ratePerSec: number, burst?: number) {
@@ -91,9 +91,7 @@ export function createRateLimiter(): TokenBucket {
     const burst = Number(process.env.PROTON_BRIDGE_RATE_BURST ?? Math.max(1, Math.ceil(rate * 2)));
     const limiter = new TokenBucket(rate, Number.isFinite(burst) && burst > 0 ? burst : undefined);
     if (limiter.isEnabled()) {
-        console.log(
-            `[bridge] rate limit enabled: ${rate} req/s sustained, burst ${limiter.isEnabled() ? Math.ceil(rate * 2) : 0}`,
-        );
+        console.log(`[bridge] rate limit enabled: ${rate} req/s sustained, burst ${limiter.capacity}`);
     }
     return limiter;
 }
