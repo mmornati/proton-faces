@@ -15,21 +15,27 @@ nothing is ever written back to Proton Drive.
 
 <br>
 
-[![Watch the demo — Proton Faces](https://res.cloudinary.com/blog-mornati-net/video/upload/so_3/v1788111273/aqarlh1taqbygcsode6o.jpg)](https://player.cloudinary.com/embed/?cloud_name=blog-mornati-net&public_id=aqarlh1taqbygcsode6o)
+<img src="docs/assets/screencasts/mobile-browse.gif" alt="Browsing the Proton Faces mobile app" width="300" style="border-radius: 24px; border: 1px solid #333; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);">
 
 <br>
 
-*Search your whole library like Google Photos — but 100% private and offline. Click the frame to play the demo.*
+*Search your whole library like Google Photos — but 100% private and offline.*
 
 </div>
 
 ---
 
-## ✨ What it does
+## Why it exists
 
 Proton Photos are **end-to-end encrypted** — so nobody but you (and your own machine) can ever
 look at them. That also means *you* have to do the searching. Proton Faces turns your encrypted
-photo library into a fully searchable archive, without ever uploading a single byte back:
+photo library into a fully searchable archive — people, places, objects, free text — without
+ever uploading a single byte back. The index and every ML model run on your own hardware; the
+only component that ever talks to Proton is a strictly **read-only** bridge.
+
+---
+
+## Features
 
 | Capability | How it works | Status |
 |---|---|---|
@@ -41,25 +47,100 @@ photo library into a fully searchable archive, without ever uploading a single b
 | 📱 **iPhone (HEIC) photos** | Proton serves no preview → we decode the full-res file locally and generate our own thumbnail | ✅ |
 | 🗺️ **Unassigned queue** | Review faces that didn't cluster yet and name them in bulk | ✅ |
 | 🎥 **Videos** | Detected and indexed, hidden from photo grids (no preview available) | ✅ |
+| 🔐 **2FA (TOTP)** | Optional per-user two-factor auth with any authenticator app | ✅ |
+| 🖼️ **Person cover photos** | Pick which face-crop is the "main photo" on each People card | ✅ |
+| 🔀 **Suggested merges** | Review-and-select UX for merging look-alike person clusters | ✅ |
+| 📱 **Mobile & PWA** | Installable, offline-capable app shell with light/dark themes | ✅ |
 
 ---
 
-## 🎬 Demo
+## Quick start
 
-The video above shows the app in action: people clustering, face tagging, text search,
-the places map and photo browsing. The poster frame is served by Cloudinary; clicking it
-opens the Cloudinary player (a direct MP4 is also committed at `docs/demo.mp4`).
+### 1. Get a Proton session file
 
-> **Why a clickable frame and not an inline `<video>`?** GitHub's README sanitizer strips
-> `<video>` and `<iframe>` tags that point to external hosts. The only way to embed a video
-> that *autoplays inline* on a GitHub README is to drag-and-drop the MP4 into the README
-> editor (GitHub then hosts it on `user-attachments`). Want that? Just open the README in
-> GitHub's web editor, drag `docs/demo.mp4` onto it, and replace this frame with the
-> generated `<video>` snippet. The repo copy is compressed to ~2 MB so it uploads fast.
+`proton-faces` authenticates with a session from the official **Proton Drive CLI** — there is no
+OAuth. Install the CLI from the [Proton Drive CLI download page](https://proton.me/download/drive/cli),
+sign in once, and export the session for the bridge:
 
-> **Why MP4 and not a GIF?** The original clip is ~35 MB as video; the repo copy is
-> compressed to ~2 MB. As a GIF it would balloon to *hundreds of megabytes* — and GitHub
-> refuses to render images over 25 MB. Video is smaller, sharper, and keeps its sound.
+```bash
+proton-drive auth login
+scripts/export-session.sh    # writes credentials/auth-session.json
+```
+
+> The file contains your account tokens — treat it like a password. It is mounted **only** into
+> the `proton-bridge` container, and `.gitignore` already excludes `credentials/`. See the
+> [session-export guide](https://mmornati.github.io/proton-faces/getting-started/session-export/)
+> for GPG-encrypting it at rest.
+
+### 2. Configure
+
+```bash
+cp .env.example .env
+```
+
+### 3. Start
+
+```bash
+docker compose up -d
+```
+
+Prebuilt images are published to the GitHub Container Registry, so `docker compose up` pulls
+them — no building on the server. To build from source instead, use
+`docker compose up -d --build`.
+
+### 4. Create your admin account
+
+```bash
+scripts/create-admin.sh admin          # prompts for a password, or:
+ADMIN_PASSWORD=... scripts/create-admin.sh admin
+```
+
+### 5. Open the app
+
+Browse to **http://localhost:8080** and sign in. The indexer starts immediately and is fully
+resumable — the web UI becomes useful right away as results stream in.
+
+> **Three-process layout.** `docker compose up` starts three containers: `proton-bridge`,
+> `indexer`, and `app`. To fall back to the legacy single-process layout (everything in `app`),
+> set `RUN_INDEXER=1` in `.env`.
+
+---
+
+## 🛝 Try the demo
+
+```bash
+docker compose --profile demo up -d
+```
+
+No Proton account, no session file, no setup. Sign in at http://localhost:8080 with `demo` / `proton-faces`.
+The app loads a fixture of 82 CC0 photos (32 face portraits + 50 picsum scenes) — every feature
+of the real app works against it, including face clustering, places, search-by-example, and the
+admin area. Override the password with `DEMO_ADMIN_PASSWORD=...`. See the
+[demo-mode guide](https://mmornati.github.io/proton-faces/getting-started/demo-mode/) for details.
+
+---
+
+## 🧠 Tech highlights
+
+- **Three containers, one job each.** `proton-bridge` (Bun + Proton Drive SDK) is the *only*
+  component that talks to Proton — strictly read-only. `indexer` runs the recognition pipeline
+  (sync / fullres / face detection / CLIP / cluster / GPS) on its own cores. `app` serves the
+  FastAPI search API and the vanilla-JS web UI on `:8080`.
+- **No GPU required.** All ML runs locally on CPU: InsightFace (RetinaFace + ArcFace) for faces,
+  CLIP ViT-B/32 via ONNX Runtime for free-text search, HDBSCAN for people clustering, offline
+  reverse-geocoding for places.
+- **SQLite is the only datastore.** The `indexer` and `app` containers share the index via WAL
+  mode + a 30 s busy_timeout and per-row atomic claims — no extra coordination needed.
+- **Nothing is ever written back to Proton.** Only a small 512px WebP thumbnail per photo is
+  kept on disk; full-resolution originals stream live from Proton on demand and are never
+  persisted.
+- **Safe by default.** Binary photo endpoints require a bearer token or signed URL, bcrypt cost
+  12, refresh tokens rotate, login is rate-limited, and every container drops Linux
+  capabilities.
+
+See the [architecture](https://mmornati.github.io/proton-faces/reference/architecture/) and
+[security & privacy](https://mmornati.github.io/proton-faces/reference/security-privacy/) docs
+for the deep dive.
 
 ---
 
@@ -70,9 +151,10 @@ The full user guide is published at **[mmornati.github.io/proton-faces](https://
 Highlights:
 
 - [Quickstart](https://mmornati.github.io/proton-faces/getting-started/quickstart/) — install to your first real search in ~10 minutes
-- [Demo mode](https://mmornati.github.io/proton-faces/getting-started/demo-mode/) — run the full app **with zero Proton credentials** (a curated fixture of CC0 photos)
+- [Demo mode](https://mmornati.github.io/proton-faces/getting-started/demo-mode/) — run the full app **with zero Proton credentials**
 - [People & face tagging](https://mmornati.github.io/proton-faces/user-guide/face-tagging/) — name one face, auto-tag every look-alike
 - [REST API](https://mmornati.github.io/proton-faces/reference/api/) — every endpoint
+- [Configuration](https://mmornati.github.io/proton-faces/reference/configuration/) — every environment variable
 - [Security & privacy](https://mmornati.github.io/proton-faces/reference/security-privacy/) — what's on disk, what's not, how auth works
 
 The docs are rebuilt and published on every push to `main` by the [docs workflow](.github/workflows/docs.yml). To preview locally:
@@ -84,450 +166,10 @@ mkdocs serve         # http://127.0.0.1:8000
 
 ---
 
-## 🛝 Try the demo
-
-```bash
-docker compose --profile demo up -d
-```
-
-No Proton account, no session file, no setup. Sign in at http://localhost:8080 with `demo` / `proton-faces`. The app loads a fixture of 82 CC0 photos (32 face portraits + 50 picsum scenes) — every feature of the real app works against it, including face clustering, places, search-by-example, and the admin area. Override the password with `DEMO_ADMIN_PASSWORD=...`. See the [demo-mode guide](https://mmornati.github.io/proton-faces/getting-started/demo-mode/) for details.
-
----
-
-## 🏗️ How it works
-
-```
-                       ┌──────────────────────────────────────────────────┐
-                       │                    LOCAL SERVER                   │
-                       │                                                  │
-  Proton Photos ──────▶│  proton-bridge (Bun + Proton Drive SDK)          │
-  (E2E encrypted)      │  • timeline diff (incremental, NDJSON-streamed)  │
-                       │  • 512px thumbnail fetch (Type1)                 │
-                       │  • full-res download on demand                   │
-                       │                    │                             │
-                       │                    ▼                             │
-                       │  proton-faces (Python + FastAPI)                 │
-                       │  • InsightFace (RetinaFace + ArcFace)            │
-                       │  • CLIP ViT-B/32 (ONNX Runtime, no PyTorch)      │
-                       │  • SQLite + numpy vector store                   │
-                       │  • HDBSCAN people clustering                     │
-                       │  • reverse-geocoder for place names              │
-                       │  • pillow-heif for local HEIC thumbnails         │
-                       │  • vanilla-JS web UI on :8080                    │
-                       └──────────────────────────────────────────────────┘
-```
-
-- The **bridge** authenticates with your existing Proton session and is the **only** component
-  that ever talks to Proton. It is **strictly read-only** — no uploads, no writes, no deletions.
-- Every photo is processed **once**: thumbnail downloaded (or decoded locally for HEIC) →
-  recognition run (faces + CLIP) → small 512px thumbnail cached → original bytes discarded.
-- The whole pipeline is **resumable** and runs in the background: add photos to Proton and the
-  index catches up automatically.
-
-### Image data flow — local cache vs. live Proton
-
-The **only** thing kept on local disk is a small **512px WebP thumbnail** per photo
-(`thumbs/<uid>.webp`, immutable, served by `/api/photos/{uid}/thumb` and reused by
-`/api/photos/{uid}/meta`). Full-resolution originals are **never persisted**: every
-"View full resolution" click streams the original bytes **live from Proton** through
-`/api/photos/{uid}/full` → bridge `/photo/{uid}/full` → Proton Drive SDK, then the
-browser. Images stream straight through (no temp file); videos are buffered to a
-per-request temp file (`work/<uid>-XXXXXX.full`, deleted as soon as the response ends) so
-the HTTP `Range` requests HTML5 `<video>` seeking needs work end-to-end (206 responses).
-
-The indexer additionally uses a throwaway `work/<uid>.download` for photos whose server
-preview is missing (HEIC, videos —to extract a poster frame); it is deleted as soon as the
-thumbnail exists. Because everything except the 512px thumbnail is fetched on demand, a
-slow Proton connection or a dead bridge degrades only the "View full resolution" experience —
-thumbing, search, faces, places, and memories all keep working from the local cache.
-
-### Network safety — rate limits, timeouts, capabilities
-
-Proton Drive uses a public HTTPS API. A fresh library sync can produce many
-short-lived HTTPS connections per minute from the bridge container. On a
-home router or CPE with a small NAT table this can saturate the table and
-take other devices on the LAN offline. To make that impossible by default
-and tunable when it happens:
-
-- **Outbound rate limit (two layers)** — `PROTON_BRIDGE_RATE_LIMIT` (default `0`, i.e. **disabled**).
-  Set to a positive number of requests-per-second (e.g. `5`) to bound the
-  bridge's outbound HTTPS to Proton. `PROTON_BRIDGE_RATE_BURST` (default `2× rate`)
-  controls the burst allowance. Both honor `Retry-After` on 429 responses.
-  - **Operation layer**: `PROTON_BRIDGE_RATE_LIMIT` gates one token per bridge
-    *operation start* (timeline sync, node listing, album sync, thumbnail batch,
-    full-res download).
-  - **HTTP layer**: `PROTON_BRIDGE_RATE_LIMIT_HTTP` paces *every* upstream HTTPS
-    call the Proton SDK makes (paginated listings, block downloads, thumbnails) —
-    one operation fans out into hundreds-to-thousands of such calls. Unset/empty,
-    it derives as `RATE_LIMIT × 10` (e.g. 3 ops/s → 30 HTTP req/s); set `0` to
-    keep this layer disabled. This is the layer that actually protects a small
-    router's NAT table during big syncs.
-- **Hard ceiling per full-res download** — `PROTON_BRIDGE_FULL_RES_TIMEOUT_MS`
-  (default `300000` = 5 min). Aborts the download and returns 502 if Proton
-  hangs (e.g. on an upstream crypto bug). The browser shows a toast instead
-  of spinning forever.
-- **Deadlines for every SDK iteration** — the bridge aborts any handler whose
-  SDK iteration stalls past its deadline instead of holding the connection open
-  forever (issue #55). `PROTON_BRIDGE_TIMELINE_TIMEOUT_MS` (default `1800000` =
-  30 min) bounds a full `/timeline` sync; `PROTON_BRIDGE_NODES_TIMEOUT_MS`,
-  `PROTON_BRIDGE_ALBUMS_TIMEOUT_MS`, and `PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS`
-  (default `300000` = 5 min each) bound `/nodes`, `/albums`, and `/thumbnails`.
-  Streamed handlers also abort when the client disconnects. Defaults are tuned
-  to fire before the app's own bridge-client timeouts, so the client sees a
-  clean truncation/error rather than hanging.
-- **Manifest verification bypass** — `PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=1`
-  is set per-deployment in `compose.yml` (default `1`) because migrated Proton
-  accounts often omit the deprecated `AddressKey.PublicKey` field; without this
-  flag the SDK hangs on the key-token decrypt (Bun 1.2 WASM OpenPGP issue).
-  It is **not** baked into the image: set it to `0` in `compose.yml` to restore
-  full E2E verification. Block-level SHA256 integrity still applies where
-  available. The bridge logs a loud warning at startup when the flag is on.
-- **Container hardening** — `compose.yml` drops all Linux capabilities and sets
-  `no-new-privileges` on every service. No container runs with `--network host`
-  or `--privileged`; everything goes through the internal `internal` compose
-  network and the host's bridge.
-
-If your home router still drops under load, start with `PROTON_BRIDGE_RATE_LIMIT=5`
-in `compose.yml` (under `proton-bridge.environment`) and confirm the LAN stays up
-while a sync runs.
-
-## Why three containers?
-
-Since [issue #4](https://github.com/mmornati/proton-faces/pull/7) the indexing
-pipeline runs in its own container so face detection can't preempt the FastAPI
-event loop on the box's CPU cores.
-
-| Container       | Base                              | Role                                                                                                |
-|-----------------|-----------------------------------|-----------------------------------------------------------------------------------------------------|
-| `proton-bridge` | `oven/bun` + Proton SDK monorepo  | The only component that talks to Proton (auth, thumbnails). Strictly read-only.                      |
-| `indexer`       | `python:3.11-slim` + ML models    | Background recognition pipeline (sync / fullres / face detection / CLIP / cluster / GPS). Own entry point, no uvicorn on the host. Also serves an internal status endpoint (see `INDEXER_STATUS_PORT`). |
-| `app`           | `python:3.11-slim` + ML models    | FastAPI search API + vanilla-JS web UI on `:8080`. Proxies the indexer's status endpoint for the footer/health modal. |
-
-The `indexer` and `app` containers share the same SQLite index via **WAL mode + a
-30 s busy_timeout** and per-row atomic claims (`UPDATE ... WHERE status='new'`),
-so they interleave cleanly without any extra coordination. If you'd rather keep
-the legacy single-process layout (everything in `app`), set `RUN_INDEXER=1` in
-`.env` — the `app` container will then start the indexer threads in-process too.
-
-The published npm `@protontech/drive-sdk` cannot run standalone — its
-authentication module is not published — so the bridge is built inside the
-Proton Drive SDK monorepo at image build time (pinned to the commit behind tag
-`cli/v0.8.0`). You never need to clone it yourself; the Docker build does it
-automatically.
-
----
-
-## 🚀 Quick start
-
-### 1. Get a Proton session file
-
-`proton-faces` authenticates with a session from the official **Proton Drive CLI**. There is no
-OAuth — you sign into the CLI once with your Proton account, and the bridge reuses that session
-strictly **read-only** against your Photos.
-
-**Install the CLI** (one-time). Download the binary for your platform from the official
-[Proton Drive CLI download page](https://proton.me/download/drive/cli) — SHA-512 checksums are
-listed there. On NAS / embedded CPUs, pick `linux/x64-baseline` if the default build crashes at
-startup with `Illegal instruction`.
-
-**Sign in once:**
-
-```bash
-proton-drive auth login
-```
-
-A browser tab opens to sign in with your Proton account — keep the terminal open until it says
-`Authentication successful`. No browser on the machine? Open the URL it prints from any phone or
-desktop to complete the login.
-
-**Export the session for the bridge:**
-
-```bash
-scripts/export-session.sh    # writes credentials/auth-session.json
-# Already keep the CLI session in `pass`? One-liner:
-#   pass show ch.proton.drive/drive-sdk-cli/auth-session > credentials/auth-session.json
-```
-
-> The file contains your account tokens (access token, refresh token, decryption keys) — treat
-> it like a password. It is mounted **only** into the `proton-bridge` container: the `app` and
-> `indexer` containers have no path to it (issue #32), and `.gitignore` already excludes
-> `credentials/`. The mount is **writable** because the SDK rewrites the file when it refreshes
-> tokens.
-
-### 2. (Recommended) Encrypt the session at rest
-
-By default the session sits on disk as plaintext. For the most secure setup, store it
-GPG-encrypted with the SDK's `pass` backend — keyring and store live in Docker named volumes
-mounted **only** into the bridge container:
-
-```bash
-echo "PROTON_DRIVE_CREDENTIALS_STORE=pass" >> .env
-```
-
-On first start the bridge generates a container-local GPG key, initializes the store, and
-migrates your `auth-session.json` into it. See [Session file → Encrypted
-store](docs/getting-started/session-export.md#encrypted-store-pass) for details.
-
-### 3. Configure
-
-```bash
-cp .env.example .env
-# Inside the containers DATA_DIR is always /data and PHOTOS_DIR is always /takeout.
-# To persist data on a specific host disk (e.g. a big volume), set the compose-
-# level mount instead — defaults to the named volume "data":
-# DATA_MOUNT=/srv/proton-faces/data
-# To point indexer/app at a Google Takeout export on the host, set:
-# PHOTOS_MOUNT=/srv/photos-takeout
-```
-
-### 4. Start
-
-```bash
-docker compose up -d
-```
-
-Prebuilt images are published to the GitHub Container Registry, so `docker compose up` pulls
-them — no building on the server. To build from source instead, use
-`docker compose up -d --build`. On a shared box, `scripts/build.sh` shows how to cap BuildKit's
-CPU usage so a build never starves your other services.
-
-> **Persistence.** Compose mounts the named `data` volume at `/data` automatically, so your
-> index and thumbnails survive restarts. If you run an image directly with `docker run`
-> (quick tests, experiments), you **must** pass `-v proton-faces-data:/data` yourself — the
-> image no longer declares a `VOLUME`, so without that flag writes go to the container's
-> ephemeral filesystem and vanish when the container is removed.
-
-### 5. Create your admin account
-
-```bash
-scripts/create-admin.sh admin          # prompts for a password, or:
-ADMIN_PASSWORD=... scripts/create-admin.sh admin
-```
-
-Then open **http://localhost:8080** and sign in with that account.
-
-The indexer starts immediately and is fully resumable. The first run processes your whole
-library (roughly 1–2 s per photo on a modern CPU — a 100k-photo library takes about a day), and
-the web UI becomes useful right away as results stream in.
-
-> **Three-process layout (issue #4).** `docker compose up` starts three containers:
-> `proton-bridge`, `indexer`, and `app` (see [Why three containers?](#why-three-containers)
-> above for the rationale). To fall back to the legacy single-process layout (everything
-> in `app`), set `RUN_INDEXER=1` in `.env`.
-
-### 👥 Users & roles
-
-proton-faces ships a small multi-user account system. Proton does not publish
-an OAuth/OIDC provider, so each family member gets a local account
-(username + bcrypt password) instead of "Sign in with Proton". The single
-Proton session still drives the library — that lives in the bridge exactly
-as before — and every user on your server sees the same library under their
-own identity.
-
-| Role | Browse / search / map / albums / places / memories | Per-user ★ favorites | Tags, archive, hide, face naming, person rename/merge |
-|------|:-:|:-:|:-:|
-| **read**  | ✅ | ✅ | ❌ |
-| **write** | ✅ | ✅ | ✅ |
-| **admin** | ✅ | ✅ | ✅ + admin area (users, backups, schedule, health checks — see below) |
-
-Anyone on `:8080` must log in. Tokens are bearer JWT-free (opaque random
-hex), stored in your browser's `localStorage` under `pf.auth`. Access TTL
-defaults to 8 hours, refresh to 30 days (configurable via `AUTH_ACCESS_TTL`
-and `AUTH_REFRESH_TTL`).
-
-Other admin tasks (after the first admin is created):
-
-```bash
-# Add more users (admin-only endpoint also exists at POST /api/admin/users):
-scripts/create-admin.sh dad
-scripts/create-admin.sh kid --display-name "Kid"
-# Non-interactive: ADMIN_PASSWORD=... scripts/create-admin.sh mom
-# (the admin endpoint and the inline form in the admin area work too).
-
-# Reset a forgotten password (revokes all that user's sessions):
-docker compose exec app python main.py --reset-password mom
-```
-
-Per-user favorites live in the `user_favorites` table; the legacy global
-`photos.favorited` column is kept only as a one-time backfill target the
-first time `--create-admin` runs on an existing library.
-
----
-
-## 🛠️ Admin area (admin role only)
-
-Log in as an admin and click the **⚙ gear icon** in the top-right of the
-header — it only appears for users with the `admin` role. The admin modal
-has four tabs:
-
-- **Overview** — server (hostname, Python version, uptime), disk usage of the
-  data volume, and last-backup summary.
-- **Health checks** — runs seven checks on demand: DB integrity, free disk
-  space, backup freshness, backup dir writable, data dir writable, indexer
-  liveness, Proton bridge reachability. Each check is an ok/bad pill with a
-  short status and detail string.
-- **Backups** — list every SQLite snapshot under `DATA_DIR/_backups/`, with
-  size and timestamp. Buttons: **Backup now** (creates a fresh
-  `index-<UTC-stamp>.sqlite3` via `VACUUM INTO` — consistent, non-blocking
-  against the live WAL DB), **Delete** (per row, with confirm), **Prune**
-  (keep the newest N per the retention setting). Path traversal is rejected.
-- **Schedule** — daily auto-backup inside the app container. **Enabled**,
-  **Hour** (0-23 UTC), **Minute** (0-59), **Keep** (1-365). Stored at
-  `DATA_DIR/admin_config.json`. The daemon thread wakes every minute and
-  runs at most one backup per UTC day to avoid piling up if the app was
-  down.
-- **Users** — list every account, create new (username ≥ 2 chars, password
-  ≥ 8 chars, role `read` / `write` / `admin`), edit display name / role /
-  disabled / password, **Logout** (revokes all of that user's sessions),
-  **Delete** (refuses to delete the last remaining admin so nobody gets
-  locked out).
-
-The user-management section is the same data model exposed by the existing
-`/api/admin/users/*` endpoints, now reachable from the UI. No new CLI is
-required — everything is in the web admin area.
-
----
-
-## 🖥️ Usage / web UI
-
-- **Search bar** — free text: *"dog"*, *"car"*, *"beach"*, *"Lille"*. Zero-shot CLIP. **Live
-  search-as-you-type** (250 ms debounce) re-runs results as you type.
-- **Photos** — infinite grid of cached thumbnails; click any photo for the full-resolution
-  download (fetched from Proton on demand, never stored). Videos get a play badge + duration
-  overlay and open inline with HTML5 playback + HTTP Range seeking. Above the grid, an **On this
-  day** strip resurfaces photos you took on today's date in past years.
-- **Favorites** — star any photo (toolbar or per-card button). The Favorites view filters the
-  grid to your starred photos.
-- **Archive** — hide photos from the main grid without deleting them; visit the Archive tab to
-  restore them.
-- **Tags** — free-form lowercase labels on any photo. Browse all tags from the Tags tab and
-  click one to filter the grid.
-- **People** — auto-clustered persons with face-crop avatars. Click a person to see their
-  photos, click the name to rename. **Map** plots every geotagged photo of that person on a
-  Leaflet map.
-- **Face tagging** — every photo shows clickable boxes around detected faces. Name a face and
-  **every similar unassigned face is tagged automatically**; assign to an existing person, or
-  unassign.
-- **Duplicates** — groups photos by content hash; hide any you don't want.
-- **Unassigned** — a queue of every face that hasn't been clustered yet, so you can name the
-  stragglers.
-- **Places** — a **Leaflet world map** with clustered city markers, plus a city list. Click any
-  marker to filter the photo grid to that place.
-- **Search by example** — drop a photo of a face to find every photo containing that person.
-- **Bottom status bar + `?` diagnostics** — every view shows a slim footer with the indexer's live
-  state (last sync, pending queue depth, thread liveness). Click the `?` in the header to open the
-  full **Status & diagnostics** overlay — server info, runtime counts, and the data behind the
-  footer pills (powered by the internal `INDEXER_STATUS_PORT` endpoint; see the config table).
-
----
-
-## 🔍 Search capabilities
-
-| What you type / do              | Backed by                          | Notes                                    |
-|---------------------------------|------------------------------------|------------------------------------------|
-| *"Lille"*, *"Paris"*            | GPS reverse-geocoding              | Photos with GPS metadata                 |
-| *"dog"*, *"car"*, *"beach"*     | CLIP text–image similarity         | Zero-shot, no training needed            |
-| A face photo                    | ArcFace face embeddings            | Returns photos of the same person        |
-| Person name (People tab)        | HDBSCAN clusters + your labels     | Cluster is built incrementally           |
-| Place marker on the map         | GPS aggregation by place           | Clustered markers, click to filter       |
-
----
-
-## 📁 Project layout
-
-```
-app/              Python indexer + search API + web UI
-  src/
-    indexer.py    timeline diff / download / recognize / fullres / delete pipeline
-    indexer_main.py  dedicated entry point for the `indexer` container (no uvicorn)
-    indexer_status.py  tiny in-container HTTP endpoint that exposes the indexer's live state
-    main.py       dedicated entry point for the `app` container (uvicorn only by default)
-    faces.py      InsightFace face detection + embeddings
-    clip.py       CLIP ViT-B/32 embeddings (ONNX Runtime)
-    cluster.py    HDBSCAN people clustering
-    geocode.py    offline reverse-geocoding
-    store.py      SQLite schema + numpy vector store
-    auth.py       multi-user account model, bearer-token issuance, role checks
-    admin.py      admin-only endpoints + auto-backup worker + health checks
-    api.py        FastAPI application
-    bridge_client.py  thin HTTP client for the `proton-bridge` service
-    config.py     env-driven settings (Settings dataclass)
-    static/       vanilla-JS frontend (incl. Leaflet map + admin modal + status overlay)
-bridge/           Bun service wrapping the Proton Drive SDK
-scripts/          helper scripts (session export, create-admin, backup, build)
-compose.yml       three-container deployment (bridge + indexer + app)
-.github/workflows GHCR image publishing
-```
-
----
-
-## ⚙️ Configuration
-
-Environment variables (see `.env.example`):
-
-| Variable              | Default                    | Description                                 |
-|-----------------------|----------------------------|---------------------------------------------|
-| `DATA_MOUNT`          | *(named volume `data`)*   | Compose-level: host path (or `:volume`) the data directory is bind-mounted at. Defaults to Docker's named volume `data`. Set e.g. `DATA_MOUNT=/srv/proton-faces/data` to persist on a big disk. The directory must be writable by UID 1000 (the user all containers run as). |
-| `PHOTOS_MOUNT`        | *(unset → `:/dev/null`)*  | Compose-level: optional read-only bind mount of a local Google Takeout export, used to backfill GPS/place data. Inside the indexer/app containers this is always mounted at `/takeout` (and `PHOTOS_DIR` is hardcoded to `/takeout`). To take effect, set e.g. `PHOTOS_MOUNT=/srv/photos-takeout`. |
-| `DATA_DIR`            | `/data` (in-container)    | Persistent data (thumbnails, SQLite, vectors). Fixed at `/data` inside the `indexer` and `app` containers; override only for local single-process dev. |
-| `PHOTOS_DIR`          | `/takeout` (in-container)  | Optional Google Takeout export mounted at `/takeout` in the indexer/app containers (via `PHOTOS_MOUNT`). Set to anything else only for local dev. |
-| `PORT`                | `8080`                     | Web UI port                                 |
-| `SYNC_INTERVAL`       | `300`                      | Seconds between timeline diffs              |
-| `FULLRES_RETRY_AFTER_SEC` | `600`                  | How long a `status='full'` row can sit before the fullres loop re-queues it for full-res download (unsticks videos stranded by bridge outages) |
-| `FULLRES_BACKOFF_SEC` | `900`                      | Per-uid backoff after a failed full-res attempt: the fullres loop skips a uid it tried recently, so a stuck video doesn't hammer the bridge and saturate the SDK download queue (which starves interactive full-res requests) |
-| `FULLRES_DRAIN_INTERVAL_SEC` | `15`               | Pause between successful full-res downloads; bounds sustained bandwidth while draining a backlog (large videos downloaded in full can saturate a home connection) |
-| `SYNC_LIMIT`          | `0`                        | Only index the newest N photos (0 = all) — handy for testing |
-| `WORKERS`             | `2`                        | Parallel recognition workers                |
-| `CLUSTER_INTERVAL`    | `1800`                     | Seconds between people-clustering runs      |
-| `GPS_INTERVAL`        | `21600`                    | Seconds between GPS/place enrichment runs   |
-| `FACE_SIM_THRESHOLD`  | `0.45`                     | Cosine similarity for auto-tagging faces    |
-| `MIN_CLUSTER_SIZE`    | `2`                        | Minimum faces to form a person cluster      |
-| `BRIDGE_CACHE_STALE_SEC` | `21600` (6 h)          | Age (seconds) at which the on-disk Proton SDK cache is flagged "stale" by the admin Server-checks panel. Only fires when full-res downloads are also failing (the getFileDownloader hang signature). |
-| `BRIDGE_URL`          | `http://proton-bridge:8090`| Bridge container address                    |
-| `MODELS_DIR`          | `DATA_DIR/models`          | Where ML models are stored                  |
-| `LOG_LEVEL`           | `INFO`                     | Logging verbosity                           |
-| `RUN_INDEXER`         | `0`                        | Set `1` on the `app` container to start the in-process indexer (legacy single-process layout). Default off: the `indexer` container handles the pipeline. |
-| `INDEXER_STATUS_PORT` | `8091`                     | Internal-only port on the `indexer` container (bound to `0.0.0.0`, no host port published in compose) that exposes its live runtime state to the `app` container for the footer/health modal. Reachable only over the compose network via the `indexer` hostname (`http://indexer:8091`). |
-| `INDEXER_STATUS_URL`  | `http://indexer:8091`      | Base URL the `app` container reads to proxy the indexer's status endpoint. Override to `http://127.0.0.1:8091` for local single-process dev with `RUN_INDEXER=1`. |
-| `AUTH_ACCESS_TTL`     | `28800`                    | Bearer access-token lifetime (seconds). 8 hours by default. |
-| `AUTH_REFRESH_TTL`    | `2592000`                  | Bearer refresh-token lifetime (seconds). 30 days by default. |
-| `ADMIN_PASSWORD`      | *(unset → prompt on stdin)*| If set, `python main.py --create-admin USER` and `--reset-password USER` read the password from this env var instead of prompting (so you can run them non-interactively from a script or init container). At least 8 characters or the command rejects the password. |
-
-### GPS / place enrichment
-
-Proton's API does not expose photo location, but your Google Takeout export keeps GPS in local
-`*.supplemental-metadata.json` sidecars. Inside the containers the export is mounted at
-`/takeout`; on the host you point compose at the export with the **compose-level**
-`PHOTOS_MOUNT` variable (see the config table). Once mounted, the app will
-enrich GPS **automatically** in the background:
-
-- it sha1-hashes the local photo files (cache in `DATA_DIR/gps_sha1_cache.json`, so later runs
-  are cheap) and matches against the Proton timeline by content hash — **no full-res download
-  ever needed**;
-- then reverse-geocodes every photo that has GPS but no place name yet.
-
-Run it manually (e.g. after a fresh import):
-
-```bash
-docker compose exec indexer python indexer_main.py --backfill-gps
-# after a new Takeout export, force a rehash of the local files:
-docker compose exec indexer python indexer_main.py --backfill-gps --rebuild-cache
-```
-
-### iPhone (HEIC) photos
-
-Proton serves **no preview** for HEIC/HEIF files. Proton Faces handles them automatically:
-the full-resolution file is downloaded once (read-only), decoded locally with `pillow-heif`,
-downscaled to a 512px thumbnail, and then processed through the normal pipeline (faces + CLIP).
-The full-res bytes are discarded — only the small thumbnail is kept.
-
----
-
 ## 🧭 Roadmap / ideas
 
 - Split people clusters (currently you can merge but not split — manually re-tag works)
 - Edit album membership (albums are read-only at present)
-- PWA / mobile install
 
 ---
 

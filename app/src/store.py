@@ -1022,6 +1022,24 @@ def count_faces_for_photo(photo_uid: str, conn: sqlite3.Connection | None = None
         return int(row["n"])
 
 
+def face_counts_for_photos(uids: list[str]) -> dict[str, int]:
+    """Face count per photo for a batch of uids (single GROUP BY query).
+
+    Lets list endpoints stamp `face_count` onto grid payloads without an
+    N+1 loop. Uids missing from the faces table are simply absent.
+    """
+    if not uids:
+        return {}
+    placeholders = ",".join("?" * len(uids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT photo_uid, COUNT(*) AS n FROM faces "
+            f"WHERE photo_uid IN ({placeholders}) GROUP BY photo_uid",
+            uids,
+        ).fetchall()
+    return {r["photo_uid"]: int(r["n"]) for r in rows}
+
+
 def clip_exists(photo_uid: str, conn: sqlite3.Connection | None = None) -> bool:
     """Whether a photo already has a CLIP embedding (to skip recomputing it)."""
     with _with_conn(conn) as c:

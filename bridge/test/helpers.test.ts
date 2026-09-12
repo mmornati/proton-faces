@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike } from '../src/helpers';
+import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike } from '../src/helpers';
 
 function makeNode(overrides: Partial<PhotoNodeLike> = {}): PhotoNodeLike {
     return {
@@ -266,5 +266,29 @@ describe('parseJsonBody', () => {
     test('returns null for an empty body', async () => {
         const req = new Request('http://localhost/nodes', { method: 'POST', body: '' });
         expect(await parseJsonBody(req)).toBeNull();
+    });
+});
+
+describe('sanitizedErrorBody', () => {
+    test('returns ok:false with a generic message', () => {
+        const body = sanitizedErrorBody('abc12345');
+        expect(body.ok).toBe(false);
+        expect(body.error).toBe('internal error');
+    });
+
+    test('never includes the underlying error text', () => {
+        const body = sanitizedErrorBody('abc12345');
+        const serialized = JSON.stringify(body);
+        expect(serialized).not.toMatch(/sdk|api\.proton|localhost|stack|Error:/i);
+    });
+
+    test('carries the caller-provided ref unchanged', () => {
+        expect(sanitizedErrorBody('deadbeef').ref).toBe('deadbeef');
+    });
+
+    test('ref is a short non-empty string', () => {
+        const body = sanitizedErrorBody('a1b2c3d4');
+        expect(body.ref.length).toBeGreaterThan(0);
+        expect(body.ref.length).toBeLessThanOrEqual(16);
     });
 });

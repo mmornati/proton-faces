@@ -360,6 +360,19 @@ class TestFaces:
         assert store.get_photo("p1")["uid"] == "p1"
         assert isinstance(fid, int)
 
+    def test_face_counts_for_photos_batch(self, tmp_db):
+        self._seed_photo_done("p1")
+        self._seed_photo_done("p2")
+        self._seed_photo_done("p3")
+        store.insert_face("p1", None, 0.9, json.dumps([1, 2, 3, 4]), EMB.tobytes())
+        store.insert_face("p1", None, 0.9, json.dumps([5, 6, 7, 8]), EMB.tobytes())
+        store.insert_face("p3", None, 0.9, json.dumps([1, 2, 3, 4]), EMB.tobytes())
+        assert store.face_counts_for_photos(["p1", "p2", "p3"]) == {"p1": 2, "p3": 1}
+        # empty input is a no-op
+        assert store.face_counts_for_photos([]) == {}
+        # uids with no faces stay absent from the result
+        assert "p2" not in store.face_counts_for_photos(["p2", "nope"])
+
     def test_faces_without_person_and_assign(self, tmp_db):
         self._seed_photo_done()
         fid = store.insert_face("p1", None, 0.9, json.dumps([1, 2, 3, 4]), EMB.tobytes())

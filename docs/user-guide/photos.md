@@ -10,7 +10,7 @@ The Photos tab is the default view — an infinite-scroll grid of every indexed 
 - **Capture date** (top-left) — formatted in UTC; the date rail above the grid sorts photos by month.
 - **Favorite button** (★, top-right) — per-user star; toggles `favorited_by_me`.
 - **Place label** (bottom-left) — for GPS-tagged photos, the reverse-geocoded city.
-- **"faces" pill** (blue, bottom-right) — only shown if the face detector found at least one face in this photo.
+- **"faces" pill** (accent, top-left) — shown only when the face detector found at least one face in this photo, labeled with the count (`1 face`, `3 faces`); click opens the photo detail with the face overlays.
 - **▶ video badge** (top-right) — videos get a play icon and the duration overlay; click opens the inline HTML5 player.
 - **"On this day"** strip — at the top of the grid when there are photos from today's date in past years.
 
