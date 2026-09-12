@@ -43,6 +43,11 @@ const BRIDGE_HOST = process.env.BRIDGE_HOST ?? '0.0.0.0';
 const DATA_DIR = process.env.DATA_DIR ?? '/data';
 const FULL_RES_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_FULL_RES_TIMEOUT_MS ?? 5 * 60_000);
 const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN ?? '';
+// Max time SIGTERM waits for in-flight requests to drain before forcing an
+// exit. A long full-res download must not block `docker stop` forever.
+const SHUTDOWN_GRACE_MS = 10_000;
+
+let server: ReturnType<typeof Bun.serve> | null = null;
 
 // Constant-time comparison to prevent timing attacks on the bridge token.
 // Returns true when both strings are equal, false otherwise.
@@ -510,6 +515,65 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     }
 }
 
+// Best-effort removal of every work/*.full temp file. Only call when no
+// download is in-flight (startup sweep, /cache/clear, or after the server has
+// drained); a *.full file mid-write would otherwise be deleted out from under
+// the writer.
+async function sweepWorkDir(): Promise<void> {
+    const workDir = path.join(DATA_DIR, 'work');
+    try {
+        for (const name of readdirSync(workDir)) {
+            if (!STALE_WORK_FILE_GLOB.test(name)) continue;
+            try {
+                await Bun.file(path.join(workDir, name)).unlink();
+            } catch {
+                // best-effort
+            }
+        }
+    } catch {
+        // workDir doesn't exist — nothing to sweep
+    }
+}
+
+// A rejection from SDK background work (token refresh, telemetry) is
+// non-fatal — log it with context and keep serving instead of letting the
+// runtime default terminate the process.
+process.on('unhandledRejection', (reason) => {
+    console.error('[bridge] unhandledRejection:', reason);
+});
+
+// An uncaught exception means process state is undefined — log and exit 1
+// (compose restarts us) rather than continue in a corrupt state.
+process.on('uncaughtException', (error) => {
+    console.error('[bridge] uncaughtException:', error);
+    process.exit(1);
+});
+
+let shuttingDown = false;
+// Drain in-flight requests on SIGTERM/SIGINT (docker stop) so no download is
+// aborted mid-stream and no work/*.full temp file is orphaned. A 10s hard
+// deadline keeps a long full-res download from blocking shutdown forever.
+async function shutdown(signal: string): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(
+        `[bridge] ${signal} received; draining in-flight requests (${SHUTDOWN_GRACE_MS}ms deadline)`,
+    );
+    const deadline = setTimeout(() => {
+        console.error(`[bridge] drain deadline (${SHUTDOWN_GRACE_MS}ms) exceeded; forcing exit`);
+        process.exit(0);
+    }, SHUTDOWN_GRACE_MS);
+    try {
+        await server?.stop();
+    } catch (error) {
+        console.error('[bridge] error while draining:', error);
+    }
+    clearTimeout(deadline);
+    await sweepWorkDir();
+    console.log('[bridge] shutdown complete; exiting 0');
+    process.exit(0);
+}
+
 async function main(): Promise<void> {
     const ctx = await init({
         clientUidPrefix: 'sdk-js-cli',
@@ -575,7 +639,7 @@ async function main(): Promise<void> {
         `[bridge] listening on ${bindAddr}:${PORT} — set BRIDGE_HOST=127.0.0.1 for non-containerized use`,
     );
 
-    const server = Bun.serve({
+    server = Bun.serve({
         hostname: BRIDGE_HOST,
         port: PORT,
         // /timeline of a large library takes a while to paginate; /photo/*/full streams.
@@ -616,25 +680,13 @@ async function main(): Promise<void> {
                     const res = await clearCache();
                     // Sweep stale work/*.full files before exiting so a
                     // crash-restart loop doesn't accumulate orphans.
-                    const workDir = path.join(DATA_DIR, 'work');
-                    try {
-                        for (const name of readdirSync(workDir)) {
-                            if (!STALE_WORK_FILE_GLOB.test(name)) continue;
-                            try {
-                                await Bun.file(path.join(workDir, name)).unlink();
-                            } catch {
-                                // best-effort
-                            }
-                        }
-                    } catch {
-                        // workDir doesn't exist — nothing to sweep
-                    }
+                    await sweepWorkDir();
                     // Drain in-flight requests before exiting so the
                     // response is fully flushed and no downloads are
                     // aborted mid-stream. Exit 0 (expected restart)
                     // instead of 1 (crash) so monitoring stays green.
                     const body = Response.json({ ok: true, ...res });
-                    server.stop();
+                    server?.stop();
                     process.exit(0);
                     return body;
                 }
@@ -688,6 +740,9 @@ async function main(): Promise<void> {
             }
         },
     });
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
 
     console.log(`[bridge] listening on :${PORT}`);
 }
