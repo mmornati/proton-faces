@@ -3,7 +3,7 @@
 # Usage:
 #   BASE=https://protonface.mornati.ovh ./scripts/verify-hardening.sh
 #   INSECURE=1 ./scripts/verify-hardening.sh   # skip TLS cert verification
-#   HOST_HEADER=protonface.mornati.ovh BASE=https://51.77.144.149 \
+#   HOST_HEADER=protonface.mornati.ovh BASE=https://<your-vps-ip> \
 #     INSECURE=1 ./scripts/verify-hardening.sh  # pre-DNS testing
 #
 # Exits 0 on full pass, 1 on any failed check.

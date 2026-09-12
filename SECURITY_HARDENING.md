@@ -133,7 +133,7 @@ users fetch full-resolution Proton photos if they know a UID.
 - Override that sets `DEMO_ALLOW_PUBLIC_THUMBS=0` for local prod-mode
   testing. NOT used in deployment.
 
-### Applied on the VPS (`ssh ubuntu@vps-7c0ec501.vps.ovh.net`)
+### Applied on the VPS (`ssh <user>@<your-vps-hostname>`)
 
 - `/data/coolify/proxy/dynamic/protonface-security.yaml`:
   - `pf-security` middleware: HSTS (2y, includeSubDomains, preload),
@@ -374,10 +374,10 @@ issue a per-hostname Let's Encrypt cert.
 Examples of hostnames already served by this proxy on the same VPS
 (verified live):
 
-- `coolify.pygame.ovh` — Coolify UI
-- `blog.mornati.net` — Firebase blog
-- `umami.mornati.net` — analytics
-- `ollama.pygame.ovh`, `api.pygame.ovh`, `play.pygame.ovh`, etc.
+- `coolify.example.com` — Coolify UI
+- `blog.example.com` — blog
+- `analytics.example.com` — analytics
+- `ollama.example.com`, `api.example.com`, `play.example.com`, etc.
 - `protonface.mornati.ovh` — this app (newly added)
 
 Each is a separate Docker container with its own Traefik labels. They
@@ -386,9 +386,9 @@ unless explicitly configured.
 
 ### Cloudflare in front (Universal SSL)
 
-`mornati.ovh` is proxied through Cloudflare. Cloudflare handles the
-public TLS certificate (Universal SSL covers `mornati.ovh` and
-`*.mornati.ovh` via Google Trust Services). When Cloudflare forwards a
+The app's domain is proxied through Cloudflare. Cloudflare handles the
+public TLS certificate (Universal SSL covers the domain and its
+wildcard via Google Trust Services). When Cloudflare forwards a
 request to the origin it expects a valid HTTPS response. If the origin
 cert is invalid, Cloudflare returns **HTTP 526 "Invalid SSL certificate"**.
 
@@ -413,7 +413,7 @@ For Traefik + ACME to issue a valid cert for `protonface.mornati.ovh`:
    renewal test (up to ~6 h). To force a fresh attempt:
 
    ```bash
-   ssh ubuntu@vps-7c0ec501.vps.ovh.net
+   ssh <user>@<your-vps-hostname>
    sudo docker restart coolify-proxy
    sudo tail -f /data/coolify/proxy/traefik.log
    # look for: INF Server responded with a certificate. domains=protonface.mornati.ovh
@@ -427,9 +427,9 @@ If `https://protonface.mornati.ovh` returns 526 even after DNS is set:
 # 1. Confirm DNS resolves to your VPS
 dig +short protonface.mornati.ovh @8.8.8.8
 # 2. Force Traefik to retry ACME
-ssh ubuntu@vps-7c0ec501.vps.ovh.net 'sudo docker restart coolify-proxy && sleep 10 && sudo tail -20 /data/coolify/proxy/traefik.log'
+ssh <user>@<your-vps-hostname> 'sudo docker restart coolify-proxy && sleep 10 && sudo tail -20 /data/coolify/proxy/traefik.log'
 # 3. Verify the cert was issued
-ssh ubuntu@vps-7c0ec501.vps.ovh.net 'sudo cat /data/coolify/proxy/acme.json | python3 -c "import json,sys;d=json.loads(sys.stdin.read());[print(c[\"domain\"][\"main\"]) for c in d[\"letsencrypt\"][\"Certificates\"]]"'
+ssh <user>@<your-vps-hostname> 'sudo cat /data/coolify/proxy/acme.json | python3 -c "import json,sys;d=json.loads(sys.stdin.read());[print(c[\"domain\"][\"main\"]) for c in d[\"letsencrypt\"][\"Certificates\"]]"'
 # Should list: protonface.mornati.ovh
 # 4. Verify the cert serves correctly
 echo | openssl s_client -servername protonface.mornati.ovh -connect protonface.mornati.ovh:443 2>/dev/null | openssl x509 -noout -subject -issuer
@@ -446,7 +446,7 @@ Same pattern as `protonface.mornati.ovh`:
 
 ```bash
 # 1. Add DNS A record
-#    newservice.example.com → 51.77.144.149
+#    newservice.example.com → <your-vps-ip>
 
 # 2. Run the container on the coolify network with the right labels
 sudo docker run -d --name newservice \
