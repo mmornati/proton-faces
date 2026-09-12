@@ -1,5 +1,6 @@
 import json
 import queue
+import time
 
 import numpy as np
 import pytest
@@ -441,3 +442,83 @@ class TestProcessBatch:
         indexer._process_one(uid, clip_vec=vec)
         assert store.clip_exists(uid) is True
         assert store.get_photo(uid)["status"] == "done"
+
+
+class TestSyncOnceDeletionSweep:
+    """Regression: a full scan with zero new `gone` must still confirm
+    pending_removal rows whose grace window has elapsed.
+
+    Previously confirm_deletions() was gated on `if gone:`, so a scan that
+    found no new deletions never promoted previously-staged rows — they stayed
+    stuck in pending_removal until a scan with new deletions happened to run.
+    """
+
+    class _FakeBridge:
+        def __init__(self, uids):
+            self._uids = uids
+
+        def timeline_ids(self, limit=0):
+            return [{"uid": u, "captureTime": 1} for u in self._uids]
+
+        def nodes(self, uids):
+            return [
+                {"uid": u, "name": f"{u}.jpg", "mediaType": "image/jpeg",
+                 "captureTime": 1, "sha1": f"sha-{u}", "albums": []}
+                for u in uids
+            ]
+
+    def _seed_photo(self, uid):
+        store.upsert_photos(
+            [{"uid": uid, "name": f"{uid}.jpg", "media_type": "image/jpeg",
+              "capture_time": 1, "sha1": f"sha-{uid}", "albums": [], "size": 1}]
+        )
+        with store.get_conn() as conn:
+            conn.execute("UPDATE photos SET status='done' WHERE uid=?", (uid,))
+
+    def _set_pending_removal(self, uid, processed_at):
+        with store.get_conn() as conn:
+            conn.execute(
+                "UPDATE photos SET status='pending_removal', processed_at=? WHERE uid=?",
+                (processed_at, uid),
+            )
+
+    def test_confirms_past_grace_without_new_gone(self, tmp_db, app_settings, monkeypatch):
+        # p1/p2 are still on the remote timeline (no new deletions this scan).
+        # p3 was staged long ago (past grace); p4 was staged just now. The
+        # scan must confirm p3 even though `gone` is empty.
+        self._seed_photo("p1")
+        self._seed_photo("p2")
+        self._seed_photo("p3")
+        self._seed_photo("p4")
+        grace = max(1, indexer.settings.grace_cycles) * max(1, indexer.settings.sync_interval)
+        self._set_pending_removal("p3", int(time.time()) - grace - 60)
+        self._set_pending_removal("p4", int(time.time()))
+
+        monkeypatch.setattr(indexer, "get_bridge", lambda: self._FakeBridge(["p1", "p2"]))
+        indexer._sync_once()
+
+        assert store.get_photo("p1")["status"] == "done"
+        assert store.get_photo("p2")["status"] == "done"
+        assert store.get_photo("p3")["status"] == "deleted"
+        assert store.get_photo("p3")["was_deleted_at"] is not None
+        # Still within grace: must remain pending_removal.
+        assert store.get_photo("p4")["status"] == "pending_removal"
+
+    def test_confirms_past_grace_with_new_gone(self, tmp_db, app_settings, monkeypatch):
+        # p1 is gone from the remote timeline (new deletion, staged this scan)
+        # and p2 was staged earlier (past grace). p1 must be staged but stay
+        # pending_removal; p2 must be confirmed deleted in the same scan.
+        # p3 stays on the remote timeline so the listing isn't empty.
+        self._seed_photo("p1")
+        self._seed_photo("p2")
+        self._seed_photo("p3")
+        grace = max(1, indexer.settings.grace_cycles) * max(1, indexer.settings.sync_interval)
+        self._set_pending_removal("p2", int(time.time()) - grace - 60)
+
+        monkeypatch.setattr(indexer.settings, "sync_deletion_threshold", 0.9)
+        monkeypatch.setattr(indexer, "get_bridge", lambda: self._FakeBridge(["p3"]))
+        indexer._sync_once()
+
+        assert store.get_photo("p1")["status"] == "pending_removal"
+        assert store.get_photo("p2")["status"] == "deleted"
+        assert store.get_photo("p3")["status"] == "done"

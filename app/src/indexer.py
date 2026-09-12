@@ -403,9 +403,9 @@ def _sync_once() -> None:
     # grace_cycles * SYNC_INTERVAL seconds have elapsed without the uid
     # coming back. If the uid reappears in `remote` before then, the
     # upsert_photos reclaim path resets it to 'new' (and clears was_deleted_at).
+    grace_seconds = max(1, settings.grace_cycles) * max(1, settings.sync_interval)
     if gone:
         staged = mark_pending_removal(gone)
-        grace_seconds = max(1, settings.grace_cycles) * max(1, settings.sync_interval)
         confirmed = confirm_deletions(grace_seconds=grace_seconds)
         log.info(
             "sync: %d missing → %d newly pending_removal, %d confirmed deleted "
@@ -413,6 +413,14 @@ def _sync_once() -> None:
             len(gone), staged, confirmed, grace_seconds,
             len(gone) - staged - confirmed,
         )
+    else:
+        # No new deletions this scan, but previously-staged rows may have
+        # passed their grace window. Sweep unconditionally so a full scan
+        # that finds zero new `gone` still confirms old pending_removal rows
+        # (otherwise they'd stay stuck until a scan with new deletions).
+        confirmed = confirm_deletions(grace_seconds=grace_seconds)
+        if confirmed:
+            log.info("sync: %d confirmed deleted (grace=%ds)", confirmed, grace_seconds)
 
     if new_uids:
         items = bridge.nodes(new_uids)
