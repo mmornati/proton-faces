@@ -105,9 +105,11 @@ CREATE TABLE IF NOT EXISTS people (
     photo_count   INTEGER NOT NULL DEFAULT 0    -- denormalized: COUNT(DISTINCT photo_uid)
 );
 CREATE INDEX IF NOT EXISTS idx_people_photo_count ON people(photo_count DESC);
--- Case-insensitive prefix lookups for the people typeahead/search (issue #91):
+-- Case-insensitive prefix lookups for the people typeahead (issue #91):
 -- SQLite turns `name COLLATE NOCASE LIKE 'prefix%'` into a range scan over
--- this index instead of a full-table LIKE scan.
+-- this index instead of a full-table LIKE scan. The people grid search uses
+-- substring matching (`%q%`) which cannot use this index, but the people
+-- table is small enough that a full scan is fine there.
 CREATE INDEX IF NOT EXISTS idx_people_name ON people(name COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS faces (
@@ -1672,13 +1674,16 @@ def invalidate_embedding_cache() -> None:
     _person_means_matrix = None
 
 
+def _like_escape(s: str) -> str:
+    """Escape LIKE wildcards so user input is matched literally."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def all_people(q: str | None = None, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:
     """People ordered by photo_count DESC.
 
-    With `q`, restricts to people whose name starts with the prefix
-    (case-insensitive; `COLLATE NOCASE` lets `LIKE 'q%'` seek
-    `idx_people_name` instead of scanning the table). With `limit`/`offset`,
-    paginates.
+    With `q`, restricts to people whose name contains the query
+    (case-insensitive substring). With `limit`/`offset`, paginates.
     """
     sql = (
         "SELECT p.id, p.name, p.cover_uid, p.cover_face_id, "
@@ -1687,8 +1692,8 @@ def all_people(q: str | None = None, limit: int | None = None, offset: int = 0) 
     )
     params: list = []
     if q:
-        sql += "WHERE p.name COLLATE NOCASE LIKE ? "
-        params.append(f"{q}%")
+        sql += "WHERE p.name COLLATE NOCASE LIKE ? ESCAPE '\\' "
+        params.append(f"%{_like_escape(q)}%")
     sql += "ORDER BY p.photo_count DESC, p.id ASC"
     if limit is not None:
         sql += " LIMIT ? OFFSET ?"
@@ -1702,8 +1707,8 @@ def count_people(q: str | None = None) -> int:
     with get_conn() as conn:
         if q:
             return conn.execute(
-                "SELECT COUNT(*) FROM people WHERE LOWER(name) LIKE LOWER(?)",
-                (f"%{q}%",),
+                "SELECT COUNT(*) FROM people WHERE name COLLATE NOCASE LIKE ? ESCAPE '\\'",
+                (f"%{_like_escape(q)}%",),
             ).fetchone()[0]
         return conn.execute("SELECT COUNT(*) FROM people").fetchone()[0]
 
@@ -1783,7 +1788,7 @@ def place_stats(limit: int = 500, q: str | None = None) -> list[sqlite3.Row]:
 
     Returns rows with (place, city, photo_count) where city is the first
     segment of `place` (before the comma). With `q`, restricts to places
-    whose name starts with the prefix (case-insensitive).
+    whose name contains the query (case-insensitive substring).
     """
     sql = (
         "SELECT place, COUNT(*) AS photo_count FROM photos "
@@ -1791,8 +1796,8 @@ def place_stats(limit: int = 500, q: str | None = None) -> list[sqlite3.Row]:
     )
     params: list = []
     if q:
-        sql += "AND place COLLATE NOCASE LIKE ? "
-        params.append(f"{q}%")
+        sql += "AND place COLLATE NOCASE LIKE ? ESCAPE '\\' "
+        params.append(f"%{_like_escape(q)}%")
     sql += "GROUP BY place ORDER BY photo_count DESC LIMIT ?"
     params.append(limit)
     with get_conn() as conn:
@@ -1833,10 +1838,10 @@ def map_markers(limit: int = 1000, q: str | None = None) -> list[sqlite3.Row]:
     set. Validated against the prod DB: byte-for-byte identical to the
     previous correlated-subquery formulation.
     """
-    q_clause = "AND place COLLATE NOCASE LIKE ? " if q else ""
+    q_clause = "AND place COLLATE NOCASE LIKE ? ESCAPE '\\' " if q else ""
     params: list = []
     if q:
-        params.append(f"{q}%")
+        params.append(f"%{_like_escape(q)}%")
     with get_conn() as conn:
         return conn.execute(
             f"""
@@ -2353,14 +2358,14 @@ def album_names(uids: list[str]) -> dict[str, str]:
 def all_albums(q: str | None = None) -> list[sqlite3.Row]:
     """Albums ordered chronologically by their earliest photo, newest first.
 
-    With `q`, restricts to albums whose name starts with the prefix
-    (case-insensitive).
+    With `q`, restricts to albums whose name contains the query
+    (case-insensitive substring).
     """
     sql = "SELECT * FROM albums WHERE photo_count IS NOT NULL "
     params: list = []
     if q:
-        sql += "AND name COLLATE NOCASE LIKE ? "
-        params.append(f"{q}%")
+        sql += "AND name COLLATE NOCASE LIKE ? ESCAPE '\\' "
+        params.append(f"%{_like_escape(q)}%")
     sql += "ORDER BY (start_ts IS NULL), start_ts DESC, name ASC"
     with get_conn() as conn:
         return conn.execute(sql, params).fetchall()
