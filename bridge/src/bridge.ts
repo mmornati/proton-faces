@@ -35,7 +35,7 @@ import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { createRateLimiter, extractRetryAfter, type TokenBucket } from './rateLimit';
+import { createRateLimiter, noteRetryAfterIfPresent, type TokenBucket } from './rateLimit';
 import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
@@ -202,8 +202,7 @@ async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: Tok
                 send(`# done: ${uids.length}`);
                 controller.close();
             } catch (error) {
-                const ra = extractRetryAfter(error);
-                if (ra !== null) limiter.noteRetryAfter(ra);
+                noteRetryAfterIfPresent(limiter, error);
                 controller.error(error);
             }
         },
@@ -246,6 +245,7 @@ async function fetchNodes(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenB
                 }
                 controller.close();
             } catch (error) {
+                noteRetryAfterIfPresent(limiter, error);
                 controller.error(error);
             }
         },
@@ -259,10 +259,15 @@ async function fetchAlbums(ctx: Awaited<ReturnType<typeof init>>, limiter: Token
     await limiter.acquire();
     // Bound album iteration so a stalled SDK pagination can't hang this handler.
     const signal = AbortSignal.timeout(ALBUMS_TIMEOUT_MS);
-    for await (const node of ctx.photosSdk.iterateAlbums(signal)) {
-        if ('missingUid' in node) continue;
-        const a = node as PhotoNode;
-        albums.push({ uid: a.uid, name: a.name.value ?? a.name.key });
+    try {
+        for await (const node of ctx.photosSdk.iterateAlbums(signal)) {
+            if ('missingUid' in node) continue;
+            const a = node as PhotoNode;
+            albums.push({ uid: a.uid, name: a.name.value ?? a.name.key });
+        }
+    } catch (error) {
+        noteRetryAfterIfPresent(limiter, error);
+        throw error;
     }
     return Response.json({ ok: true, albums });
 }
@@ -328,6 +333,7 @@ async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, limiter: T
         // On abort/timeout, surface a 500 instead of a partial-success payload
         // so the client can distinguish "some thumbnails failed" from "the
         // whole batch was abandoned".
+        noteRetryAfterIfPresent(limiter, error);
         if (signal.aborted) {
             return Response.json(
                 { ok: false, error: `Thumbnail iteration timed out after ${THUMBNAILS_TIMEOUT_MS}ms` },
@@ -764,8 +770,7 @@ async function main(): Promise<void> {
             } catch (error) {
                 const ref = randomUUID().slice(0, 8);
                 console.error(`[bridge] error ref=${ref}:`, error);
-                const ra = extractRetryAfter(error);
-                if (ra !== null) limiter.noteRetryAfter(ra);
+                noteRetryAfterIfPresent(limiter, error);
                 return Response.json(sanitizedErrorBody(ref), { status: 500 });
             }
         },
