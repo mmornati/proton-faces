@@ -1145,6 +1145,19 @@ class TestPlacesAndMap:
         markers = store.map_markers()
         assert len(markers) == 2
 
+    def test_place_stats_and_map_markers_q_filter(self, tmp_db):
+        store.upsert_photos([_photo("p1"), _photo("p2"), _photo("p3")])
+        store.set_photo_done("p1", "t1.webp", (45.4, 9.2), "Milano")
+        store.set_photo_done("p2", "t2.webp", (41.9, 12.5), "Roma")
+        store.set_photo_done("p3", "t3.webp", (48.8, 2.3), "Paris, Île-de-France, France")
+        assert [r["place"] for r in store.place_stats(q="mila")] == ["Milano"]
+        assert [r["place"] for r in store.place_stats(q="MIL")] == ["Milano"]
+        assert [r["place"] for r in store.place_stats(q="paris")] == ["Paris, Île-de-France, France"]
+        assert store.place_stats(q="nope") == []
+        assert [r["place"] for r in store.map_markers(q="mila")] == ["Milano"]
+        assert store.map_markers(q="nope") == []
+        assert store.count_places() == 3
+
     def test_person_map_markers(self, tmp_db):
         store.upsert_photos([_photo("p1")])
         store.set_photo_done("p1", "t1.webp", (45.4, 9.2), "Milano")
@@ -1182,6 +1195,24 @@ class TestAlbums:
             "al2": "al2",
         }
         assert store.album_names([]) == {}
+
+    def test_all_albums_q_filter(self, tmp_db):
+        store.upsert_photos([_photo("p1"), _photo("p2")])
+        store.set_photo_done("p1", "t1.webp", None, None)
+        store.set_photo_done("p2", "t2.webp", None, None)
+        with store.get_conn() as conn:
+            conn.execute("UPDATE photos SET albums=? WHERE uid='p1'", (json.dumps(["al1"]),))
+            conn.execute("UPDATE photos SET albums=? WHERE uid='p2'", (json.dumps(["al2"]),))
+        store.sync_albums(
+            [
+                {"uid": "al1", "name": "Holiday Trip"},
+                {"uid": "al2", "name": "Work Notes"},
+            ]
+        )
+        assert [a["uid"] for a in store.all_albums(q="hol")] == ["al1"]
+        assert [a["uid"] for a in store.all_albums(q="HOLIDAY")] == ["al1"]
+        assert store.all_albums(q="nope") == []
+        assert len(store.all_albums()) == 2
 
     def _seed_albums(self):
         """Seeds one album each with (p1) and (p1, p2) and a lone photo in al3,

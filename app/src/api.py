@@ -78,6 +78,7 @@ from store import (
     clip_count,
     count_faces_for_person,
     count_faces_for_photo,
+    count_places,
     create_person,
     create_user,
     delete_empty_people,
@@ -1255,9 +1256,10 @@ def api_photo_anchors():
 
 
 @app.get("/api/albums")
-def api_albums():
+def api_albums(q: str | None = None):
+    q = (q or "").strip() or None
     albums = []
-    for r in all_albums():
+    for r in all_albums(q=q):
         albums.append(
             {
                 "uid": r["uid"],
@@ -1270,7 +1272,8 @@ def api_albums():
                 ),
             }
         )
-    return {"albums": albums}
+    total = len(all_albums()) if q else len(albums)
+    return {"albums": albums, "total": total}
 
 
 @app.get("/api/albums/{album_uid}/photos")
@@ -1281,18 +1284,20 @@ def api_album_photos(album_uid: str, limit: int = 200, offset: int = 0,
 
 
 @app.get("/api/places")
-def api_places(limit: int = 500):
-    rows = place_stats(limit=limit)
+def api_places(limit: int = 500, q: str | None = None):
+    q = (q or "").strip() or None
+    rows = place_stats(limit=limit, q=q)
     places = []
     for r in rows:
         city = r["place"].split(",")[0].strip()
         places.append({"place": r["place"], "city": city, "count": r["photo_count"]})
-    return {"places": places}
+    total = count_places() if q else len(places)
+    return {"places": places, "total": total}
 
 
 @app.get("/api/map")
-def api_map(limit: int = 1000):
-    rows = map_markers(limit=limit)
+def api_map(limit: int = 1000, q: str | None = None):
+    rows = map_markers(limit=limit, q=q)
     markers = []
     for r in rows:
         city = r["place"].split(",")[0].strip()

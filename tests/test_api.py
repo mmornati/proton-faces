@@ -1083,6 +1083,50 @@ class TestPhotos:
         assert marker["thumb_url"].split("?")[0] == "/api/photos/p1/thumb"
         assert "sig=" in marker["thumb_url"]  # signed by default when public thumbs are off
 
+    def test_albums_q_filter(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1", albums=["al1"])
+        _seed_done_photo("p2", albums=["al2"])
+        store.sync_albums(
+            [
+                {"uid": "al1", "name": "Holiday Trip"},
+                {"uid": "al2", "name": "Work Notes"},
+            ]
+        )
+        headers = _bearer(client)
+        r = client.get("/api/albums?q=hol", headers=headers)
+        body = r.json()
+        assert [a["uid"] for a in body["albums"]] == ["al1"]
+        assert body["total"] == 2
+        r2 = client.get("/api/albums?q=nope", headers=headers)
+        assert r2.json()["albums"] == []
+        assert r2.json()["total"] == 2
+        r3 = client.get("/api/albums", headers=headers)
+        assert len(r3.json()["albums"]) == 2
+
+    def test_places_q_filter(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1", place="Paris, France", gps=(48.8584, 2.2945))
+        _seed_done_photo("p2", place="Milano", gps=(45.4, 9.2))
+        headers = _bearer(client)
+        r = client.get("/api/places?q=mila", headers=headers)
+        body = r.json()
+        assert [p["place"] for p in body["places"]] == ["Milano"]
+        assert body["total"] == 2
+        r2 = client.get("/api/places?q=nope", headers=headers)
+        assert r2.json()["places"] == []
+        assert r2.json()["total"] == 2
+
+    def test_map_q_filter(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1", place="Paris, France", gps=(48.8584, 2.2945))
+        _seed_done_photo("p2", place="Milano", gps=(45.4, 9.2))
+        headers = _bearer(client)
+        r = client.get("/api/map?q=mila", headers=headers)
+        assert [m["place"] for m in r.json()["markers"]] == ["Milano"]
+        r2 = client.get("/api/map?q=nope", headers=headers)
+        assert r2.json()["markers"] == []
+
     def test_thumb_url_stable_within_hour(self, client, password_hash):
         # Regression for signed-URL `exp` churn: two page loads within the same
         # hour must return byte-identical thumb URLs, otherwise the

@@ -1745,22 +1745,37 @@ def search_photos_by_place(query: str, limit: int = 200, offset: int = 0) -> lis
         ).fetchall()
 
 
-def place_stats(limit: int = 500) -> list[sqlite3.Row]:
+def place_stats(limit: int = 500, q: str | None = None) -> list[sqlite3.Row]:
     """Aggregate distinct places with photo counts, most popular first.
 
     Returns rows with (place, city, photo_count) where city is the first
-    segment of `place` (before the comma).
+    segment of `place` (before the comma). With `q`, restricts to places
+    whose name starts with the prefix (case-insensitive).
     """
+    sql = (
+        "SELECT place, COUNT(*) AS photo_count FROM photos "
+        "WHERE status='done' AND place IS NOT NULL "
+    )
+    params: list = []
+    if q:
+        sql += "AND place COLLATE NOCASE LIKE ? "
+        params.append(f"{q}%")
+    sql += "GROUP BY place ORDER BY photo_count DESC LIMIT ?"
+    params.append(limit)
+    with get_conn() as conn:
+        return conn.execute(sql, params).fetchall()
+
+
+def count_places() -> int:
+    """Total number of distinct places with photos."""
     with get_conn() as conn:
         return conn.execute(
-            "SELECT place, COUNT(*) AS photo_count FROM photos "
-            "WHERE status='done' AND place IS NOT NULL "
-            "GROUP BY place ORDER BY photo_count DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+            "SELECT COUNT(DISTINCT place) FROM photos "
+            "WHERE status='done' AND place IS NOT NULL"
+        ).fetchone()[0]
 
 
-def map_markers(limit: int = 1000) -> list[sqlite3.Row]:
+def map_markers(limit: int = 1000, q: str | None = None) -> list[sqlite3.Row]:
     """Aggregate distinct places with photo counts and mean GPS coordinates.
 
     Returns rows with (place, city, photo_count, lat, lng, cover_uid) where city is the
@@ -1785,9 +1800,13 @@ def map_markers(limit: int = 1000) -> list[sqlite3.Row]:
     set. Validated against the prod DB: byte-for-byte identical to the
     previous correlated-subquery formulation.
     """
+    q_clause = "AND place COLLATE NOCASE LIKE ? " if q else ""
+    params: list = []
+    if q:
+        params.append(f"{q}%")
     with get_conn() as conn:
         return conn.execute(
-            """
+            f"""
             WITH places AS (
               SELECT place,
                      COUNT(*) AS photo_count,
@@ -1800,6 +1819,7 @@ def map_markers(limit: int = 1000) -> list[sqlite3.Row]:
                 AND gps_lng IS NOT NULL
                 AND thumb_path IS NOT NULL
                 AND thumb_path != ''
+                {q_clause}
               GROUP BY place
             ),
             newest AS (
@@ -1838,7 +1858,7 @@ def map_markers(limit: int = 1000) -> list[sqlite3.Row]:
             ORDER BY p.photo_count DESC
             LIMIT ?
             """,
-            (limit,),
+            (*params, limit),
         ).fetchall()
 
 
@@ -2297,13 +2317,20 @@ def album_names(uids: list[str]) -> dict[str, str]:
     return {r["uid"]: r["name"] or r["uid"] for r in rows}
 
 
-def all_albums() -> list[sqlite3.Row]:
-    """Albums ordered chronologically by their earliest photo, newest first."""
+def all_albums(q: str | None = None) -> list[sqlite3.Row]:
+    """Albums ordered chronologically by their earliest photo, newest first.
+
+    With `q`, restricts to albums whose name starts with the prefix
+    (case-insensitive).
+    """
+    sql = "SELECT * FROM albums WHERE photo_count IS NOT NULL "
+    params: list = []
+    if q:
+        sql += "AND name COLLATE NOCASE LIKE ? "
+        params.append(f"{q}%")
+    sql += "ORDER BY (start_ts IS NULL), start_ts DESC, name ASC"
     with get_conn() as conn:
-        return conn.execute(
-            "SELECT * FROM albums WHERE photo_count IS NOT NULL "
-            "ORDER BY (start_ts IS NULL), start_ts DESC, name ASC"
-        ).fetchall()
+        return conn.execute(sql, params).fetchall()
 
 
 def album_photos(album_uid: str, limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
