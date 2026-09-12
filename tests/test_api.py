@@ -878,6 +878,30 @@ class TestPhotos:
         assert r.json()["uid"] == "p1"
         assert r.json()["kind"] == "image"
         assert r.json()["place"] == "Paris, France"
+        assert r.json()["face_count"] == 0
+
+    def test_photo_list_face_count(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        _seed_done_photo("p2")
+        _seed_done_photo("p3")
+        _seed_face("p1")
+        _seed_face("p1")
+        _seed_face("p3")
+        headers = _bearer(client)
+        r = client.get("/api/photos", headers=headers)
+        assert r.status_code == 200
+        by_uid = {p["uid"]: p["face_count"] for p in r.json()["photos"]}
+        assert by_uid == {"p1": 2, "p3": 1, "p2": 0}
+
+    def test_photo_detail_face_count(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        _seed_face("p1")
+        headers = _bearer(client)
+        r = client.get("/api/photos/p1", headers=headers)
+        assert r.status_code == 200
+        assert r.json()["face_count"] == 1
 
     def test_photo_detail_404(self, client, password_hash):
         _seed_user(password_hash=password_hash)
@@ -1676,6 +1700,7 @@ class TestSearch:
         monkeypatch.setattr(api, "get_photos_batch",
                             lambda u: {uid: photos[uid] for uid in u if uid in photos})
         monkeypatch.setattr(api, "favorite_uids", lambda user_id, uids_: set())
+        monkeypatch.setattr(api, "face_counts_for_photos", lambda uids_: {})
 
         emb = np.zeros(16, dtype=np.float32)
         emb[15] = 1.0
