@@ -1,0 +1,65 @@
+name: Release
+
+# Creates a GitHub Release with auto-generated notes (PR list + full changelog
+# link) whenever a v* tag is pushed. The publish workflow builds the versioned
+# Docker images on the same tag push; this workflow only writes the release.
+#
+# Two ways to trigger:
+#   1. Push a tag:  git tag v1.2.3 && git push origin v1.2.3
+#   2. Run the "Release" workflow from the Actions tab with a version input —
+#      it creates and pushes the tag for you, which then triggers this job.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  create-tag:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ github.event.inputs.version }}"
+          git push origin "v${{ github.event.inputs.version }}"
+
+  release:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          gh api -X POST "repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="$TAG" -f target_commitish="$TAG" --jq ".body" > /tmp/notes-body.md
+          cat >> /tmp/notes-body.md << EOF
+
+          ## Images
+
+          Versioned images are published to GHCR by the publish workflow on this tag:
+
+          - ghcr.io/mmornati/proton-faces-app:$TAG
+          - ghcr.io/mmornati/proton-faces-bridge:$TAG
+
+          Pull with \`docker compose pull\` (tracks :latest) or pin compose.yml to $TAG.
+          EOF
+          gh release create "$TAG" --notes-file /tmp/notes-body.md
