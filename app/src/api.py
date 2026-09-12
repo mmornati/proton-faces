@@ -77,12 +77,14 @@ from store import (
     assign_face_person,
     clip_count,
     count_faces_for_person,
+    count_faces_for_photo,
     create_person,
     create_user,
     delete_empty_people,
     delete_user,
     done_photos,
     duplicate_groups,
+    face_counts_for_photos,
     face_embedding,
     face_ids_for_people,
     faces_for_person,
@@ -427,21 +429,29 @@ def _row_to_dict(row) -> dict:
     return d
 
 
-def _user_photos(user_id: int, rows, fav_set: set[str] | None = None) -> list[dict]:
+def _user_photos(
+    user_id: int, rows, fav_set: set[str] | None = None, face_count_set: dict[str, int] | None = None
+) -> list[dict]:
     """Serialize a list of photo rows for `user_id`, marking favorited_by_me.
 
     Issues a single batched query against user_favorites for the page of uids
     so list endpoints stay O(1) round-trips. A precomputed `fav_set` skips
     that query so callers can batch one favorites lookup across many row
-    groups (used by the Duplicates endpoint).
+    groups (used by the Duplicates endpoint). `face_count_set` is the
+    equivalent batch for per-photo face counts (stamped as `face_count`);
+    a precomputed dict skips the lookup.
     """
     if fav_set is None:
         uids = [r["uid"] for r in rows]
         fav_set = favorite_uids(user_id, uids) if uids else set()
+    if face_count_set is None:
+        uids = [r["uid"] for r in rows]
+        face_count_set = face_counts_for_photos(uids) if uids else {}
     out = []
     for r in rows:
         d = _row_to_dict(r)
         d["favorited_by_me"] = r["uid"] in fav_set
+        d["face_count"] = face_count_set.get(r["uid"], 0)
         out.append(d)
     return out
 
@@ -449,6 +459,7 @@ def _user_photos(user_id: int, rows, fav_set: set[str] | None = None) -> list[di
 def _single_user_photo(user_id: int, row) -> dict:
     d = _row_to_dict(row)
     d["favorited_by_me"] = is_favorite(user_id, row["uid"])
+    d["face_count"] = count_faces_for_photo(row["uid"])
     return d
 
 
@@ -1155,12 +1166,13 @@ def api_duplicates(limit: int = 200, user: CurrentUser = Depends(require_user)):
     groups = _duplicate_groups_cached(limit)
     all_uids = [r["uid"] for members in groups for r in members]
     fav_set = favorite_uids(user.id, all_uids) if all_uids else set()
+    face_counts = face_counts_for_photos(all_uids) if all_uids else {}
     out = []
     for members in groups:
         out.append({
             "sha1": members[0]["sha1"],
             "count": len(members),
-            "photos": _user_photos(user.id, members, fav_set=fav_set),
+            "photos": _user_photos(user.id, members, fav_set=fav_set, face_count_set=face_counts),
         })
     return {"groups": out}
 
@@ -2583,6 +2595,7 @@ def _semantic_search(vec: np.ndarray, limit: int, user_id: int) -> dict:
     photo_uids = [uids[i] for i in idx]
     photos = get_photos_batch(photo_uids)
     fav_set = favorite_uids(user_id, photo_uids)
+    face_counts = face_counts_for_photos(photo_uids)
     results = []
     for i in idx:
         uid = uids[i]
@@ -2591,6 +2604,7 @@ def _semantic_search(vec: np.ndarray, limit: int, user_id: int) -> dict:
             continue
         d = _row_to_dict(photo)
         d["favorited_by_me"] = uid in fav_set
+        d["face_count"] = face_counts.get(uid, 0)
         d["score"] = float(sims[i])
         results.append(d)
     return {"results": results, "total": len(results)}
@@ -2642,6 +2656,7 @@ def _face_similarity(emb: np.ndarray, limit: int, user_id: int) -> dict:
     # Batch-fetch all photos in one query instead of N+1 get_photo calls.
     photos = get_photos_batch(top_uids)
     fav_set = favorite_uids(user_id, top_uids)
+    face_counts = face_counts_for_photos(top_uids)
     results = []
     for uid, score in zip(top_uids, top_scores):
         photo = photos.get(uid)
@@ -2649,6 +2664,7 @@ def _face_similarity(emb: np.ndarray, limit: int, user_id: int) -> dict:
             continue
         d = _row_to_dict(photo)
         d["favorited_by_me"] = uid in fav_set
+        d["face_count"] = face_counts.get(uid, 0)
         d["score"] = score
         results.append(d)
     return {"results": results, "total": len(results)}

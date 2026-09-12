@@ -1583,7 +1583,7 @@ function cardHtml(p) {
       <img loading="lazy" src="${p.thumb_url}" data-uid="${esc(p.uid)}" alt="">
       ${isVideo ? `<div class="playbadge" aria-label="Video">▶</div>${dur ? `<div class="duration">${esc(dur)}</div>` : ""}` : ""}
       <button class="starbtn${p.favorited_by_me ? " on" : ""}" data-uid="${esc(p.uid)}" title="Toggle favorite">${p.favorited_by_me ? "★" : "☆"}</button>
-      <button class="facebadge" data-uid="${esc(p.uid)}">faces</button>
+      ${p.face_count > 0 ? `<button class="facebadge" data-uid="${esc(p.uid)}">${p.face_count === 1 ? "1 face" : p.face_count + " faces"}</button>` : ""}
       <div class="cardmeta"><div class="date">${fmtDate(p.capture_time)}</div>${p.place ? `<div class="place">${esc(p.place)}</div>` : ""}</div>
       ${p.score !== undefined ? `<div class="score">${(p.score * 100).toFixed(0)}%</div>` : ""}
     </div>`;
