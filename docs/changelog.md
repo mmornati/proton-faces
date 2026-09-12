@@ -2,6 +2,8 @@
 
 All notable changes to proton-faces are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+Releases are cut by pushing a `v*` tag (or running the **Release** workflow with a version) — see [Installation → Releases](getting-started/installation.md#releases). The GitHub Release notes are generated from merged PRs; this file is the curated, human-written record.
+
 ## Unreleased
 
 ### Added

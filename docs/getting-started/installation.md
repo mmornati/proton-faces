@@ -165,6 +165,21 @@ The data volume is preserved across updates. The schema migrates automatically o
 
   With a digest pin, `docker compose pull` only updates when the digest itself changes — bump it deliberately when you want to upgrade.
 
+## Releases
+
+Releases are cut from git tags. Pushing a `v*` tag does two things: the [publish workflow](https://github.com/mmornati/proton-faces/actions/workflows/publish.yml) builds and pushes the versioned images to GHCR, and the [release workflow](https://github.com/mmornati/proton-faces/actions/workflows/release.yml) creates a GitHub Release whose notes list every merged PR since the previous tag (with links) plus a full changelog diff.
+
+To cut a release:
+
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+Or run the **Release** workflow from the Actions tab and enter the version (e.g. `1.2.3`) — it creates and pushes the tag for you.
+
+Each release links the matching images, e.g. `ghcr.io/mmornati/proton-faces-app:v1.2.3`. The images are the release artifacts — there are no binary assets attached to the release itself. Deploy a specific release by pinning `compose.yml` as shown above, or track the latest with `docker compose pull && docker compose up -d`.
+
 ## Uninstalling
 
 ```bash
