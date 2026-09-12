@@ -183,12 +183,12 @@ Lower = more suggestions, more false positives.
 
 ### Map is empty
 
-- In real mode: you need a Google Takeout export mounted at `/takeout`. See [Places](../user-guide/places.md).
+- In real mode: GPS comes from each photo's own EXIF, read when the indexer downloads the full-res original. For photos indexed before that was added, run `docker compose exec indexer python indexer_main.py --backfill-gps-exif` to re-download and extract. See [Places](../user-guide/places.md).
 - In demo mode: `apply_demo_gps()` runs every sync cycle; check the indexer logs for `applied GPS for N fixture photos`.
 
 ### Wrong city name
 
-`reverse_geocoder` returns the nearest city within its dataset. For remote or unusual locations it can be inaccurate. Use the Takeout export's GPS as authoritative.
+`reverse_geocoder` returns the nearest city within its dataset. For remote or unusual locations it can be inaccurate. The photo's own EXIF GPS is authoritative.
 
 ## Admin
 

@@ -694,6 +694,31 @@ def get_photos(status: str, limit: int = 500, offset: int = 0) -> list[sqlite3.R
         ).fetchall()
 
 
+def get_photos_without_gps(
+    limit: int = 500, offset: int = 0, media_type: str | None = None
+) -> list[sqlite3.Row]:
+    """Photos with no GPS yet, optionally filtered by media-type prefix.
+
+    Used by the EXIF GPS backfill to sweep photos indexed before the
+    fullres loop started extracting coordinates from originals.
+    """
+    if media_type:
+        with get_conn() as conn:
+            return conn.execute(
+                "SELECT uid, media_type FROM photos "
+                "WHERE gps_lat IS NULL AND gps_lng IS NULL AND media_type LIKE ? "
+                "ORDER BY capture_time ASC LIMIT ? OFFSET ?",
+                (f"{media_type}%", limit, offset),
+            ).fetchall()
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT uid, media_type FROM photos "
+            "WHERE gps_lat IS NULL AND gps_lng IS NULL "
+            "ORDER BY capture_time ASC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+
+
 def claim_photo_for_download(uid: str) -> bool:
     """Atomically move a photo from 'new' to 'downloading'."""
     with _lock, get_conn() as conn:
@@ -780,6 +805,14 @@ def set_photo_done(
                 [(uid, u) for u in uids],
             )
         _mark_albums_dirty(c, uids)
+
+
+def set_photo_gps(uid: str, lat: float, lng: float) -> None:
+    """Persist GPS coordinates read from the photo's own EXIF."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE photos SET gps_lat=?, gps_lng=? WHERE uid=?", (lat, lng, uid)
+        )
 
 
 def set_photo_full(uid: str) -> None:

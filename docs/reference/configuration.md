@@ -9,7 +9,6 @@ These are read by `docker-compose.yml` itself, not by the containers:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATA_MOUNT` | named volume `data` | Host path or `:volume` that backs `DATA_DIR`. On a server with a big disk, set `DATA_MOUNT=/srv/proton-faces/data`. The directory must be writable by UID 1000. |
-| `PHOTOS_MOUNT` | `/dev/null` | Optional read-only bind mount of a local Google Takeout export. Inside the indexer/app containers it's always mounted at `/takeout` (and `PHOTOS_DIR` is hardcoded to `/takeout`). Set e.g. `PHOTOS_MOUNT=/srv/photos-takeout` to enable GPS backfill. |
 | `AUTH_SESSION_MOUNT` | `./credentials/auth-session.json` | Host path to the Proton session file (issue #32). The file is bind-mounted **only into the proton-bridge container** at `/data/auth-session.json` — the indexer and `app` containers have no path to it. The mount is writable because the SDK refreshes the file on disk. Override if your session lives elsewhere; the directory must be readable (and writable for refresh) by UID 1000. |
 | `PORT` | `8080` | Host port the web UI binds to. |
 | `SYNC_INTERVAL` | `300` | Default seconds between timeline diffs. |
@@ -39,7 +38,6 @@ Set inside `compose.yml` for each service. Most match the compose-level defaults
 | Variable | Default in `app`/`indexer` | Description |
 |----------|----------------------------|-------------|
 | `DATA_DIR` | `/data` (in-container) | Persistent data (thumbnails, SQLite, vectors). Hardcoded to `/data` in both containers; override only for local single-process dev. |
-| `PHOTOS_DIR` | `/takeout` (in-container) | Optional Google Takeout export mounted at `/takeout`. |
 | `MODELS_DIR` | `/models` (in-container) | Where the ML models live (baked into the image). Override only for testing. |
 | `BRIDGE_URL` | `http://proton-bridge:8090` | Bridge container address (internal docker network). |
 | `PORT` | `8080` (in-container) | Web UI port inside the `app` container. |
@@ -114,7 +112,6 @@ For `python main.py` on the host:
 DATA_DIR=./data \
 MODELS_DIR=./data/models \
 BRIDGE_URL=http://127.0.0.1:8090 \
-PHOTOS_DIR= \
 LOG_LEVEL=DEBUG \
 RUN_INDEXER=1 \
 INDEXER_STATUS_URL=http://127.0.0.1:8091 \

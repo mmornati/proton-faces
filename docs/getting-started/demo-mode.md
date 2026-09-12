@@ -49,7 +49,7 @@ Every demo photo has a real sha1 hash, real capture time, and the right media ty
 | `bridge_client.get_bridge()` | HTTP client to bridge | Returns `DemoBridge` |
 | Timeline / nodes / albums | Fetched from Proton's API | Served from `app/src/demo_assets/fixture.json` |
 | Thumbnails | Downloaded from Proton | Generated locally from `photos/<uid>.jpg` |
-| GPS / place names | From a Google Takeout export | Injected from the fixture |
+| GPS / place names | From each photo's own EXIF | Injected from the fixture |
 | Multi-user auth | Manual `--create-admin` | Default `demo` admin auto-created on first boot |
 | Binary media endpoints (`/thumb`, `/full`, `/cover`, `/crop`) | Secure by default (bearer token or signed URL) | World-readable — the profile sets `DEMO_ALLOW_PUBLIC_THUMBS=1` so static `<img>` tags work without JS |
 | Everything else (CLIP, faces, clustering, search, admin) | Same | Same |

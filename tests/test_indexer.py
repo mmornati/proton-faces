@@ -95,6 +95,54 @@ class TestResizeToThumb:
             assert img.size[0] <= 512 and img.size[1] <= 512
 
 
+def _jpg_with_gps(path, lat=39.564, lng=2.619):
+    """Write a JPEG carrying EXIF GPS coordinates (Mallorca-style)."""
+    from fractions import Fraction
+
+    from PIL import ExifTags
+
+    def _deg(coord):
+        d = int(coord)
+        m = int((coord - d) * 60)
+        s = (coord - d - m / 60) * 3600
+        return (Fraction(d, 1), Fraction(m, 1), Fraction(round(s * 100), 100))
+
+    img = Image.fromarray(np.full((100, 80, 3), 128, dtype=np.uint8))
+    exif = Image.Exif()
+    gps = {
+        1: "N" if lat >= 0 else "S",
+        2: _deg(abs(lat)),
+        3: "E" if lng >= 0 else "W",
+        4: _deg(abs(lng)),
+    }
+    exif[ExifTags.IFD.GPSInfo] = gps
+    img.save(path, "JPEG", exif=exif)
+
+
+class TestExtractExifGps:
+    def test_jpg_with_gps(self, tmp_path):
+        src = tmp_path / "gps.jpg"
+        _jpg_with_gps(src)
+        lat, lng = indexer._extract_exif_gps(src)
+        assert lat == pytest.approx(39.564, abs=1e-3)
+        assert lng == pytest.approx(2.619, abs=1e-3)
+
+    def test_jpg_without_gps(self, tmp_path):
+        src = tmp_path / "plain.jpg"
+        Image.fromarray(np.full((100, 80, 3), 128, dtype=np.uint8)).save(src, "JPEG")
+        assert indexer._extract_exif_gps(src) is None
+
+    def test_southern_hemisphere_negative(self, tmp_path):
+        src = tmp_path / "south.jpg"
+        _jpg_with_gps(src, lat=-33.8688, lng=151.2093)
+        lat, lng = indexer._extract_exif_gps(src)
+        assert lat == pytest.approx(-33.8688, abs=1e-3)
+        assert lng == pytest.approx(151.2093, abs=1e-3)
+
+    def test_missing_file(self, tmp_path):
+        assert indexer._extract_exif_gps(tmp_path / "nope.jpg") is None
+
+
 class TestSyncConfig:
     def test_defaults(self, app_settings):
         cfg = indexer.get_sync_config()

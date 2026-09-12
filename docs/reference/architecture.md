@@ -140,13 +140,13 @@ Every `CLUSTER_INTERVAL` seconds, HDBSCAN runs over all face embeddings whose `p
 
 ### GPS
 
-Every `GPS_INTERVAL` seconds, a child process is spawned (`python main.py --backfill-gps`). The subprocess:
+Every `GPS_INTERVAL` seconds, a child process is spawned (`python main.py --backfill-gps-exif`). The subprocess:
 
-1. Walks Google Takeout sidecars (`*.supplemental-metadata.json`).
-2. sha1-hashes the local photos and joins against the indexed timeline by content hash (no full-res download needed).
+1. Sweeps photos with no GPS yet (bounded batch, `--gps-limit 50`, HEIC first).
+2. Re-downloads each original via the bridge and reads the EXIF GPS block.
 3. Reverse-geocodes every photo that has GPS but no place yet.
 
-It runs in a subprocess because `reverse_geocoder` forks a multiprocessing pool on first use, which deadlocks when called from a thread inside the long-lived app process.
+New uploads get their GPS extracted inline in the fullres loop, so the backfill only drains the pre-EXIF backlog. It runs in a subprocess because `reverse_geocoder` forks a multiprocessing pool on first use, which deadlocks when called from a thread inside the long-lived app process.
 
 ## Data model
 
