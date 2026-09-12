@@ -3,7 +3,7 @@
 Usage::
 
     # Drop a vacuumed copy of the prod DB on this machine first:
-    #   scp mmornati@10.0.0.48:/tmp/index-prod-vacuumed.sqlite3 /tmp/
+    #   scp <user>@<host>:/tmp/index-prod-vacuumed.sqlite3 /tmp/
     #   rm -f /tmp/index-prod-vacuumed.sqlite3-{wal,shm}
     #   sqlite3 /tmp/index-prod-vacuumed.sqlite3 "VACUUM"  # optional, fresh wal
     python3 scripts/perf_check_issue5.py --prod-db /tmp/index-prod-vacuumed.sqlite3

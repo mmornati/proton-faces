@@ -25,6 +25,9 @@ credentials/
 .vscode/
 *.swp
 
+# Tool caches (machine-specific absolute paths)
+.impeccable/
+
 # Env
 .env
 .env.local

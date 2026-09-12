@@ -10,10 +10,10 @@ uses that to move the faces back to a recreated person row.
 Workflow (run on the host, with the indexer and app stopped):
 
     docker compose stop indexer app
-    cp /media/12tb/photos-index/index.sqlite3 \\
-       /media/12tb/photos-index/_backups/index-pre-recover-$(date +%Y%m%d-%H%M%S).sqlite3
+    cp /srv/proton-faces/data/index.sqlite3 \\
+       /srv/proton-faces/data/_backups/index-pre-recover-$(date +%Y%m%d-%H%M%S).sqlite3
     python3 scripts/recover-merged-person.py \\
-        --backup /media/12tb/photos-index/_backups/index-20260910-062505.sqlite3 \\
+        --backup /srv/proton-faces/data/_backups/index-20260910-062505.sqlite3 \\
         --name "Gaia Mornati"
     docker compose start indexer app
 
@@ -94,8 +94,8 @@ def main() -> int:
     parser.add_argument(
         "--live",
         type=Path,
-        default=Path("/media/12tb/photos-index/index.sqlite3"),
-        help="Path to the live index DB (default: /media/12tb/photos-index/index.sqlite3)",
+        default=Path("/srv/proton-faces/data/index.sqlite3"),
+        help="Path to the live index DB (default: /srv/proton-faces/data/index.sqlite3)",
     )
     parser.add_argument(
         "--dry-run",

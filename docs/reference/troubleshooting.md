@@ -80,7 +80,7 @@ auto-invalidates this scenario, so a manual clear is required.
 **Manual fix (SSH):**
 
 ```bash
-cd /home/mmornati/proton-faces
+cd /srv/proton-faces
 docker compose stop proton-bridge
 docker compose rm -f proton-bridge
 # Move aside (safer than delete — you can inspect if needed)
@@ -207,18 +207,18 @@ mistaken merge into Bastien Mornati.
 docker compose stop indexer app
 
 # 2. Snapshot the live DB (belt and braces — the script also snapshots itself).
-cp /media/12tb/photos-index/index.sqlite3 \
-   /media/12tb/photos-index/_backups/index-pre-recover-$(date +%Y%m%d-%H%M%S).sqlite3
+cp /srv/proton-faces/data/index.sqlite3 \
+   /srv/proton-faces/data/_backups/index-pre-recover-$(date +%Y%m%d-%H%M%S).sqlite3
 
 # 3. Preview what will happen (no writes).
 python3 scripts/recover-merged-person.py \
-    --backup /media/12tb/photos-index/_backups/index-20260910-062505.sqlite3 \
+    --backup /srv/proton-faces/data/_backups/index-20260910-062505.sqlite3 \
     --name "Gaia Mornati" \
     --dry-run
 
 # 4. Run the recovery for real.
 python3 scripts/recover-merged-person.py \
-    --backup /media/12tb/photos-index/_backups/index-20260910-062505.sqlite3 \
+    --backup /srv/proton-faces/data/_backups/index-20260910-062505.sqlite3 \
     --name "Gaia Mornati"
 
 # 5. Restart the services.
@@ -233,7 +233,7 @@ live target   : 'Gaia Mornati' (id 53707) — 4 faces
   already on target : 4
   to move back      : 4894
   donor person 1680: 4894 faces
-snapshot: /media/12tb/photos-index/_backups/index-pre-recover-20260912-092402.sqlite3
+snapshot: /srv/proton-faces/data/_backups/index-pre-recover-20260912-092402.sqlite3
 after      target: 4898 faces / 4855 photos
 after  donor 1680: 11668 faces / 11532 photos
 done. Restart the indexer so it rewrites the face sidecar.
@@ -277,7 +277,7 @@ done. Restart the indexer so it rewrites the face sidecar.
   ```bash
   python3 -c "
   import sqlite3
-  db = sqlite3.connect('/media/12tb/photos-index/index.sqlite3')
+  db = sqlite3.connect('/srv/proton-faces/data/index.sqlite3')
   for pid, name in [(53707, 'Gaia'), (1680, 'Bastien')]:
       r = db.execute('SELECT face_count, photo_count FROM people WHERE id=?', (pid,)).fetchone()
       print(name, pid, 'faces=', r[0], 'photos=', r[1])

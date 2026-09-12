@@ -19,7 +19,7 @@ name: proton-faces
 # Configurable via environment (.env):
 #   PORT              host port for the web UI (default 8080)
 #   DATA_MOUNT        bind-mount target for the data volume. Defaults to the
-#                     named volume `data`; set e.g. DATA_MOUNT=/media/12tb/photos-index
+#                     named volume `data`; set e.g. DATA_MOUNT=/srv/proton-faces/data
 #                     to persist data on a big disk. The directory must be writable
 #                     by UID 1000 (the user both containers run as).
 #   AUTH_SESSION_MOUNT  bind-mount source for the bridge-only Proton session file
