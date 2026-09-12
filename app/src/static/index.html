@@ -162,8 +162,9 @@ main { padding: 18px; }
 #coverpickhead .cphint { color: var(--muted); font-size: 12px; margin-top: 2px; }
 #coverpickhead button { margin-left: auto; }
 #coverpickgrid { overflow: auto; padding: 10px; display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
-.coverpick-item { position: relative; border-radius: 10px; overflow: hidden; background: var(--panel2); cursor: pointer; border: 0; padding: 0; }
+.coverpick-item { position: relative; border-radius: 10px; overflow: hidden; background: var(--panel2); cursor: pointer; border: 0; padding: 0; aspect-ratio: 1; }
 .coverpick-item img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+.coverpick-err { width: 100%; aspect-ratio: 1; display: grid; place-items: center; color: var(--muted); font-size: 11px; }
 .coverpick-item .cp-check {
   position: absolute; top: 4px; left: 4px; width: 22px; height: 22px; line-height: 22px;
   border-radius: 50%; background: var(--ok); color: #fff; font-size: 13px; text-align: center;
@@ -891,11 +892,6 @@ main { padding: 18px 24px 64px; min-width: 0; }
 .mpitem .n { font-weight: 640; font-size: 13.5px; }
 .mplabel { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-left: auto; }
 .cp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-bottom: 12px; }
-.coverpick-item { position: relative; border-radius: var(--radius-sm); overflow: hidden; cursor: pointer; border: 2px solid transparent; }
-.coverpick-item:hover { border-color: var(--border2); }
-.coverpick-item.sel { border-color: var(--accent); }
-.coverpick-item img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }
-.cp-check { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); font-size: 12px; }
 .spitem { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; background: var(--bg); }
 .spitem img { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; }
 .spscore { font-family: var(--mono); font-size: 11px; color: var(--accent-strong); margin-left: auto; }
@@ -2566,9 +2562,11 @@ function closeMergePicker() {
 // --- cover photo picker -----------------------------------------------------
 let cpPersonId = null;
 let cpFaces = [];
+let cpRetried = false;
 
 async function openCoverPicker(personId, person) {
   cpPersonId = personId;
+  cpRetried = false;
   $("#cpsrcname").textContent = person && person.name ? person.name : `Person #${personId}`;
   $("#cpsrcimg").src = person && person.cover_url ? person.cover_url : "";
   $("#coverpick").classList.add("open");
@@ -2590,7 +2588,7 @@ function renderCoverPicker() {
   }
   grid.innerHTML = cpFaces.map((f) => `
     <button class="coverpick-item${f.is_cover ? " current" : ""}" data-fid="${f.id}">
-      ${f.crop_url ? `<img loading="lazy" decoding="async" src="${f.crop_url}" alt="">` : '<div style="width:100%;aspect-ratio:1;background:var(--panel2)"></div>'}
+      ${f.crop_url ? `<img loading="lazy" decoding="async" src="${f.crop_url}" alt="" onerror="coverPickImgError(this)">` : '<div style="width:100%;aspect-ratio:1;background:var(--panel2)"></div>'}
       ${f.is_cover ? '<div class="cp-check">✓</div>' : ""}
     </button>`).join("");
   grid.querySelectorAll(".coverpick-item").forEach((item) => item.addEventListener("click", async () => {
@@ -2608,6 +2606,23 @@ function renderCoverPicker() {
       }
     } catch (e) { toast("Error: " + e.message); }
   }));
+}
+
+// A crop <img> failed to load (e.g. expired signed URL in prod). Retry once
+// with fresh signed URLs, then show an explicit error tile instead of a
+// collapsed grey sliver.
+function coverPickImgError(img) {
+  if (cpRetried) {
+    img.replaceWith(Object.assign(document.createElement("div"), {
+      className: "coverpick-err",
+      textContent: "unavailable",
+    }));
+    return;
+  }
+  cpRetried = true;
+  api(`/api/people/${cpPersonId}/faces?limit=500`)
+    .then((data) => { cpFaces = data.faces || []; renderCoverPicker(); })
+    .catch(() => { cpFaces = []; renderCoverPicker(); });
 }
 
 function closeCoverPicker() {
