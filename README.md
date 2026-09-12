@@ -166,6 +166,15 @@ and tunable when it happens:
   (default `300000` = 5 min). Aborts the download and returns 502 if Proton
   hangs (e.g. on an upstream crypto bug). The browser shows a toast instead
   of spinning forever.
+- **Deadlines for every SDK iteration** — the bridge aborts any handler whose
+  SDK iteration stalls past its deadline instead of holding the connection open
+  forever (issue #55). `PROTON_BRIDGE_TIMELINE_TIMEOUT_MS` (default `1800000` =
+  30 min) bounds a full `/timeline` sync; `PROTON_BRIDGE_NODES_TIMEOUT_MS`,
+  `PROTON_BRIDGE_ALBUMS_TIMEOUT_MS`, and `PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS`
+  (default `300000` = 5 min each) bound `/nodes`, `/albums`, and `/thumbnails`.
+  Streamed handlers also abort when the client disconnects. Defaults are tuned
+  to fire before the app's own bridge-client timeouts, so the client sees a
+  clean truncation/error rather than hanging.
 - **Manifest verification bypass** — `PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=1`
   is set per-deployment in `compose.yml` (default `1`) because migrated Proton
   accounts often omit the deprecated `AddressKey.PublicKey` field; without this

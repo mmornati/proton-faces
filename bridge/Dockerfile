@@ -136,6 +136,14 @@ ENV PROTON_BRIDGE_RATE_BURST=10
 ENV PROTON_BRIDGE_RATE_LIMIT_HTTP=
 # Hard ceiling on a single full-res download. Aborts with 502 if Proton hangs.
 ENV PROTON_BRIDGE_FULL_RES_TIMEOUT_MS=300000
+# Deadlines for the other SDK iterations (issue #55): a full timeline sync can
+# legitimately take many minutes, so it gets 30 min; the lookup-style handlers
+# get 5 min each. Abort before the app's bridge-client timeouts so the client
+# sees a clean truncation/error instead of hanging.
+ENV PROTON_BRIDGE_TIMELINE_TIMEOUT_MS=1800000
+ENV PROTON_BRIDGE_NODES_TIMEOUT_MS=300000
+ENV PROTON_BRIDGE_ALBUMS_TIMEOUT_MS=300000
+ENV PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS=300000
 
 # The session/auth files live in DATA_DIR (mounted volume).
 EXPOSE 8090

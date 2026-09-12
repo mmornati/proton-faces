@@ -42,6 +42,10 @@ const PORT = Number(process.env.PORT ?? 8090);
 const BRIDGE_HOST = process.env.BRIDGE_HOST ?? '0.0.0.0';
 const DATA_DIR = process.env.DATA_DIR ?? '/data';
 const FULL_RES_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_FULL_RES_TIMEOUT_MS ?? 5 * 60_000);
+const TIMELINE_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_TIMELINE_TIMEOUT_MS ?? 30 * 60_000);
+const NODES_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_NODES_TIMEOUT_MS ?? 5 * 60_000);
+const ALBUMS_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_ALBUMS_TIMEOUT_MS ?? 5 * 60_000);
+const THUMBNAILS_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS ?? 5 * 60_000);
 const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN ?? '';
 
 // Constant-time comparison to prevent timing attacks on the bridge token.
@@ -133,7 +137,7 @@ async function ensureLoggedIn(ctx: Awaited<ReturnType<typeof init>>): Promise<Re
     return Response.json({ ok: true, loggedIn });
 }
 
-async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket, url?: URL, idsOnly = false): Promise<Response> {
+async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket, url: URL | undefined, request: Request, idsOnly = false): Promise<Response> {
     const limit = url ? Number(url.searchParams.get('limit') ?? 0) : 0;
 
     // A full library timeline can take many minutes to paginate AND to
@@ -143,6 +147,11 @@ async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: Tok
     //
     // Lines starting with '#' are progress/keep-alive comments; the client
     // skips them. Every node is one JSON line.
+    //
+    // Bound the whole operation: abort when the client disconnects or when the
+    // timeline deadline passes, so a stalled SDK pagination/decrypt loop can't
+    // hold this handler (and its rate-limiter slot) open forever.
+    const signal = AbortSignal.any([request.signal, AbortSignal.timeout(TIMELINE_TIMEOUT_MS)]);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
@@ -151,7 +160,7 @@ async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: Tok
                 const uids: string[] = [];
                 let lastPing = Date.now();
                 await limiter.acquire();
-                for await (const item of ctx.photosSdk.iterateTimeline()) {
+                for await (const item of ctx.photosSdk.iterateTimeline(signal)) {
                     if (limit > 0 && uids.length >= limit) {
                         break;
                     }
@@ -168,7 +177,7 @@ async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: Tok
                 if (!idsOnly) {
                     let count = 0;
                     await limiter.acquire();
-                    for await (const node of ctx.photosSdk.iterateNodes(uids)) {
+                    for await (const node of ctx.photosSdk.iterateNodes(uids, signal)) {
                         if ('missingUid' in node) {
                             send(JSON.stringify({ uid: node.missingUid, missing: true }));
                         } else {
@@ -198,7 +207,7 @@ async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: Tok
     return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson' } });
 }
 
-async function fetchNodes(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket, body: unknown): Promise<Response> {
+async function fetchNodes(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket, body: unknown, request: Request): Promise<Response> {
     const { uids } = (body ?? {}) as { uids?: unknown };
     if (!Array.isArray(uids) || uids.length === 0) {
         return Response.json({ ok: false, error: 'Expected {"uids": [...]}' }, { status: 400 });
@@ -213,6 +222,8 @@ async function fetchNodes(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenB
         return Response.json({ ok: false, error: 'Invalid uid in request' }, { status: 400 });
     }
 
+    // Abort when the client disconnects or the node-lookup deadline passes.
+    const signal = AbortSignal.any([request.signal, AbortSignal.timeout(NODES_TIMEOUT_MS)]);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
@@ -220,7 +231,7 @@ async function fetchNodes(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenB
             try {
                 let count = 0;
                 await limiter.acquire();
-                for await (const node of ctx.photosSdk.iterateNodes(uids)) {
+                for await (const node of ctx.photosSdk.iterateNodes(uids, signal)) {
                     if ('missingUid' in node) {
                         send(JSON.stringify({ uid: node.missingUid, missing: true }));
                     } else {
@@ -241,7 +252,9 @@ async function fetchNodes(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenB
 async function fetchAlbums(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket): Promise<Response> {
     const albums: { uid: string; name: string }[] = [];
     await limiter.acquire();
-    for await (const node of ctx.photosSdk.iterateAlbums()) {
+    // Bound album iteration so a stalled SDK pagination can't hang this handler.
+    const signal = AbortSignal.timeout(ALBUMS_TIMEOUT_MS);
+    for await (const node of ctx.photosSdk.iterateAlbums(signal)) {
         if ('missingUid' in node) continue;
         const a = node as PhotoNode;
         albums.push({ uid: a.uid, name: a.name.value ?? a.name.key });
@@ -284,23 +297,39 @@ async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     }
 
     await limiter.acquire();
-    for await (const result of ctx.photosSdk.iterateThumbnails(pending, ThumbnailType.Type1)) {
-        if (result.ok) {
-            const dest = path.join(workDir, `${result.nodeUid}.webp`);
-            const tmp = path.join(workDir, `${result.nodeUid}.webp.tmp-${randomUUID()}`);
-            try {
-                await writeFile(tmp, result.thumbnail);
-                await rename(tmp, dest);
-            } catch (e) {
-                // Clean up the temp file on error; ignore unlink failures.
-                await unlink(tmp).catch(() => {});
-                results.push({ uid: result.nodeUid, ok: false, error: String(e) });
-                continue;
+    // Bound thumbnail iteration so a stalled SDK download queue can't hold this
+    // handler (and its rate-limiter slot) open indefinitely.
+    const signal = AbortSignal.timeout(THUMBNAILS_TIMEOUT_MS);
+    try {
+        for await (const result of ctx.photosSdk.iterateThumbnails(pending, ThumbnailType.Type1, signal)) {
+            if (result.ok) {
+                const dest = path.join(workDir, `${result.nodeUid}.webp`);
+                const tmp = path.join(workDir, `${result.nodeUid}.webp.tmp-${randomUUID()}`);
+                try {
+                    await writeFile(tmp, result.thumbnail);
+                    await rename(tmp, dest);
+                } catch (e) {
+                    // Clean up the temp file on error; ignore unlink failures.
+                    await unlink(tmp).catch(() => {});
+                    results.push({ uid: result.nodeUid, ok: false, error: String(e) });
+                    continue;
+                }
+                results.push({ uid: result.nodeUid, ok: true });
+            } else {
+                results.push({ uid: result.nodeUid, ok: false, error: result.error });
             }
-            results.push({ uid: result.nodeUid, ok: true });
-        } else {
-            results.push({ uid: result.nodeUid, ok: false, error: result.error });
         }
+    } catch (error) {
+        // On abort/timeout, surface a 500 instead of a partial-success payload
+        // so the client can distinguish "some thumbnails failed" from "the
+        // whole batch was abandoned".
+        if (signal.aborted) {
+            return Response.json(
+                { ok: false, error: `Thumbnail iteration timed out after ${THUMBNAILS_TIMEOUT_MS}ms` },
+                { status: 500 },
+            );
+        }
+        throw error;
     }
 
     return Response.json({ ok: true, results });
@@ -314,10 +343,11 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
 
     // Resolve the real MIME type from the node (preferred) so the browser
     // picks the right codec instead of guessing from .webp/.jpg extensions.
+    // Bound the lookup so a stalled node decrypt can't delay the response.
     let mediaType: string | null = null;
     try {
         await limiter.acquire();
-        for await (const node of ctx.photosSdk.iterateNodes([uid])) {
+        for await (const node of ctx.photosSdk.iterateNodes([uid], AbortSignal.timeout(FULL_RES_TIMEOUT_MS))) {
             if (!('missingUid' in node)) {
                 mediaType = (node as PhotoNode).mediaType ?? null;
             }
@@ -642,20 +672,20 @@ async function main(): Promise<void> {
                     if (request.method !== 'GET') {
                         return new Response(null, { status: 405, headers: { Allow: 'GET' } });
                     }
-                    return await fetchTimeline(ctx, limiter, url, false);
+                    return await fetchTimeline(ctx, limiter, url, request, false);
                 }
                 if (url.pathname === '/timeline/ids') {
                     if (request.method !== 'GET') {
                         return new Response(null, { status: 405, headers: { Allow: 'GET' } });
                     }
-                    return await fetchTimeline(ctx, limiter, url, true);
+                    return await fetchTimeline(ctx, limiter, url, request, true);
                 }
                 if (url.pathname === '/nodes' && request.method === 'POST') {
                     const body = await parseJsonBody(request);
                     if (body === null) {
                         return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
                     }
-                    return await fetchNodes(ctx, limiter, body);
+                    return await fetchNodes(ctx, limiter, body, request);
                 }
                 if (url.pathname === '/albums') {
                     if (request.method !== 'GET') {
