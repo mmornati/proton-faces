@@ -61,8 +61,7 @@ docker compose up -d
 
 Prebuilt images are pulled from the GitHub Container Registry, so there's nothing to build. To
 build from source instead: `docker compose up -d --build`. To store data on a specific host
-disk, set `DATA_MOUNT=` (defaults to the named `data` volume); to index a Google Takeout export,
-set `PHOTOS_MOUNT=`.
+disk, set `DATA_MOUNT=` (defaults to the named `data` volume).
 
 Within about a minute the app answers on **http://localhost:8080**. The indexer starts
 immediately against your real Proton Drive, is fully resumable, and processes roughly 1–2 s per

@@ -22,9 +22,6 @@ name: proton-faces
 #                     named volume `data`; set e.g. DATA_MOUNT=/media/12tb/photos-index
 #                     to persist data on a big disk. The directory must be writable
 #                     by UID 1000 (the user both containers run as).
-#   PHOTOS_MOUNT      optional read-only bind mount of a local Google Takeout export,
-#                     used to backfill GPS/place data (see README). Unset by default;
-#                     uncomment the volume line below when you have one.
 #   AUTH_SESSION_MOUNT  bind-mount source for the bridge-only Proton session file
 #                     (issue #32). Defaults to ./credentials/auth-session.json;
 #                     the file is mounted ONLY into the proton-bridge container so
@@ -124,8 +121,6 @@ services:
     command: ["python", "indexer_main.py"]
     volumes:
       - ${DATA_MOUNT:-data}:/data
-      # Optional Google Takeout export for GPS backfill (read-only).
-      - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
       # DEV-ONLY: local source override. Uncomment the next line and set
       # LOCAL_SRC in .env to a host directory containing an edited src/
       # tree; /app/src inside the container will be replaced with that
@@ -136,7 +131,6 @@ services:
     environment:
       - DATA_DIR=/data
       - MODELS_DIR=/models
-      - PHOTOS_DIR=/takeout
       - BRIDGE_URL=http://proton-bridge:8090
       - BRIDGE_TOKEN=${BRIDGE_TOKEN:-}
       # Bumped 300s → 600s while Proton Drive recovers from the Sep 1 partial
@@ -209,15 +203,12 @@ services:
       - "${PORT:-8080}:8080"
     volumes:
       - ${DATA_MOUNT:-data}:/data
-      # Optional Google Takeout export for GPS backfill (read-only).
-      - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
       # DEV-ONLY: local source override. See indexer service above for the
       # full note. Leave commented in prod.
       # - ${LOCAL_SRC}:/app/src
     environment:
       - DATA_DIR=/data
       - MODELS_DIR=/models
-      - PHOTOS_DIR=/takeout
       - BRIDGE_URL=http://proton-bridge:8090
       - BRIDGE_TOKEN=${BRIDGE_TOKEN:-}
       - PORT=8080
@@ -268,13 +259,11 @@ services:
     command: ["python", "indexer_main.py"]
     volumes:
       - ${DATA_MOUNT:-data}:/data
-      - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
     environment:
       - DEMO_MODE=1
       - BRIDGE_URL=http://127.0.0.1:1  # unused in demo mode; set so config.py never resolves it
       - DATA_DIR=/data
       - MODELS_DIR=/models
-      - PHOTOS_DIR=/takeout
       # Public demo: keep /thumb /full /cover /crop consumable by <img> tags.
       # Default is OFF — binary endpoints require a bearer token or signed URL.
       - DEMO_ALLOW_PUBLIC_THUMBS=1
@@ -310,13 +299,11 @@ services:
       - "${PORT:-8080}:8080"
     volumes:
       - ${DATA_MOUNT:-data}:/data
-      - ${PHOTOS_MOUNT:-/dev/null}:/takeout:ro
     environment:
       - DEMO_MODE=1
       - BRIDGE_URL=http://127.0.0.1:1
       - DATA_DIR=/data
       - MODELS_DIR=/models
-      - PHOTOS_DIR=/takeout
       # Public demo: keep /thumb /full /cover /crop consumable by <img> tags.
       # Default is OFF — binary endpoints require a bearer token or signed URL.
       - DEMO_ALLOW_PUBLIC_THUMBS=1

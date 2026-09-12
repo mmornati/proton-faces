@@ -37,7 +37,7 @@ def demo_hardening_mode() -> bool:
 class Settings:
     def __init__(self) -> None:
         self.data_dir = Path(os.environ.get("DATA_DIR", "./data")).resolve()
-        self.photos_dir = os.environ.get("PHOTOS_DIR", "")  # optional local Takeout export
+        self.photos_dir = os.environ.get("PHOTOS_DIR", "")  # legacy Takeout export (deprecated)
         self.bridge_url = os.environ.get("BRIDGE_URL", "http://proton-bridge:8090")
         self.bridge_token = os.environ.get("BRIDGE_TOKEN", "")
         self.port = int(os.environ.get("PORT", "8080"))

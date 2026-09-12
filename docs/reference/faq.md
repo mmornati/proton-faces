@@ -16,7 +16,7 @@ Yes. MIT licensed. No paid tier, no telemetry, no upsell.
 
 ### Does it work with Google Photos / iCloud / Dropbox?
 
-No. It works with Proton Drive Photos specifically because that's the only cloud-photo provider that does end-to-end encryption with a usable third-party SDK. A future extension could read from any local photo folder (Google Takeout exports are already supported as a side-channel for GPS data).
+No. It works with Proton Drive Photos specifically because that's the only cloud-photo provider that does end-to-end encryption with a usable third-party SDK. A future extension could read from any local photo folder (GPS is already recovered from each photo's own EXIF).
 
 ### Do I need a GPU?
 
@@ -82,7 +82,7 @@ Lower `WORKERS` (default 3, can go to 1) and/or `CLUSTER_INTERVAL` (default 30 m
 
 ### The map is empty. Why?
 
-Either no photos have GPS yet, or `enrich_places()` hasn't run. In real mode, mount a Google Takeout export and run `docker compose exec indexer python indexer_main.py --backfill-gps`. In demo mode, `apply_demo_gps()` runs automatically every sync.
+Either no photos have GPS yet, or `enrich_places()` hasn't run. In real mode, GPS is read from each photo's own EXIF during the fullres loop; for photos indexed before that, run `docker compose exec indexer python indexer_main.py --backfill-gps-exif`. In demo mode, `apply_demo_gps()` runs automatically every sync.
 
 ## People / face tagging
 
@@ -158,7 +158,6 @@ The data volume is preserved. Schema migrations are automatic.
 Either click **Backup now** in the admin area, or:
 
 ```bash
-docker compose exec app python main.py --backfill-gps # ... no wait, that's GPS
 # Manual backup:
 docker compose exec app python -c "
 import sqlite3

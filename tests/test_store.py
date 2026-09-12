@@ -253,6 +253,23 @@ class TestPhotoClaims:
         store.set_photo_error("p1", "boom")
         assert store.get_photo("p1")["error"] == "boom"
 
+    def test_set_photo_gps(self, tmp_db):
+        store.upsert_photos([_photo()])
+        store.set_photo_gps("p1", 39.564, 2.619)
+        row = store.get_photo("p1")
+        assert row["gps_lat"] == pytest.approx(39.564)
+        assert row["gps_lng"] == pytest.approx(2.619)
+
+    def test_get_photos_without_gps(self, tmp_db):
+        store.upsert_photos([_photo("p1", media_type="image/heic")])
+        store.upsert_photos([_photo("p2", media_type="image/heic")])
+        store.upsert_photos([_photo("p3", media_type="image/jpeg")])
+        store.set_photo_gps("p2", 1.0, 2.0)
+        rows = store.get_photos_without_gps()
+        assert {r["uid"] for r in rows} == {"p1", "p3"}
+        rows = store.get_photos_without_gps(media_type="image/heic")
+        assert [r["uid"] for r in rows] == ["p1"]
+
     def test_backfill_fullres_images(self, tmp_db):
         store.upsert_photos([_photo("p1", media_type="image/heic")])
         store.upsert_photos([_photo("p2", media_type="video/mp4")])

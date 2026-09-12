@@ -53,7 +53,7 @@ See the [Session file guide](session-export.md) for the full recipe, including t
 
 ```bash
 cp .env.example .env
-# Inside the containers DATA_DIR is always /data and PHOTOS_DIR is always /takeout.
+# Inside the containers DATA_DIR is always /data.
 # To persist data on a specific host disk, set the compose-level mount:
 # DATA_MOUNT=/srv/proton-faces/data
 ```
@@ -118,7 +118,6 @@ Open http://localhost:8080.
 |---|---|---|
 | `data` (named volume) | Thumbnails + SQLite + vector index | Yes |
 | `credentials/` | Read-only mount of your Proton session | You manage |
-| `/takeout` | Read-only mount of a local Google Takeout export for GPS backfill | Optional |
 
 To persist the data volume on a specific host disk, set `DATA_MOUNT` in `.env`:
 

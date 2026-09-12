@@ -8,23 +8,23 @@ The Places tab is a **Leaflet world map** with one clustered marker per city you
 
 Proton's API doesn't expose photo location, so two paths feed the `photos.place` column:
 
-### 1. Google Takeout export (real mode)
+### 1. EXIF GPS (real mode)
 
-If you mount a local Google Takeout export at `/takeout` (compose-level `PHOTOS_MOUNT`), the indexer's GPS backfill job runs automatically:
+The indexer reads GPS coordinates straight from each photo's own EXIF when it downloads the full-res original (the fullres loop). Coordinates are persisted to `photos.gps_lat` / `photos.gps_lng` before the original is deleted, then reverse-geocoded to a place name.
+
+For photos indexed before this was added, a one-shot backfill re-downloads originals and reads their EXIF:
 
 ```bash
-docker compose exec indexer python indexer_main.py --backfill-gps
+docker compose exec indexer python indexer_main.py --backfill-gps-exif
 ```
 
 What it does:
 
-- Walks `*.supplemental-metadata.json` sidecars under the export root.
-- sha1-hashes every photo file and pairs it with the sidecar's GPS coordinates.
-- Joins against the indexed timeline by sha1 (Proton uses the same content hash), so **no full-res download is needed**.
-- Caches the sha1 → GPS map in `DATA_DIR/gps_sha1_cache.json` for fast re-runs.
-- Runs reverse-geocoding (`reverse_geocoder` library, offline data files) on every photo that has GPS but no place yet.
+- Sweeps photos with no GPS yet (optionally restricted to a media type with `--gps-media-type image/heic`).
+- Re-downloads each original via the bridge and reads the EXIF GPS block.
+- Persists the coordinates and runs reverse-geocoding (`reverse_geocoder` library, offline data files) on every photo that has GPS but no place yet.
 
-The cache file is `data/gps_sha1_cache.json`. Re-running `python indexer_main.py --backfill-gps` reuses it. Force a rebuild with `--rebuild-cache` after adding new Takeout exports.
+The `gps` worker loop runs a bounded batch of this backfill automatically each cycle (`--gps-limit 50`), so the backlog drains without saturating your home connection.
 
 ### 2. Demo fixture (demo mode)
 
@@ -55,7 +55,7 @@ Click **Map** on any card in the **People** tab. A Leaflet map opens filtered to
 
 ## What about iPhone photos without GPS?
 
-Most iPhones embed GPS into the EXIF. If the EXIF is stripped on export, Google Takeout will still have it (in the sidecar). If neither is available, the photo won't appear on the map — it just won't have a place label.
+Most iPhones embed GPS into the EXIF, and the indexer reads it from the original when it downloads the full-res file. If the EXIF was stripped before upload (or the camera never recorded a position), the photo won't appear on the map — it just won't have a place label.
 
 ## API endpoints
 

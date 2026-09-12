@@ -43,6 +43,7 @@ from store import (
     count_faces_for_photo,
     delete_empty_people,
     get_photos,
+    get_photos_without_gps,
     init_db,
     insert_clip,
     insert_face,
@@ -53,6 +54,7 @@ from store import (
     set_photo_duration,
     set_photo_error,
     set_photo_full,
+    set_photo_gps,
     sync_albums,
     transaction,
     upsert_photos,
@@ -816,6 +818,10 @@ def _fullres_loop() -> None:
                             (_thumb_path(uid).name, int(time.time()), uid),
                         )
                 else:
+                    gps = _extract_exif_gps(tmp)
+                    if gps:
+                        set_photo_gps(uid, gps[0], gps[1])
+                        log.info("fullres: extracted EXIF GPS %s for %s", gps, uid)
                     _resize_to_thumb(tmp, _work_path(uid))
                     log.info("fullres: generated thumbnail for %s", uid)
                     tmp.unlink(missing_ok=True)
@@ -937,6 +943,53 @@ def _resize_to_thumb(src: Path, dest: Path, max_side: int = 512) -> None:
         img.thumbnail((max_side, max_side))
         img = img.convert("RGB")
         img.save(dest, format="WEBP", quality=82, method=6)
+
+
+def _extract_exif_gps(path: Path) -> tuple[float, float] | None:
+    """Read GPS coordinates from a photo's EXIF (HEIC/JPG), or None.
+
+    The fullres loop downloads original bytes that still carry EXIF; the
+    WebP thumbnail conversion strips it. Extract the coordinates here so
+    GPS survives even though the original is deleted afterwards.
+    """
+    from PIL import ExifTags, Image
+
+    try:
+        from pillow_heif import register_heif_opener
+
+        register_heif_opener()
+    except Exception:  # pragma: no cover
+        pass
+    try:
+        with Image.open(path) as img:
+            exif = img.getexif()
+            if not exif:
+                return None
+            gps_ifd = exif.get_ifd(ExifTags.IFD.GPSInfo)
+            if not gps_ifd:
+                return None
+            gps = {ExifTags.GPSTAGS.get(k, k): v for k, v in gps_ifd.items()}
+            lat = _exif_gps_to_deg(gps.get("GPSLatitude"), gps.get("GPSLatitudeRef"))
+            lng = _exif_gps_to_deg(gps.get("GPSLongitude"), gps.get("GPSLongitudeRef"))
+            if lat is None or lng is None:
+                return None
+            return (lat, lng)
+    except Exception:  # pragma: no cover
+        return None
+
+
+def _exif_gps_to_deg(value, ref: str | None) -> float | None:
+    """Convert an EXIF (deg, min, sec) rational tuple to decimal degrees."""
+    if not value or len(value) != 3:
+        return None
+    try:
+        deg, minutes, sec = (float(v) for v in value)
+    except (TypeError, ValueError):
+        return None
+    result = deg + minutes / 60.0 + sec / 3600.0
+    if ref in ("S", "W"):
+        result = -result
+    return result
 
 
 # --- cluster loop ----------------------------------------------------------
@@ -1221,6 +1274,59 @@ def _apply_gps(sha1_to_gps: dict[str, tuple[float, float]]) -> int:
     return matched
 
 
+def backfill_gps_exif(media_type: str | None = None, limit: int = 0) -> int:
+    """Attach GPS by re-downloading originals and reading their EXIF.
+
+    Photos indexed before the fullres loop extracted EXIF GPS have no
+    coordinates even though the Proton originals carry them (e.g. HEIC
+    uploads that post-date the Google Takeout export). Re-download each
+    photo's full-res bytes via the bridge, read the EXIF GPS, and persist
+    it. ``media_type`` restricts the sweep (e.g. ``image/heic``); ``limit``
+    caps the number of photos processed (0 = unlimited).
+    """
+    if not settings.bridge_url:
+        return 0
+    bridge = get_bridge()
+    matched = 0
+    offset = 0
+    while True:
+        rows = get_photos_without_gps(limit=500, offset=offset, media_type=media_type)
+        if not rows:
+            break
+        offset += len(rows)
+        for row in rows:
+            if limit and matched >= limit:
+                return matched
+            uid = row["uid"]
+            tmp = settings.work_dir / f"{uid}.gps"
+            try:
+                resp = bridge.full_photo(uid)
+                try:
+                    resp.raise_for_status()
+                    with open(tmp, "wb") as fh:
+                        for chunk in resp.iter_bytes(1 << 16):
+                            fh.write(chunk)
+                finally:
+                    resp.close()
+                gps = _extract_exif_gps(tmp)
+                if gps:
+                    set_photo_gps(uid, gps[0], gps[1])
+                    matched += 1
+                    log.info("gps exif backfill: %s -> %s", uid, gps)
+            except BridgeTransientError as exc:
+                log.warning(
+                    "gps exif backfill transient %s for %s; sleeping %.0fs",
+                    exc.status_code, uid, exc.retry_after_sec,
+                )
+                time.sleep(min(600.0, max(exc.retry_after_sec, 30.0)))
+            except Exception as exc:  # pragma: no cover
+                log.warning("gps exif backfill failed for %s: %s", uid, exc)
+            finally:
+                tmp.unlink(missing_ok=True)
+    log.info("gps exif backfill matched %d photos", matched)
+    return matched
+
+
 def enrich_places() -> int:
     """Reverse-geocode every photo that has GPS but no place yet (idempotent)."""
     with _db_conn() as conn:
@@ -1251,8 +1357,8 @@ def _gps_loop() -> None:
 
     reverse_geocoder forks a multiprocessing pool on first use, which
     deadlocks when called from a thread inside the app process. Running the
-    same work as a child process (python main.py --backfill-gps) keeps the
-    fork in a single-threaded process, where it works reliably.
+    same work as a child process (python main.py --backfill-gps-exif) keeps
+    the fork in a single-threaded process, where it works reliably.
     """
     while True:
         time.sleep(settings.gps_interval)
@@ -1267,12 +1373,18 @@ def _run_gps_subprocess() -> None:
     import subprocess
     import sys
 
-    if not settings.photos_dir:
-        return
-    log.info("gps loop: starting backfill+enrich subprocess")
+    # Sweep a bounded batch of HEIC photos without GPS each cycle (the
+    # fullres loop already extracts EXIF GPS for new uploads; this drains
+    # the pre-EXIF backlog without saturating the home connection).
+    log.info("gps loop: starting EXIF backfill+enrich subprocess")
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "main", "--backfill-gps"],
+            [
+                sys.executable, "-m", "main",
+                "--backfill-gps-exif",
+                "--gps-media-type", "image/heic",
+                "--gps-limit", "50",
+            ],
             cwd=str(Path(__file__).parent),
             capture_output=True,
             text=True,

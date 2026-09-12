@@ -36,7 +36,24 @@ def main() -> None:
     parser.add_argument(
         "--backfill-gps",
         action="store_true",
-        help="One-shot: attach GPS/place data from the local Takeout export (PHOTOS_DIR), then exit.",
+        help="One-shot: attach GPS/place data from a legacy local Takeout export (PHOTOS_DIR), then exit.",
+    )
+    parser.add_argument(
+        "--backfill-gps-exif",
+        action="store_true",
+        help="One-shot: re-download photos without GPS and read coordinates from their EXIF, then exit.",
+    )
+    parser.add_argument(
+        "--gps-media-type",
+        default=None,
+        metavar="PREFIX",
+        help="With --backfill-gps-exif: only sweep media types with this prefix (e.g. image/heic).",
+    )
+    parser.add_argument(
+        "--gps-limit",
+        type=int,
+        default=0,
+        help="With --backfill-gps-exif: cap the number of photos processed (0 = unlimited).",
     )
     parser.add_argument(
         "--rebuild-cache",
@@ -48,6 +65,14 @@ def main() -> None:
     if args.backfill_gps:
         matched = backfill_gps(rebuild_cache=args.rebuild_cache)
         log.info("GPS backfill done: %d photos matched", matched)
+        enriched = enrich_places()
+        log.info("GPS place enrichment done: %d photos", enriched)
+        return
+
+    if args.backfill_gps_exif:
+        from indexer import backfill_gps_exif
+        matched = backfill_gps_exif(media_type=args.gps_media_type, limit=args.gps_limit)
+        log.info("GPS EXIF backfill done: %d photos matched", matched)
         enriched = enrich_places()
         log.info("GPS place enrichment done: %d photos", enriched)
         return
