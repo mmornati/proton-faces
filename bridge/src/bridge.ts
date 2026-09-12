@@ -36,7 +36,7 @@ import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, extractRetryAfter, type TokenBucket } from './rateLimit';
-import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles } from './helpers';
+import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
 const BRIDGE_HOST = process.env.BRIDGE_HOST ?? '0.0.0.0';
@@ -541,7 +541,9 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
         return new Response(body, { status, headers });
     } catch (err) {
         await Bun.file(tmp).unlink().catch(() => {});
-        return Response.json({ ok: false, error: String(err) }, { status: 502 });
+        const ref = randomUUID().slice(0, 8);
+        console.error(`[bridge] full photo ref=${ref}:`, err);
+        return Response.json(sanitizedErrorBody(ref), { status: 502 });
     }
 }
 
@@ -760,13 +762,11 @@ async function main(): Promise<void> {
                 }
                 return Response.json({ ok: false, error: 'Not found' }, { status: 404 });
             } catch (error) {
-                console.error('[bridge] error:', error);
+                const ref = randomUUID().slice(0, 8);
+                console.error(`[bridge] error ref=${ref}:`, error);
                 const ra = extractRetryAfter(error);
                 if (ra !== null) limiter.noteRetryAfter(ra);
-                return Response.json(
-                    { ok: false, error: error instanceof Error ? error.message : String(error) },
-                    { status: 500 },
-                );
+                return Response.json(sanitizedErrorBody(ref), { status: 500 });
             }
         },
     });
