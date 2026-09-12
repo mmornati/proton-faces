@@ -111,6 +111,17 @@ export function isValidUid(uid: unknown): uid is string {
     return typeof uid === 'string' && /^[A-Za-z0-9_=~-]{1,512}$/.test(uid);
 }
 
+/**
+ * Build a sanitized error response body for unexpected failures. Never echo
+ * the underlying error text (SDK messages can reveal internal Proton API
+ * URLs, filesystem paths, and library structure to callers); instead return a
+ * generic message plus a short `ref` the operator can correlate with the
+ * server-side log, which carries the full error.
+ */
+export function sanitizedErrorBody(ref: string): { ok: false; error: 'internal error'; ref: string } {
+    return { ok: false, error: 'internal error', ref };
+}
+
 /** A successfully parsed byte range. */
 export interface ParsedRange {
     start: number;
