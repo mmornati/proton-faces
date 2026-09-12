@@ -40,6 +40,12 @@ Either way the choice is stored as the person's `cover_face_id`; it survives re-
 | Rename and merge | Name a cluster with an existing person's name | Same as naming — auto-merge |
 | Unassign a face | In a photo detail, click the face box | `POST /api/faces/{id}/unassign` |
 
+!!! tip "Merged by mistake?"
+
+    Merging is one-way in the UI, but it can be undone from a pre-merge
+    backup — see [Recovering a merged person](../reference/troubleshooting.md#recovering-a-merged-person)
+    in the troubleshooting guide.
+
 ### Auto-tag propagation
 
 Whenever you name a face — through the cluster card, through the photo detail, or by face-search — **every unassigned face whose embedding is more similar than `FACE_SIM_THRESHOLD` (default 0.45) gets the same label**.

@@ -178,6 +178,21 @@ docker compose up -d
 
 The indexer will pick up the restored DB and re-sync the missing thumbnails.
 
+### I merged two people by mistake — can I undo it?
+
+Yes, as long as you have a pre-merge backup. Merging only re-parents face rows
+(their immutable IDs are kept) and deletes the source person row, so a backup's
+face-ID list maps 1:1 onto the live DB. `scripts/recover-merged-person.py`
+moves those faces back to a recreated person row and recounts both people.
+
+See [Recovering a merged person](troubleshooting.md#recovering-a-merged-person)
+for the full step-by-step runbook (with a worked example), what happens under
+the hood, and how long the UI takes to reflect the change.
+
+Recreate the person in the UI first if the merge deleted the row — the script
+targets the person by name, so the recreated row is the recovery target. Use
+`--dry-run` to preview.
+
 ---
 
 **Next:** [Troubleshooting](troubleshooting.md) for the common gotchas.

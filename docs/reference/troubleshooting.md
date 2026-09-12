@@ -163,11 +163,130 @@ Some Python 3.12 + insightface combinations segfault on first import. The publis
 
 ### Wrong person merged into wrong person
 
-Unassign the bad faces:
+If only a few faces are wrong, unassign them:
 
 1. Open the wrong person's photo → click the face → **Unassign**.
 2. The face moves back to "Unknown person #N".
 3. Tag it correctly.
+
+If a whole person was merged into another by mistake (hundreds/thousands of
+faces), see [Recovering a merged person](#recovering-a-merged-person) below —
+manual unassigning doesn't scale.
+
+### Recovering a merged person
+
+Merging two people only re-parents face rows (their immutable IDs are kept)
+and deletes the source person row. It never touches the photos themselves, so
+a **pre-merge backup** of the index database contains everything needed to
+undo the merge: the backup's face-ID list maps 1:1 onto the live database.
+
+`scripts/recover-merged-person.py` moves those faces back to a recreated
+person row and recounts both people. It is a one-shot, idempotent operation —
+no app code changes, no re-indexing.
+
+#### Prerequisites
+
+- A backup of `index.sqlite3` taken **before** the merge (see
+  [Backups](../user-guide/admin.md#backups) in the admin guide, or
+  `scripts/backup.sh`). The script reads it read-only.
+- Console access to the server (SSH) and the script on the machine that can
+  reach the live database. If the deployment directory isn't a git checkout,
+  copy it over: `scp scripts/recover-merged-person.py user@host:/path/to/deploy/`.
+- If the merge deleted the person row, **recreate the person in the UI first**
+  (name the cluster "Gaia Mornati" again). The script targets the person by
+  name, so the recreated row is the recovery target — you do **not** need to
+  delete it.
+
+#### Step-by-step (real example: Gaia merged into Bastien)
+
+This is the exact procedure used to recover Gaia Mornati (4,898 faces) from a
+mistaken merge into Bastien Mornati.
+
+```bash
+# 1. Stop the indexer and the app so nothing writes to the DB mid-recovery.
+docker compose stop indexer app
+
+# 2. Snapshot the live DB (belt and braces — the script also snapshots itself).
+cp /media/12tb/photos-index/index.sqlite3 \
+   /media/12tb/photos-index/_backups/index-pre-recover-$(date +%Y%m%d-%H%M%S).sqlite3
+
+# 3. Preview what will happen (no writes).
+python3 scripts/recover-merged-person.py \
+    --backup /media/12tb/photos-index/_backups/index-20260910-062505.sqlite3 \
+    --name "Gaia Mornati" \
+    --dry-run
+
+# 4. Run the recovery for real.
+python3 scripts/recover-merged-person.py \
+    --backup /media/12tb/photos-index/_backups/index-20260910-062505.sqlite3 \
+    --name "Gaia Mornati"
+
+# 5. Restart the services.
+docker compose start indexer app
+```
+
+The real run printed:
+
+```text
+backup person : 'Gaia Mornati' (id 605) — 4898 faces
+live target   : 'Gaia Mornati' (id 53707) — 4 faces
+  already on target : 4
+  to move back      : 4894
+  donor person 1680: 4894 faces
+snapshot: /media/12tb/photos-index/_backups/index-pre-recover-20260912-092402.sqlite3
+after      target: 4898 faces / 4855 photos
+after  donor 1680: 11668 faces / 11532 photos
+done. Restart the indexer so it rewrites the face sidecar.
+```
+
+#### What happens
+
+- **Only face re-parenting** — `UPDATE faces SET person_id=<target>` for the
+  backup's face IDs. No merge, no person deletion: Gaia keeps her own row,
+  Bastien keeps his.
+- **Cover/name backfill** — the backup's `name`, `cover_uid` and
+  `cover_face_id` are restored only if the target row has none, so a cover you
+  picked on the recreated person is kept.
+- **Recount** — `face_count` / `photo_count` are recomputed for both people
+  with the same SQL the app uses.
+- **Idempotent** — re-running reports "nothing to do".
+- **Safe** — snapshots the live DB before writing, aborts (exit 2) if the
+  backup DB is missing, the person isn't found, or any backup face ID is
+  missing from the live DB, and `--dry-run` previews without writing.
+
+#### When the UI reflects the change
+
+- The **People grid** reads the database directly, so counts and covers are
+  correct as soon as the app restarts.
+- **Face search / suggested merges** read the mmap face sidecar
+  (`index/embeddings_meta.json`), which bakes in `person_ids`. The indexer
+  only rewrites it on the next cluster run (`CLUSTER_INTERVAL`, default
+  30 min) or when new photos are processed — **not** on restart. Expect the
+  sidecar to catch up within ~30 minutes, or force it immediately:
+
+  ```bash
+  docker compose exec indexer python -c "from cluster import cluster_once; print(cluster_once())"
+  ```
+
+#### Verifying the recovery
+
+- In the UI: open the recovered person — the photo grid should be populated
+  again, and the donor person should no longer show those photos.
+- Via SQL (adjust paths for your setup):
+
+  ```bash
+  python3 -c "
+  import sqlite3
+  db = sqlite3.connect('/media/12tb/photos-index/index.sqlite3')
+  for pid, name in [(53707, 'Gaia'), (1680, 'Bastien')]:
+      r = db.execute('SELECT face_count, photo_count FROM people WHERE id=?', (pid,)).fetchone()
+      print(name, pid, 'faces=', r[0], 'photos=', r[1])
+  print('total faces:', db.execute('SELECT COUNT(*) FROM faces').fetchone()[0])
+  "
+  ```
+
+  The total face count must be unchanged — a recovery never loses or creates
+  faces.
 
 ### Suggested merges are missing / wrong
 
