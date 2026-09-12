@@ -725,8 +725,6 @@ main { padding: 18px 24px 64px; min-width: 0; }
 /* ===== People ===== */
 .people-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(164px, 1fr)); }
 #peopleheader { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
-#peoplesearch { flex: 0 1 280px; background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 7px 12px; border-radius: var(--radius-sm); font-size: 13px; font-family: inherit; }
-#peoplesearch:focus { outline: none; border-color: var(--accent); }
 #peopletotal { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-left: auto; }
 .person { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 10px 12px; text-align: center; cursor: pointer; transition: border-color .15s, transform .15s; }
 .person:hover { border-color: var(--accent); transform: translateY(-1px); }
@@ -1235,7 +1233,6 @@ let peopleQ = "";
 const peoplePage = 200;
 // Cache the people page-set in memory so tab switches don't refetch.
 let peopleGridCache = null; // { q, total, ids: number[] }
-let peopleSearchTimer = null;
 
 async function api(path, opts) {
   return authFetch(path, opts);
@@ -2226,14 +2223,14 @@ async function loadTagsIndex() {
   }));
 }
 
-async function loadAlbums() {
-  const data = await api("/api/albums");
+async function loadAlbums(q = null) {
+  const data = await api(`/api/albums${q ? `?q=${encodeURIComponent(q)}` : ""}`);
   const el = $("#view");
   if (!data.albums.length) {
     el.innerHTML = '<div class="empty">No albums yet.</div>';
     return;
   }
-  $("#counts").textContent = `${data.albums.length} albums`;
+  $("#counts").textContent = q ? `${data.albums.length} of ${data.total} matching` : `${data.albums.length} albums`;
   el.innerHTML = `<div class="albums-grid">${data.albums.map((a) => `
     <div class="album" data-uid="${esc(a.uid)}" data-name="${esc(a.name || "Album")}">
       ${a.cover_url ? `<img loading="lazy" src="${a.cover_url}" alt="">` : '<div style="width:100%;height:150px;background:var(--panel2)"></div>'}
@@ -2370,12 +2367,6 @@ async function loadMorePeople() {
   }
 }
 
-function onPeopleSearchInput(value) {
-  peopleQ = value.trim();
-  clearTimeout(peopleSearchTimer);
-  peopleSearchTimer = setTimeout(() => loadPeople(), 200);
-}
-
 function personCardHtml(p) {
   return `
     <div class="person" data-id="${p.id}">
@@ -2400,8 +2391,6 @@ function renderPeopleGrid(people) {
   }
   el.innerHTML = `
     <div id="peopleheader" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
-      <input id="peoplesearch" type="text" placeholder="Search people by name…" autocomplete="off"
-             style="flex:1;min-width:200px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:14px">
       <span id="peopletotal" style="color:var(--muted);font-size:13px"></span>
     </div>
     <div class="dups" id="dups">
@@ -2416,8 +2405,6 @@ function renderPeopleGrid(people) {
       </div>
     </div>
     <div class="people-grid">${people.map(personCardHtml).join("")}</div>`;
-  $("#peoplesearch").value = peopleQ;
-  $("#peoplesearch").addEventListener("input", (e) => onPeopleSearchInput(e.target.value));
   const total = $("#peopletotal");
   if (peopleQ) {
     total.textContent = `${people.length} of ${peopleTotal} matching`;
@@ -2965,20 +2952,20 @@ function initMap() {
   map.addLayer(markerGroup);
 }
 
-async function loadPlaces() {
-  const data = await api("/api/places?limit=500");
+async function loadPlaces(q = null) {
+  const data = await api(`/api/places?limit=500${q ? `&q=${encodeURIComponent(q)}` : ""}`);
   const el = $("#view");
   if (!data.places.length) {
     $("#mapwrap").style.display = "none";
     el.innerHTML = '<div class="empty">No places yet — GPS enrichment is still running or no photos have GPS.</div>';
     return;
   }
-  $("#counts").textContent = `${data.places.length} places`;
+  $("#counts").textContent = q ? `${data.places.length} of ${data.total} matching` : `${data.places.length} places`;
   initMap();
   $("#mapwrap").style.display = "";
   setTimeout(() => map.invalidateSize(), 50);
   markerGroup.clearLayers();
-  const mdata = await api("/api/map?limit=1000");
+  const mdata = await api(`/api/map?limit=1000${q ? `&q=${encodeURIComponent(q)}` : ""}`);
   for (const m of mdata.markers) {
     const img = m.thumb_url ? `<img loading="lazy" src="${m.thumb_url}" alt="">` : "";
     const pop = L.popup().setContent(
@@ -3029,6 +3016,8 @@ document.querySelectorAll("nav a").forEach((a) => {
     state.view = a.dataset.view;
     $("#q").value = "";
     state.q = "";
+    peopleQ = "";
+    $("#q").placeholder = searchPlaceholder();
     $("#memorieswrap").style.display = "none";
     if (state.view === "people") {
       $("#daterailwrap").style.display = "none"; $("#mapwrap").style.display = "none";
@@ -3069,13 +3058,26 @@ document.querySelectorAll("nav a").forEach((a) => {
   });
 });
 
+function searchPlaceholder() {
+  if (state.view === "people") return "Search people by name…";
+  if (state.view === "albums") return "Search albums by name…";
+  if (state.view === "places") return "Search places by name…";
+  return 'Search: "dog", "car", "Lille", "beach"...';
+}
+
 async function runSearch() {
   state.q = $("#q").value.trim();
   if (!state.q) {
+    if (state.view === "people") return loadPeople("");
+    if (state.view === "albums") return loadAlbums("");
+    if (state.view === "places") return loadPlaces("");
     state.photoSource = { type: "all" };
     setViewTitle();
     return loadPhotos();
   }
+  if (state.view === "people") return loadPeople(state.q);
+  if (state.view === "albums") return loadAlbums(state.q);
+  if (state.view === "places") return loadPlaces(state.q);
   if (state.view !== "photos") {
     document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
     document.querySelector('nav a[data-view="photos"]').classList.add("active");
