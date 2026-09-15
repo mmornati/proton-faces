@@ -7,7 +7,9 @@ name: Release
 # Two ways to trigger:
 #   1. Push a tag:  git tag v1.2.3 && git push origin v1.2.3
 #   2. Run the "Release" workflow from the Actions tab with a version input —
-#      it creates and pushes the tag for you, which then triggers this job.
+#      it creates and pushes the tag for you, then creates the release in the
+#      same run. (A tag pushed with GITHUB_TOKEN does not trigger a new run,
+#      so the release job must run on workflow_dispatch too.)
 
 on:
   push:
@@ -32,13 +34,16 @@ jobs:
           fetch-depth: 0
       - name: Create and push tag
         run: |
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION="${VERSION#v}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "v${{ github.event.inputs.version }}"
-          git push origin "v${{ github.event.inputs.version }}"
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
 
   release:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: create-tag
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -48,7 +53,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.ref_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+            VERSION="${VERSION#v}"
+            TAG="v${VERSION}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
           gh api -X POST "repos/${{ github.repository }}/releases/generate-notes" \
             -f tag_name="$TAG" -f target_commitish="$TAG" --jq ".body" > /tmp/notes-body.md
           cat >> /tmp/notes-body.md << EOF
