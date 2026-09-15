@@ -52,7 +52,8 @@ Every demo photo has a real sha1 hash, real capture time, and the right media ty
 | GPS / place names | From each photo's own EXIF | Injected from the fixture |
 | Multi-user auth | Manual `--create-admin` | Default `demo` admin auto-created on first boot |
 | Binary media endpoints (`/thumb`, `/full`, `/cover`, `/crop`) | Secure by default (bearer token or signed URL) | World-readable — the profile sets `DEMO_ALLOW_PUBLIC_THUMBS=1` so static `<img>` tags work without JS |
-| Everything else (CLIP, faces, clustering, search, admin) | Same | Same |
+| Admin area (`/api/admin/*`) + self-service password / 2FA | Same as real mode | 404 — the profile sets `DEMO_DISABLE_ADMIN_AREA=1` so shared-credential holders can't reconfigure the demo or change the shared password |
+| Everything else (CLIP, faces, clustering, search) | Same | Same |
 
 The ML pipeline — InsightFace, CLIP, HDBSCAN — runs **exactly** as it does in real mode. The only thing that's different is where the photo bytes come from.
 

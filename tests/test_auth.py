@@ -574,6 +574,35 @@ class TestDemoDisableAdminUserManagement:
         assert auth.demo_disable_admin_user_management() is False
 
 
+class TestDemoDisableAdminArea:
+    """The hardening override resolves DEMO_DISABLE_ADMIN_AREA the same way
+    as the other demo flags: explicit env wins, hardening mode flips the
+    unset value to the safe side."""
+
+    def test_default_is_false(self, monkeypatch):
+        monkeypatch.delenv("DEMO_DISABLE_ADMIN_AREA", raising=False)
+        monkeypatch.delenv("DEMO_MODE", raising=False)
+        monkeypatch.delenv("DEMO_HARDENING_MODE", raising=False)
+        assert auth.demo_disable_admin_area() is False
+
+    def test_explicit_opt_in(self, monkeypatch):
+        monkeypatch.setenv("DEMO_DISABLE_ADMIN_AREA", "1")
+        assert auth.demo_disable_admin_area() is True
+
+    def test_hardening_mode_flips_unset_to_safe(self, monkeypatch):
+        # When DEMO_HARDENING_MODE is on and the env var is unset, the
+        # safe (True) value is returned.
+        monkeypatch.delenv("DEMO_DISABLE_ADMIN_AREA", raising=False)
+        monkeypatch.setenv("DEMO_HARDENING_MODE", "1")
+        assert auth.demo_disable_admin_area() is True
+
+    def test_explicit_opt_out_wins_over_hardening_mode(self, monkeypatch):
+        # Operators can disable the gate explicitly even with hardening mode on.
+        monkeypatch.setenv("DEMO_HARDENING_MODE", "1")
+        monkeypatch.setenv("DEMO_DISABLE_ADMIN_AREA", "0")
+        assert auth.demo_disable_admin_area() is False
+
+
 class TestDemoLoginLogs:
     """DEMO_LOGIN_LOGS defaults to OFF; hardening mode keeps it OFF;
     explicit env var wins."""
