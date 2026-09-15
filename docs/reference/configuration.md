@@ -50,6 +50,7 @@ Set inside `compose.yml` for each service. Most match the compose-level defaults
 | `DEMO_ADMIN_PASSWORD` | unset → prompt | Override the demo admin password. |
 | `DEMO_LOGIN_LOGS` | `0` | Log the demo admin password source at WARN on first boot. The password itself is NEVER logged regardless of this flag. Set `1` to log whether the password came from `DEMO_ADMIN_PASSWORD` or the default. |
 | `DEMO_ALLOW_PUBLIC_THUMBS` | `0` | Binary media endpoints (`/thumb`, `/full`, `/cover`, `/crop`) are **secure by default**: they require a bearer token or a short-lived signed URL from `/api/sign`. Set `1` to make them world-readable (the `demo` compose profile does this so static `<img>` tags keep working). |
+| `DEMO_DISABLE_ADMIN_AREA` | `0` | 404 every `/api/admin/*` route plus the self-service password (`/api/auth/password`) and 2FA (`/api/auth/2fa/*`) routes. The `demo` compose profile sets this so a shared-credential holder can't reconfigure the demo or change the shared password. |
 
 ## Auth
 

@@ -2043,6 +2043,79 @@ class TestDemoDisableAdminUserManagement:
         assert client.post("/api/auth/logout", headers=headers).status_code == 200
 
 
+class TestDemoDisableAdminArea:
+    """DEMO_DISABLE_ADMIN_AREA 404s every /api/admin/* route plus the
+    self-service password / 2FA routes, regardless of admin auth."""
+
+    _ENDPOINTS = [
+        ("GET",   "/api/admin/overview",              None),
+        ("GET",   "/api/admin/schedule",              None),
+        ("PUT",   "/api/admin/schedule",              {"enabled": True}),
+        ("GET",   "/api/admin/sync",                  None),
+        ("PUT",   "/api/admin/sync",                  {"enabled": True}),
+        ("POST",  "/api/admin/sync/trigger",          None),
+        ("POST",  "/api/admin/checks",                None),
+        ("POST",  "/api/admin/people/gc-empty",       None),
+        ("GET",   "/api/admin/bridge/cache",          None),
+        ("POST",  "/api/admin/bridge/cache/clear",    None),
+        ("POST",  "/api/auth/password",               {"current_password": "x", "new_password": "y" * 8}),
+        ("POST",  "/api/auth/2fa/setup",              None),
+        ("POST",  "/api/auth/2fa/confirm",            {"code": "123456"}),
+        ("POST",  "/api/auth/2fa/disable",            {"code": "123456"}),
+    ]
+
+    def _seed_admin(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        return _bearer(client)
+
+    def test_endpoints_work_when_flag_off(self, client, password_hash):
+        headers = self._seed_admin(client, password_hash)
+        # Sanity: with the flag at its default, the routes work as before.
+        assert client.get("/api/admin/overview", headers=headers).status_code == 200
+
+    def test_endpoints_404_when_flag_on(self, client, monkeypatch, password_hash):
+        # Patch the symbol on api.py — that's the reference the route body
+        # captures at import time.
+        monkeypatch.setattr(api, "demo_disable_admin_area", lambda: True)
+        headers = self._seed_admin(client, password_hash)
+        for method, path, json_body in self._ENDPOINTS:
+            method_fn = getattr(client, method.lower())
+            kwargs = {"headers": headers}
+            if json_body is not None:
+                kwargs["json"] = json_body
+            r = method_fn(path, **kwargs)
+            assert r.status_code == 404, (method, path, r.status_code, r.text)
+
+    def test_endpoints_404_under_hardening_mode(self, client, monkeypatch, password_hash):
+        # When DEMO_HARDENING_MODE is on and the env var is unset, the
+        # hardening override flips the flag to its safe value (True).
+        monkeypatch.delenv("DEMO_DISABLE_ADMIN_AREA", raising=False)
+        monkeypatch.setenv("DEMO_HARDENING_MODE", "1")
+        headers = self._seed_admin(client, password_hash)
+        r = client.get("/api/admin/overview", headers=headers)
+        assert r.status_code == 404
+
+    def test_explicit_opt_out_wins_over_hardening_mode(self, client, monkeypatch, password_hash):
+        # An explicit DEMO_DISABLE_ADMIN_AREA=0 keeps the routes accessible
+        # even when hardening mode is on.
+        monkeypatch.setenv("DEMO_HARDENING_MODE", "1")
+        monkeypatch.setenv("DEMO_DISABLE_ADMIN_AREA", "0")
+        headers = self._seed_admin(client, password_hash)
+        r = client.get("/api/admin/overview", headers=headers)
+        assert r.status_code == 200
+
+    def test_self_routes_still_work_when_flag_on(self, client, monkeypatch, password_hash):
+        # The fix only gates the admin area + self-service account mutation.
+        # Login, refresh, /api/auth/me, logout, and the public /api/status
+        # must still work so the demo keeps functioning.
+        monkeypatch.setattr(api, "demo_disable_admin_area", lambda: True)
+        headers = self._seed_admin(client, password_hash)
+        assert client.get("/api/auth/me", headers=headers).status_code == 200
+        assert client.post("/api/auth/logout", headers=headers).status_code == 200
+        assert client.get("/api/status").status_code == 200
+        assert client.get("/api/status", headers=headers).status_code == 200
+
+
 class TestCompression:
     """HTTP compression middleware: gzip JSON/UI responses, skip binary media."""
 

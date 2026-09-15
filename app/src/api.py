@@ -27,6 +27,7 @@ from auth import (
     CurrentUser,
     allow_public_thumbs,
     decrypt_totp_secret,
+    demo_disable_admin_area,
     demo_disable_admin_user_management,
     demo_disable_backups,
     encrypt_totp_secret,
@@ -581,6 +582,8 @@ def api_2fa_setup(request: Request, user: CurrentUser = Depends(require_user)):
     on. Calling setup again rotates the secret, invalidating any previous
     half-finished enrollment.
     """
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     secret_b32 = generate_totp_secret()
     store.set_totp_secret(user.id, encrypt_totp_secret(secret_b32))
     store.set_totp_enabled(user.id, False)
@@ -599,6 +602,8 @@ def api_2fa_confirm(request: Request, body: dict = Body(...),
     Prevents lockout from a mistyped/mis-scanned secret: the code must match
     the stored secret before ``totp_enabled`` flips on.
     """
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     code = (body.get("code") or "").strip()
     if not code:
         raise HTTPException(400, "code required")
@@ -623,6 +628,8 @@ def api_2fa_disable(request: Request, body: dict = Body(default={}),
     Requires the current 6-digit code (or the account password) as proof of
     control, so a stolen bearer token alone can't silently strip 2FA.
     """
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     code = (body.get("code") or "").strip()
     password = body.get("password") or ""
     secret_enc = store.get_totp_secret(user.id)
@@ -723,6 +730,8 @@ def api_change_password(request: Request, body: dict = Body(...),
     same minimum-length rule as the login screen, and revokes every other
     session so a leaked old password stops working everywhere except here.
     """
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     current = body.get("current_password")
     new = body.get("new_password")
     if not isinstance(current, str) or not isinstance(new, str):
@@ -2807,6 +2816,8 @@ def api_admin_disable_user_2fa(user_id: int,
 
 @app.get("/api/admin/overview")
 def api_admin_overview(_: CurrentUser = Depends(require_role("admin"))):
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     return admin.overview()
 
 
@@ -2856,18 +2867,24 @@ def api_admin_prune_backups(body: dict = Body(default={}),
 
 @app.get("/api/admin/schedule")
 def api_admin_get_schedule(_: CurrentUser = Depends(require_role("admin"))):
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     return admin.get_schedule()
 
 
 @app.put("/api/admin/schedule")
 def api_admin_set_schedule(body: dict = Body(...),
                            _: CurrentUser = Depends(require_role("admin"))):
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     return admin.set_schedule(body)
 
 
 @app.get("/api/admin/sync")
 def api_admin_get_sync(_: CurrentUser = Depends(require_role("admin"))):
     """Admin view of the indexer's sync state + live sync configuration."""
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     status = _indexer_proxy_json("GET", "/status")
     cfg = _indexer_proxy_json("GET", "/sync-config")
     return {
@@ -2882,6 +2899,8 @@ def api_admin_get_sync(_: CurrentUser = Depends(require_role("admin"))):
 @app.post("/api/admin/sync/trigger")
 def api_admin_trigger_sync(_: CurrentUser = Depends(require_role("admin"))):
     """Ask the indexer to run a full scan on its next sync-loop iteration."""
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     return _indexer_proxy_json("POST", "/trigger-sync")
 
 
@@ -2889,11 +2908,15 @@ def api_admin_trigger_sync(_: CurrentUser = Depends(require_role("admin"))):
 def api_admin_set_sync(body: dict = Body(...),
                        _: CurrentUser = Depends(require_role("admin"))):
     """Persist the live sync configuration on the indexer."""
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     return _indexer_proxy_json("PUT", "/sync-config", body)
 
 
 @app.post("/api/admin/checks")
 def api_admin_checks(_: CurrentUser = Depends(require_role("admin"))):
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     return admin.run_checks(recent_full_res_failures=_recent_full_res_failures())
 
 
@@ -2905,6 +2928,8 @@ def api_admin_gc_empty_people(_: CurrentUser = Depends(require_role("admin"))):
     predate the automatic GC. Returns how many rows were removed; re-running
     is a no-op (idempotent).
     """
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     deleted = delete_empty_people()
     _invalidate_people_cache()
     return {"deleted": deleted, "ok": True}
@@ -2919,6 +2944,8 @@ def api_admin_gc_empty_people(_: CurrentUser = Depends(require_role("admin"))):
 
 @app.get("/api/admin/bridge/cache")
 def api_admin_bridge_cache_status(_: CurrentUser = Depends(require_role("admin"))):
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     try:
         return get_bridge().cache_status()
     except Exception as exc:
@@ -2934,6 +2961,8 @@ def api_admin_bridge_cache_clear(_: CurrentUser = Depends(require_role("admin"))
     GET /api/admin/bridge/cache will fail until compose has restarted the
     container (~5-10 s). That's the expected signal of a successful clear.
     """
+    if demo_disable_admin_area():
+        raise HTTPException(404, "not found")
     try:
         return get_bridge().clear_cache()
     except Exception as exc:

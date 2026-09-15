@@ -199,6 +199,7 @@ def _hardening_overrides(key: str, demo_default: bool) -> bool:
         if key in (
             "DEMO_DISABLE_ADMIN_USER_MANAGEMENT",
             "DEMO_DISABLE_BACKUPS",
+            "DEMO_DISABLE_ADMIN_AREA",
         ):
             return True
     return demo_default
@@ -231,6 +232,18 @@ def demo_disable_backups() -> bool:
     demos where the threat model allows an admin compromise.
     """
     return _hardening_overrides("DEMO_DISABLE_BACKUPS", False)
+
+
+def demo_disable_admin_area() -> bool:
+    """True to 404 every /api/admin/* route plus self-service account routes.
+
+    Public demos share one set of credentials, so anyone holding them can
+    read operational state, change the shared password, or enroll 2FA on the
+    shared account. Disable the whole admin area (and the self-service
+    password / 2FA routes) so a shared-credential holder can't reconfigure
+    or lock out the demo.
+    """
+    return _hardening_overrides("DEMO_DISABLE_ADMIN_AREA", False)
 
 
 def demo_login_logs() -> bool:

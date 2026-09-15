@@ -267,6 +267,9 @@ services:
       # Public demo: keep /thumb /full /cover /crop consumable by <img> tags.
       # Default is OFF — binary endpoints require a bearer token or signed URL.
       - DEMO_ALLOW_PUBLIC_THUMBS=1
+      # Public demo: 404 the whole admin area + self-service password/2FA
+      # routes so shared-credential holders can't reconfigure the demo.
+      - DEMO_DISABLE_ADMIN_AREA=1
       - SYNC_INTERVAL=${SYNC_INTERVAL:-600}
       - SYNC_LIMIT=${SYNC_LIMIT:-0}
       - WORKERS=${WORKERS:-3}
@@ -307,6 +310,9 @@ services:
       # Public demo: keep /thumb /full /cover /crop consumable by <img> tags.
       # Default is OFF — binary endpoints require a bearer token or signed URL.
       - DEMO_ALLOW_PUBLIC_THUMBS=1
+      # Public demo: 404 the whole admin area + self-service password/2FA
+      # routes so shared-credential holders can't reconfigure the demo.
+      - DEMO_DISABLE_ADMIN_AREA=1
       - PORT=8080
       - RUN_INDEXER=0
       - INDEXER_STATUS_PORT=${INDEXER_STATUS_PORT:-8091}
