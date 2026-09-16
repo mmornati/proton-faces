@@ -35,7 +35,7 @@ import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { createRateLimiter, noteRetryAfterIfPresent, type TokenBucket } from './rateLimit';
+import { createRateLimiter, noteRetryAfterIfPresent, RateLimitQueueFullError, type TokenBucket } from './rateLimit';
 import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
@@ -771,6 +771,14 @@ async function main(): Promise<void> {
                 const ref = randomUUID().slice(0, 8);
                 console.error(`[bridge] error ref=${ref}:`, error);
                 noteRetryAfterIfPresent(limiter, error);
+                if (error instanceof RateLimitQueueFullError) {
+                    // Backpressure: the limiter's parked-waiter queue is full.
+                    // 503 is treated as transient/retryable by the Python client.
+                    return Response.json(
+                        { ok: false, error: 'rate limiter queue full — retry later' },
+                        { status: 503, headers: { 'Retry-After': '1' } },
+                    );
+                }
                 return Response.json(sanitizedErrorBody(ref), { status: 500 });
             }
         },
