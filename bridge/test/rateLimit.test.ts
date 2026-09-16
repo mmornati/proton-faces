@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { TokenBucket, createHttpRateLimiter, createRateLimiter, extractRetryAfter, noteRetryAfterIfPresent } from '../src/rateLimit';
+import { RateLimitQueueFullError, TokenBucket, createHttpRateLimiter, createRateLimiter, extractRetryAfter, noteRetryAfterIfPresent } from '../src/rateLimit';
 
 describe('TokenBucket', () => {
     test('rate <= 0 disables the bucket', () => {
@@ -52,6 +52,52 @@ describe('TokenBucket', () => {
         const b = new TokenBucket(10, 1); // min backoff = 100ms
         b.noteRetryAfter(0);
         b.noteRetryAfter(0.05);
+    });
+
+    test('acquire resolves waiters in FIFO order under contention', async () => {
+        const b = new TokenBucket(20, 1); // 1 token, refills 1 per 50ms
+        await b.acquire(); // drain the initial token
+        const order: number[] = [];
+        const promises = [0, 1, 2, 3, 4].map((i) =>
+            b.acquire().then(() => {
+                order.push(i);
+            }),
+        );
+        await Promise.all(promises);
+        expect(order).toEqual([0, 1, 2, 3, 4]);
+    });
+
+    test('noteRetryAfter pauses the whole queue, not just the head', async () => {
+        const b = new TokenBucket(20, 1); // 1 token, refills 1 per 50ms
+        await b.acquire(); // drain the initial token
+        b.noteRetryAfter(0.5); // 500ms backoff, min backoff = 50ms
+        const t0 = Date.now();
+        const order: number[] = [];
+        const promises = [0, 1, 2].map((i) =>
+            b.acquire().then(() => {
+                order.push(i);
+            }),
+        );
+        await Promise.all(promises);
+        const elapsed = Date.now() - t0;
+        // All three waiters must wait out the retry-after, then drain in order.
+        expect(elapsed).toBeGreaterThanOrEqual(400);
+        expect(order).toEqual([0, 1, 2]);
+    });
+
+    test('acquire rejects with RateLimitQueueFullError when the queue is full', async () => {
+        const b = new TokenBucket(200, 1); // 1 token, refills 1 per 5ms
+        await b.acquire(); // drain the initial token
+        const parked: Promise<void>[] = [];
+        for (let i = 0; i < TokenBucket.MAX_PARKED_WAITERS; i++) {
+            parked.push(b.acquire());
+        }
+        await expect(b.acquire()).rejects.toThrow(RateLimitQueueFullError);
+        // The parked waiters still drain in order once tokens refill.
+        const order: number[] = [];
+        parked.forEach((p, i) => p.then(() => order.push(i)));
+        await Promise.all(parked);
+        expect(order).toEqual(Array.from({ length: TokenBucket.MAX_PARKED_WAITERS }, (_, i) => i));
     });
 });
 
