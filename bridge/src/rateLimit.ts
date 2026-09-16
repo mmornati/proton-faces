@@ -34,6 +34,8 @@ export class TokenBucket {
     private ratePerMs: number;
     readonly capacity: number;
     private resumeAt = 0;
+    private waiters: { resolve: () => void; reject: (err: Error) => void }[] = [];
+    private timer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(ratePerSec: number, burst?: number) {
         if (ratePerSec <= 0) {
@@ -61,19 +63,66 @@ export class TokenBucket {
         this.lastRefill = now;
     }
 
+    /**
+     * Parked waiters beyond this depth are rejected with a 503 instead of
+     * queued, so a fan-out storm (the SDK can open hundreds of concurrent
+     * upstream calls) can't grow the queue without bound.
+     */
+    static readonly MAX_PARKED_WAITERS = 100;
+
+    /**
+     * Schedule the single refill timer for the earliest moment a token can
+     * be granted. No-op when a timer is already pending.
+     */
+    private scheduleWake(): void {
+        if (this.timer !== null) return;
+        const now = Date.now();
+        this.refill(now);
+        const wakeAt = Math.max(now + (1 - this.tokens) / this.ratePerMs, this.resumeAt);
+        this.timer = setTimeout(() => this.wakeHead(), Math.max(1, wakeAt - now));
+    }
+
+    /**
+     * Drop the pending timer and re-schedule it against the current state.
+     * Used when noteRetryAfter pushes resumeAt past the pending wake target.
+     */
+    private rescheduleWake(): void {
+        if (this.timer !== null) {
+            clearTimeout(this.timer);
+            this.timer = null;
+        }
+        this.scheduleWake();
+    }
+
+    private wakeHead(): void {
+        this.timer = null;
+        const now = Date.now();
+        this.refill(now);
+        if (this.waiters.length > 0 && now >= this.resumeAt && this.tokens >= 1) {
+            // Decrement in the same synchronous tick as the grant decision —
+            // no await between refill and decrement, so the token math stays
+            // race-free.
+            this.tokens -= 1;
+            this.waiters.shift()!.resolve();
+        }
+        if (this.waiters.length > 0) this.scheduleWake();
+    }
+
     async acquire(): Promise<void> {
         if (!this.isEnabled()) return;
-        while (true) {
-            const now = Date.now();
-            this.refill(now);
-            const waitUntil = Math.max(now + (1 - this.tokens) / this.ratePerMs, this.resumeAt);
-            if (now >= waitUntil && this.tokens >= 1) {
-                this.tokens -= 1;
-                return;
-            }
-            const sleepMs = Math.max(1, waitUntil - now);
-            await new Promise((r) => setTimeout(r, sleepMs));
+        const now = Date.now();
+        this.refill(now);
+        if (now >= this.resumeAt && this.tokens >= 1) {
+            this.tokens -= 1;
+            return;
         }
+        if (this.waiters.length >= TokenBucket.MAX_PARKED_WAITERS) {
+            throw new RateLimitQueueFullError();
+        }
+        return new Promise<void>((resolve, reject) => {
+            this.waiters.push({ resolve, reject });
+            this.scheduleWake();
+        });
     }
 
     noteRetryAfter(retryAfterSeconds: number): void {
@@ -83,6 +132,19 @@ export class TokenBucket {
         const minMs = this.isEnabled() ? 1 / this.ratePerMs : 0;
         const backoff = Math.max(ms, minMs);
         this.resumeAt = Math.max(this.resumeAt, Date.now() + backoff);
+        if (this.waiters.length > 0) this.rescheduleWake();
+    }
+}
+
+/**
+ * Thrown by acquire() when the parked-waiter queue is full. The bridge's
+ * top-level handler translates this into a 503 + Retry-After so the Python
+ * client treats it as a transient, retryable condition.
+ */
+export class RateLimitQueueFullError extends Error {
+    constructor() {
+        super('rate limiter queue full — too many concurrent requests parked');
+        this.name = 'RateLimitQueueFullError';
     }
 }
 
