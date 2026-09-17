@@ -198,3 +198,49 @@ export function withTimeoutSignal(innerSignal: AbortSignal, timeoutMs: number): 
         },
     };
 }
+
+/**
+ * Build the status + headers for a HEAD response served from node metadata,
+ * so the bridge never downloads a file just to answer a HEAD request (issue
+ * #62). `size` is the node's claimed size when known; pass `null` for images,
+ * which are streamed live without Content-Length on GET and so advertise no
+ * length on HEAD either. A satisfiable `Range` header yields 206 with
+ * `Content-Range`; an unsatisfiable one yields 416 — matching the GET path.
+ */
+export function headResponseHeaders(
+    uid: string,
+    contentType: string,
+    size: number | null,
+    rangeHeader: string | null | undefined,
+): { status: number; headers: Record<string, string> } {
+    const headers: Record<string, string> = {
+        'Cache-Control': 'no-store',
+        'X-Photo-Uid': uid,
+        'Content-Type': contentType,
+    };
+    if (size === null) {
+        return { status: 200, headers };
+    }
+    headers['Accept-Ranges'] = 'bytes';
+    const parsed = parseRange(rangeHeader, size);
+    if (parsed?.status === 416) {
+        headers['Content-Range'] = parsed.contentRange ?? `bytes */${size}`;
+        return { status: 416, headers };
+    }
+    if (parsed?.range) {
+        headers['Content-Length'] = String(parsed.range.length);
+        headers['Content-Range'] = `bytes ${parsed.range.start}-${parsed.range.end}/${size}`;
+        return { status: 206, headers };
+    }
+    headers['Content-Length'] = String(size);
+    return { status: 200, headers };
+}
+
+/**
+ * True when a video's claimed size exceeds the operator's temp-file cap
+ * (`PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES`). A cap of 0 (or unset) disables the
+ * guard; an unknown size bypasses it (can't guard what we don't know).
+ */
+export function exceedsVideoTempCap(size: number | null, capBytes: number): boolean {
+    return capBytes > 0 && size !== null && size > capBytes;
+}

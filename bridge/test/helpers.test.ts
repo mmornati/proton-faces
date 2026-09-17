@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike, withTimeoutSignal } from '../src/helpers';
+import { CACHE_FILE_GLOB, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike, withTimeoutSignal } from '../src/helpers';
 
 function makeNode(overrides: Partial<PhotoNodeLike> = {}): PhotoNodeLike {
     return {
@@ -249,6 +249,66 @@ describe('parseRange', () => {
         expect(r.status).toBe(416);
         expect(r.contentRange).toBe('bytes */100');
         expect(r.range).toBeUndefined();
+    });
+});
+
+describe('headResponseHeaders', () => {
+    test('video with known size: 200 with Content-Length and Accept-Ranges', () => {
+        const { status, headers } = headResponseHeaders('vid1', 'video/mp4', 5_000_000_000, null);
+        expect(status).toBe(200);
+        expect(headers['Content-Length']).toBe('5000000000');
+        expect(headers['Accept-Ranges']).toBe('bytes');
+        expect(headers['Content-Type']).toBe('video/mp4');
+        expect(headers['Cache-Control']).toBe('no-store');
+        expect(headers['X-Photo-Uid']).toBe('vid1');
+        expect(headers['Content-Range']).toBeUndefined();
+    });
+
+    test('video with satisfiable Range: 206 with Content-Range', () => {
+        const { status, headers } = headResponseHeaders('vid1', 'video/mp4', 1000, 'bytes=100-199');
+        expect(status).toBe(206);
+        expect(headers['Content-Length']).toBe('100');
+        expect(headers['Content-Range']).toBe('bytes 100-199/1000');
+    });
+
+    test('video with unsatisfiable Range: 416 with Content-Range', () => {
+        const { status, headers } = headResponseHeaders('vid1', 'video/mp4', 1000, 'bytes=1000-');
+        expect(status).toBe(416);
+        expect(headers['Content-Range']).toBe('bytes */1000');
+        expect(headers['Content-Length']).toBeUndefined();
+    });
+
+    test('image (size null): 200 with no Content-Length and no Accept-Ranges', () => {
+        const { status, headers } = headResponseHeaders('img1', 'image/jpeg', null, null);
+        expect(status).toBe(200);
+        expect(headers['Content-Length']).toBeUndefined();
+        expect(headers['Accept-Ranges']).toBeUndefined();
+        expect(headers['Content-Type']).toBe('image/jpeg');
+    });
+
+    test('unknown-size video (size null) still omits Content-Length', () => {
+        const { status, headers } = headResponseHeaders('vid1', 'video/mp4', null, null);
+        expect(status).toBe(200);
+        expect(headers['Content-Length']).toBeUndefined();
+    });
+});
+
+describe('exceedsVideoTempCap', () => {
+    test('cap of 0 disables the guard', () => {
+        expect(exceedsVideoTempCap(10_000_000_000, 0)).toBe(false);
+    });
+
+    test('size at or under the cap is allowed', () => {
+        expect(exceedsVideoTempCap(1_000, 1_000)).toBe(false);
+        expect(exceedsVideoTempCap(999, 1_000)).toBe(false);
+    });
+
+    test('size over the cap is refused', () => {
+        expect(exceedsVideoTempCap(1_001, 1_000)).toBe(true);
+    });
+
+    test('unknown size bypasses the guard', () => {
+        expect(exceedsVideoTempCap(null, 1_000)).toBe(false);
     });
 });
 
