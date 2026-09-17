@@ -104,6 +104,7 @@ The `proton-bridge` container reads these (set in `compose.yml`):
 | `PROTON_BRIDGE_NODES_TIMEOUT_MS` | `300000` | Deadline for the `/nodes` metadata lookup (issue #55). |
 | `PROTON_BRIDGE_ALBUMS_TIMEOUT_MS` | `300000` | Deadline for the `/albums` listing (issue #55). |
 | `PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS` | `300000` | Deadline for a `/thumbnails` batch download (issue #55). |
+| `PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES` | unset (no cap) | Optional cap (bytes) on the temp file a video full-res request may materialize to disk (issue #62). When set and the node's claimed size exceeds it, the bridge refuses with **507 Insufficient Storage** before any download starts — protects a shared volume from multi-GB video churn. HEAD requests are answered from node metadata and never write a temp file. |
 
 ## Local dev (single-process)
 

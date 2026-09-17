@@ -144,6 +144,11 @@ ENV PROTON_BRIDGE_TIMELINE_TIMEOUT_MS=1800000
 ENV PROTON_BRIDGE_NODES_TIMEOUT_MS=300000
 ENV PROTON_BRIDGE_ALBUMS_TIMEOUT_MS=300000
 ENV PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS=300000
+# Optional cap (bytes) on the temp file a video full-res request may write to
+# disk (issue #62). Empty/0 = no cap (historical behavior). When set and the
+# node's claimed size exceeds it, the bridge refuses with 507 before any
+# download starts. Set per-deployment in compose.yml.
+ENV PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES=
 
 # The session/auth files live in DATA_DIR (mounted volume).
 EXPOSE 8090

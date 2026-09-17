@@ -36,7 +36,7 @@ import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, noteRetryAfterIfPresent, RateLimitQueueFullError, type TokenBucket } from './rateLimit';
-import { CACHE_FILE_GLOB, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles } from './helpers';
+import { CACHE_FILE_GLOB, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
 const BRIDGE_HOST = process.env.BRIDGE_HOST ?? '0.0.0.0';
@@ -46,6 +46,11 @@ const TIMELINE_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_TIMELINE_TIMEOUT_MS
 const NODES_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_NODES_TIMEOUT_MS ?? 5 * 60_000);
 const ALBUMS_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_ALBUMS_TIMEOUT_MS ?? 5 * 60_000);
 const THUMBNAILS_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS ?? 5 * 60_000);
+// Optional cap on the temp file a video full-res request may materialize to
+// disk (issue #62). 0/unset = no cap (historical behavior). When set and the
+// node's claimed size exceeds it, the bridge refuses with 507 before any
+// download starts, so a multi-GB video can never exhaust a shared volume.
+const MAX_VIDEO_TEMP_BYTES = Number(process.env.PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES ?? 0);
 const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN ?? '';
 // Max time SIGTERM waits for in-flight requests to drain before forcing an
 // exit. A long full-res download must not block `docker stop` forever.
@@ -355,12 +360,17 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     // Resolve the real MIME type from the node (preferred) so the browser
     // picks the right codec instead of guessing from .webp/.jpg extensions.
     // Bound the lookup so a stalled node decrypt can't delay the response.
+    // Also capture the claimed size so HEAD can be answered from metadata
+    // without downloading the file (issue #62).
     let mediaType: string | null = null;
+    let claimedSize: number | null = null;
     try {
         await limiter.acquire();
         for await (const node of ctx.photosSdk.iterateNodes([uid], AbortSignal.timeout(FULL_RES_TIMEOUT_MS))) {
             if (!('missingUid' in node)) {
-                mediaType = (node as PhotoNode).mediaType ?? null;
+                const photoNode = node as PhotoNode;
+                mediaType = photoNode.mediaType ?? null;
+                claimedSize = photoNode.activeRevision?.claimedSize ?? photoNode.activeRevision?.storageSize ?? null;
             }
             break;
         }
@@ -370,6 +380,16 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
 
     const isVideo = mediaType?.startsWith('video/') ?? false;
     const contentType = mediaType ?? (isVideo ? 'application/octet-stream' : 'image/jpeg');
+
+    // HEAD is answered entirely from node metadata — no downloader, no temp
+    // file. Videos advertise the claimed size (Content-Length + Accept-Ranges,
+    // honoring Range like the GET path); images omit Content-Length to match
+    // the live-stream GET response, which deliberately sends none. This is
+    // what makes `curl -I` on a multi-GB video return instantly (issue #62).
+    if (request.method === 'HEAD') {
+        const { status, headers } = headResponseHeaders(uid, contentType, isVideo ? claimedSize : null, request.headers.get('range'));
+        return new Response(null, { status, headers });
+    }
 
     // The client can bound how long we hold a download queue slot for it via
     // `X-Timeout-Ms`. When the browser/API gives up (e.g. the app's 30s hard
@@ -387,6 +407,18 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     // instead of holding a DownloadQueue slot until the timeout fires.
     const combinedSignal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
     const downloader = await ctx.photosSdk.getFileDownloader(uid, combinedSignal);
+
+    // Optional guard against materializing a huge video to disk (issue #62).
+    // When PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES is set and the node's claimed
+    // size exceeds it, refuse with 507 before any byte is downloaded — the
+    // temp file is never created. An unknown claimed size bypasses the check
+    // (can't guard what we don't know). HEAD never reaches here.
+    if (isVideo && exceedsVideoTempCap(downloader.getClaimedSizeInBytes() ?? claimedSize, MAX_VIDEO_TEMP_BYTES)) {
+        return Response.json(
+            { ok: false, error: 'video exceeds MAX_VIDEO_TEMP_BYTES cap' },
+            { status: 507 },
+        );
+    }
 
     if (!isVideo) {
         // Images stream live straight from Proton — no temp file on disk. This

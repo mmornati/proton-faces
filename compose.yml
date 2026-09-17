@@ -98,6 +98,11 @@ services:
       - PROTON_BRIDGE_NODES_TIMEOUT_MS=${PROTON_BRIDGE_NODES_TIMEOUT_MS:-300000}
       - PROTON_BRIDGE_ALBUMS_TIMEOUT_MS=${PROTON_BRIDGE_ALBUMS_TIMEOUT_MS:-300000}
       - PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS=${PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS:-300000}
+      # Optional cap (bytes) on the temp file a video full-res request may
+      # materialize to disk (issue #62). Empty/0 = no cap. When set and the
+      # node's claimed size exceeds it, the bridge refuses with 507 before any
+      # download starts — protects a shared volume from multi-GB video churn.
+      - PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES=${PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES:-}
     networks:
       - internal
 
