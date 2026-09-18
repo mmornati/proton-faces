@@ -36,7 +36,7 @@ import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, noteRetryAfterIfPresent, RateLimitQueueFullError, type TokenBucket } from './rateLimit';
-import { CACHE_FILE_GLOB, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, withTimeoutSignal } from './helpers';
+import { CACHE_FILE_GLOB, classifyMediaType, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, withTimeoutSignal } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
 const BRIDGE_HOST = process.env.BRIDGE_HOST ?? '0.0.0.0';
@@ -377,12 +377,20 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
             }
             break;
         }
-    } catch {
-        // fall through to a safe default; the client will still get bytes.
+    } catch (error) {
+        // The node lookup failed (e.g. a stalled decrypt). Don't swallow it
+        // silently — log it so a mis-served file has a diagnostic signal. The
+        // file is still served below as "unknown" (issue #66).
+        console.warn(`[bridge] full photo ${uid}: node metadata lookup failed; serving as unknown:`, error);
     }
 
-    const isVideo = mediaType?.startsWith('video/') ?? false;
-    const contentType = mediaType ?? (isVideo ? 'application/octet-stream' : 'image/jpeg');
+    const { kind, contentType } = classifyMediaType(mediaType);
+    const isVideo = kind === 'video';
+    const isImage = kind === 'image';
+    const isUnknown = kind === 'unknown';
+    if (isUnknown) {
+        console.warn(`[bridge] full photo ${uid}: unknown media type (${mediaType ?? 'null'}); serving as application/octet-stream`);
+    }
 
     // HEAD is answered entirely from node metadata — no downloader, no temp
     // file. Videos advertise the claimed size (Content-Length + Accept-Ranges,
@@ -420,19 +428,21 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
         throw err;
     }
 
-    // Optional guard against materializing a huge video to disk (issue #62).
+    // Optional guard against materializing a huge file to disk (issue #62).
     // When PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES is set and the node's claimed
     // size exceeds it, refuse with 507 before any byte is downloaded — the
-    // temp file is never created. An unknown claimed size bypasses the check
-    // (can't guard what we don't know). HEAD never reaches here.
-    if (isVideo && exceedsVideoTempCap(downloader.getClaimedSizeInBytes() ?? claimedSize, MAX_VIDEO_TEMP_BYTES)) {
+    // temp file is never created. Applies to videos and unknown files (both
+    // materialize to a temp file); images stream live and never hit this. An
+    // unknown claimed size bypasses the check (can't guard what we don't
+    // know). HEAD never reaches here.
+    if ((isVideo || isUnknown) && exceedsVideoTempCap(downloader.getClaimedSizeInBytes() ?? claimedSize, MAX_VIDEO_TEMP_BYTES)) {
         return Response.json(
-            { ok: false, error: 'video exceeds MAX_VIDEO_TEMP_BYTES cap' },
+            { ok: false, error: 'file exceeds MAX_VIDEO_TEMP_BYTES cap' },
             { status: 507 },
         );
     }
 
-    if (!isVideo) {
+    if (isImage) {
         // Images stream live straight from Proton — no temp file on disk. This
         // avoids the clobber/partial-write races on a shared temp path that
         // broke concurrent opens (and is the regression this replaces) and adds
@@ -488,7 +498,9 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     // Videos need HTTP Range for seeking (HTML5 <video> requires it — without
     // Range support the browser must download the whole file before play). We
     // buffer the decrypted bytes to a per-request temp file and stream it back,
-    // honoring `Range` so the player only pulls the bytes it needs.
+    // honoring `Range` so the player only pulls the bytes it needs. Unknown
+    // files (metadata lookup failed) take this same path so a video whose
+    // mediaType was never resolved still gets Range support (issue #66).
     //
     // The path is unique per request (randomUUID) so concurrent opens of the same
     // uid never clobber each other. We fsync + size-check before serving so a

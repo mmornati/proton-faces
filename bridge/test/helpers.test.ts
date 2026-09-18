@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CACHE_FILE_GLOB, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike, withTimeoutSignal } from '../src/helpers';
+import { CACHE_FILE_GLOB, classifyMediaType, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike, withTimeoutSignal } from '../src/helpers';
 
 function makeNode(overrides: Partial<PhotoNodeLike> = {}): PhotoNodeLike {
     return {
@@ -22,6 +22,32 @@ function makeNode(overrides: Partial<PhotoNodeLike> = {}): PhotoNodeLike {
         ...overrides,
     };
 }
+
+describe('classifyMediaType', () => {
+    test('null mediaType (metadata lookup failed) is unknown, not image', () => {
+        const c = classifyMediaType(null);
+        expect(c.kind).toBe('unknown');
+        expect(c.contentType).toBe('application/octet-stream');
+    });
+
+    test('video media type is video with its own content type', () => {
+        const c = classifyMediaType('video/mp4');
+        expect(c.kind).toBe('video');
+        expect(c.contentType).toBe('video/mp4');
+    });
+
+    test('image media type is image with its own content type', () => {
+        const c = classifyMediaType('image/jpeg');
+        expect(c.kind).toBe('image');
+        expect(c.contentType).toBe('image/jpeg');
+    });
+
+    test('non-image non-video media type is unknown', () => {
+        const c = classifyMediaType('application/pdf');
+        expect(c.kind).toBe('unknown');
+        expect(c.contentType).toBe('application/octet-stream');
+    });
+});
 
 describe('nodeToJson', () => {
     test('maps a fully populated node', () => {

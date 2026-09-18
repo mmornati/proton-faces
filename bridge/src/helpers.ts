@@ -200,6 +200,24 @@ export function withTimeoutSignal(innerSignal: AbortSignal, timeoutMs: number): 
 }
 
 /**
+ * Classify a node's media type into one of three serving states (issue #66).
+ * `mediaType` is null when the node metadata lookup failed or the node has no
+ * media type — that is "unknown", not "image". Unknown files are served as
+ * `application/octet-stream` and take the Range-capable temp-file path, so a
+ * video whose metadata lookup failed still plays instead of silently falling
+ * back to the image path (no Range, wrong `image/jpeg` Content-Type).
+ */
+export function classifyMediaType(mediaType: string | null): { kind: 'image' | 'video' | 'unknown'; contentType: string } {
+    if (mediaType?.startsWith('video/')) {
+        return { kind: 'video', contentType: mediaType };
+    }
+    if (mediaType?.startsWith('image/')) {
+        return { kind: 'image', contentType: mediaType };
+    }
+    return { kind: 'unknown', contentType: 'application/octet-stream' };
+}
+
+/**
  * Build the status + headers for a HEAD response served from node metadata,
  * so the bridge never downloads a file just to answer a HEAD request (issue
  * #62). `size` is the node's claimed size when known; pass `null` for images,
