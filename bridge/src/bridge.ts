@@ -34,12 +34,11 @@
 import { init } from './init';
 import type { PhotoNode } from '@protontech/drive-sdk';
 import { ThumbnailType } from '@protontech/drive-sdk';
-import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
-import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
+import { mkdir, open, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, noteRetryAfterIfPresent, RateLimitQueueFullError, type TokenBucket } from './rateLimit';
-import { CACHE_FILE_GLOB, clearCacheFiles, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, withTimeoutSignal } from './helpers';
+import { CACHE_FILE_GLOB, classifyMediaType, clearCacheFiles, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, withTimeoutSignal } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
 const BRIDGE_HOST = process.env.BRIDGE_HOST ?? '0.0.0.0';
@@ -55,6 +54,11 @@ const THUMBNAILS_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_THUMBNAILS_TIMEOU
 // download starts, so a multi-GB video can never exhaust a shared volume.
 const MAX_VIDEO_TEMP_BYTES = Number(process.env.PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES ?? 0);
 const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN ?? '';
+// Full Proton SDK console logging (per-block download detail, upstream debug
+// statements). Default OFF — the SDK's unaudited log statements are noisy and
+// widen the blast radius for accidental secret logging. Set to '1' only when
+// troubleshooting a bridge issue.
+const BRIDGE_SDK_LOGS = process.env.BRIDGE_SDK_LOGS === '1';
 // Max time SIGTERM waits for in-flight requests to drain before forcing an
 // exit. A long full-res download must not block `docker stop` forever.
 const SHUTDOWN_GRACE_MS = 10_000;
@@ -94,13 +98,13 @@ function isAuthorized(request: Request, url: URL): boolean {
 // Cache-control knobs for the admin "stale cache" check. We report the
 // cache files' sizes + mtimes so the Python admin check can flag a
 // hung/stale SDK without having to scrape logs.
-function reportCache(): { files: Array<{ name: string; size: number; mtime: number }>; uptimeSec: number } {
+async function reportCache(): Promise<{ files: Array<{ name: string; size: number; mtime: number }>; uptimeSec: number }> {
     const files: Array<{ name: string; size: number; mtime: number }> = [];
     try {
-        for (const name of readdirSync(DATA_DIR)) {
+        for (const name of await readdir(DATA_DIR)) {
             if (!CACHE_FILE_GLOB.test(name)) continue;
             try {
-                const st = statSync(path.join(DATA_DIR, name));
+                const st = await stat(path.join(DATA_DIR, name));
                 files.push({ name, size: st.size, mtime: Math.floor(st.mtimeMs / 1000) });
             } catch {
                 // file vanished between readdir and stat (e.g. concurrent
@@ -127,7 +131,7 @@ function reportCache(): { files: Array<{ name: string; size: number; mtime: numb
 async function clearCache(): Promise<{ removed: string[]; failed: string[] }> {
     let names: string[] = [];
     try {
-        names = readdirSync(DATA_DIR).filter((name) => CACHE_FILE_GLOB.test(name));
+        names = (await readdir(DATA_DIR)).filter((name) => CACHE_FILE_GLOB.test(name));
     } catch (err) {
         console.error('[bridge] failed to list cache files:', err);
         return { removed: [], failed: [] };
@@ -382,12 +386,20 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
             }
             break;
         }
-    } catch {
-        // fall through to a safe default; the client will still get bytes.
+    } catch (error) {
+        // The node lookup failed (e.g. a stalled decrypt). Don't swallow it
+        // silently — log it so a mis-served file has a diagnostic signal. The
+        // file is still served below as "unknown" (issue #66).
+        console.warn(`[bridge] full photo ${uid}: node metadata lookup failed; serving as unknown:`, error);
     }
 
-    const isVideo = mediaType?.startsWith('video/') ?? false;
-    const contentType = mediaType ?? (isVideo ? 'application/octet-stream' : 'image/jpeg');
+    const { kind, contentType } = classifyMediaType(mediaType);
+    const isVideo = kind === 'video';
+    const isImage = kind === 'image';
+    const isUnknown = kind === 'unknown';
+    if (isUnknown) {
+        console.warn(`[bridge] full photo ${uid}: unknown media type (${mediaType ?? 'null'}); serving as application/octet-stream`);
+    }
 
     // HEAD is answered entirely from node metadata — no downloader, no temp
     // file. Videos advertise the claimed size (Content-Length + Accept-Ranges,
@@ -425,19 +437,21 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
         throw err;
     }
 
-    // Optional guard against materializing a huge video to disk (issue #62).
+    // Optional guard against materializing a huge file to disk (issue #62).
     // When PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES is set and the node's claimed
     // size exceeds it, refuse with 507 before any byte is downloaded — the
-    // temp file is never created. An unknown claimed size bypasses the check
-    // (can't guard what we don't know). HEAD never reaches here.
-    if (isVideo && exceedsVideoTempCap(downloader.getClaimedSizeInBytes() ?? claimedSize, MAX_VIDEO_TEMP_BYTES)) {
+    // temp file is never created. Applies to videos and unknown files (both
+    // materialize to a temp file); images stream live and never hit this. An
+    // unknown claimed size bypasses the check (can't guard what we don't
+    // know). HEAD never reaches here.
+    if ((isVideo || isUnknown) && exceedsVideoTempCap(downloader.getClaimedSizeInBytes() ?? claimedSize, MAX_VIDEO_TEMP_BYTES)) {
         return Response.json(
-            { ok: false, error: 'video exceeds MAX_VIDEO_TEMP_BYTES cap' },
+            { ok: false, error: 'file exceeds MAX_VIDEO_TEMP_BYTES cap' },
             { status: 507 },
         );
     }
 
-    if (!isVideo) {
+    if (isImage) {
         // Images stream live straight from Proton — no temp file on disk. This
         // avoids the clobber/partial-write races on a shared temp path that
         // broke concurrent opens (and is the regression this replaces) and adds
@@ -493,7 +507,9 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     // Videos need HTTP Range for seeking (HTML5 <video> requires it — without
     // Range support the browser must download the whole file before play). We
     // buffer the decrypted bytes to a per-request temp file and stream it back,
-    // honoring `Range` so the player only pulls the bytes it needs.
+    // honoring `Range` so the player only pulls the bytes it needs. Unknown
+    // files (metadata lookup failed) take this same path so a video whose
+    // mediaType was never resolved still gets Range support (issue #66).
     //
     // The path is unique per request (randomUUID) so concurrent opens of the same
     // uid never clobber each other. We fsync + size-check before serving so a
@@ -537,11 +553,11 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
         }
         await sink.end();
 
-        const ff = openSync(tmp, 'r');
+        const handle = await open(tmp, 'r');
         try {
-            fsyncSync(ff);
+            await handle.datasync();
         } finally {
-            closeSync(ff);
+            await handle.close();
         }
 
         const file = Bun.file(tmp);
@@ -615,7 +631,7 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
 async function sweepWorkDir(): Promise<void> {
     const workDir = path.join(DATA_DIR, 'work');
     try {
-        for (const name of readdirSync(workDir)) {
+        for (const name of await readdir(workDir)) {
             if (!STALE_WORK_FILE_GLOB.test(name)) continue;
             try {
                 await Bun.file(path.join(workDir, name)).unlink();
@@ -673,7 +689,7 @@ async function main(): Promise<void> {
         appVersion: 'cli-drive@0.8.0',
         sdkVersion: 'js@0.21.0',
         enablePersistedEvents: false,
-        enableConsoleLog: true,
+        enableConsoleLog: BRIDGE_SDK_LOGS,
         enableMetrics: false,
         flags: {
             DriveCryptoEncryptBlocksWithPgpAead: true,
@@ -691,10 +707,10 @@ async function main(): Promise<void> {
     const workDir = path.join(DATA_DIR, 'work');
     try {
         const entries: Array<{ name: string; mtimeMs: number }> = [];
-        for (const name of readdirSync(workDir)) {
+        for (const name of await readdir(workDir)) {
             if (!STALE_WORK_FILE_GLOB.test(name)) continue;
             try {
-                const st = statSync(path.join(workDir, name));
+                const st = await stat(path.join(workDir, name));
                 entries.push({ name, mtimeMs: st.mtimeMs });
             } catch {
                 // vanished between readdir and stat — skip
@@ -759,7 +775,7 @@ async function main(): Promise<void> {
                     // network, and exposing cache file sizes/mtimes to the
                     // app container is necessary for the admin "stale
                     // cache" check to work.
-                    return Response.json({ ok: true, ...reportCache() });
+                    return Response.json({ ok: true, ...(await reportCache()) });
                 }
                 if (url.pathname === '/cache/clear' && request.method === 'POST') {
                     // Unlink the on-disk SDK caches and restart the

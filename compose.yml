@@ -76,6 +76,10 @@ services:
       # downloads on migrated accounts that omit the deprecated PublicKey field.
       # Set to 0 to restore full E2E verification (downloads may hang on such accounts).
       - PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=${PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION:-1}
+      # Full Proton SDK console logging (per-block download detail). Default
+      # OFF — noisy `docker logs` and unaudited upstream statements. Set to 1
+      # only when troubleshooting a bridge issue (issue #70).
+      - BRIDGE_SDK_LOGS=${BRIDGE_SDK_LOGS:-0}
       # Optional: point at a custom Proton API environment.
       # - PROTON_DRIVE_BASE_URL=drive-api.proton.me
       # Outbound rate limit to Proton API, in two layers. 3 req/s burst 2 gates

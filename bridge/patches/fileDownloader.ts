@@ -21,6 +21,12 @@ import { DownloadTelemetry } from './telemetry';
  */
 const MAX_DOWNLOAD_BLOCK_SIZE = 10;
 
+// Per-block download detail is gated behind the same flag as the SDK's
+// console logging (BRIDGE_SDK_LOGS=1, see bridge.ts). Default OFF: the
+// per-block info lines are the noisiest part of `docker logs` during a
+// full-res download, and upstream log statements are unaudited.
+const BRIDGE_SDK_LOGS = process.env.BRIDGE_SDK_LOGS === '1';
+
 export class FileDownloader {
     private logger: Logger;
 
@@ -138,7 +144,9 @@ export class FileDownloader {
             return;
         }
 
-        this.logger.info(`Downloading data from block ${value.blockIndex} at offset ${value.blockOffset}`);
+        if (BRIDGE_SDK_LOGS) {
+            this.logger.info(`Downloading data from block ${value.blockIndex} at offset ${value.blockOffset}`);
+        }
 
         try {
             const { blockIndex, blockOffset } = value;
@@ -287,7 +295,9 @@ export class FileDownloader {
         onProgress?: (downloadedBytes: number) => void,
     ): Promise<Uint8Array<ArrayBuffer>> {
         const logger = new LoggerWithPrefix(this.logger, `block ${blockMetadata.index}`);
-        logger.info(`Download started`);
+        if (BRIDGE_SDK_LOGS) {
+            logger.info(`Download started`);
+        }
 
         let blockProgress = 0;
         let decryptedBlock: Uint8Array<ArrayBuffer> | null = null;
@@ -351,7 +361,9 @@ export class FileDownloader {
             }
         }
 
-        logger.info(`Downloaded`);
+        if (BRIDGE_SDK_LOGS) {
+            logger.info(`Downloaded`);
+        }
         return decryptedBlock;
     }
 
@@ -387,7 +399,9 @@ export class FileDownloader {
         this.logger.debug(`Flushing completed blocks`);
         while (this.isNextBlockDownloaded) {
             const decryptedBlock = this.ongoingDownloads.get(this.nextBlockIndex)!.decryptedBufferedBlock!;
-            this.logger.info(`Flushing completed block ${this.nextBlockIndex}`);
+            if (BRIDGE_SDK_LOGS) {
+                this.logger.info(`Flushing completed block ${this.nextBlockIndex}`);
+            }
             try {
                 await write(decryptedBlock);
             } catch (error) {
