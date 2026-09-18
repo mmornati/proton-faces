@@ -341,6 +341,11 @@ class BridgeClient:
         short read timeout in case the bridge is wedged at the moment of
         the call — we still want a clean error rather than an indefinite
         hang on the admin click.
+
+        The bridge reports files that failed to unlink (EACCES/EIO, not
+        ENOENT) in `failed`; we log those at error level so the operator
+        can see the clear was incomplete, then return the full response
+        unchanged — the bridge still restarts either way.
         """
         r = self._client.post(
             f"{self.base_url}/cache/clear",
@@ -348,7 +353,11 @@ class BridgeClient:
             timeout=httpx.Timeout(5.0, connect=5.0),
         )
         r.raise_for_status()
-        return r.json()
+        out = r.json()
+        failed = out.get("failed") or []
+        if failed:
+            log.error("bridge cache clear incomplete: %d file(s) failed to unlink: %s", len(failed), ", ".join(failed))
+        return out
 
 
 _bridge: BridgeClient | "DemoBridge" | None = None  # noqa: F821

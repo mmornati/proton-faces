@@ -2957,7 +2957,9 @@ def api_admin_bridge_cache_clear(_: CurrentUser = Depends(require_role("admin"))
     """Tell the bridge to clear its SDK cache and restart itself.
 
     Returns immediately with the list of files removed (or the error from
-    the bridge). The bridge exits ~500 ms after responding, so a follow-up
+    the bridge). Files that failed to unlink (EACCES/EIO, not ENOENT) are
+    reported in `failed` so the operator knows the clear was incomplete.
+    The bridge exits ~500 ms after responding, so a follow-up
     GET /api/admin/bridge/cache will fail until compose has restarted the
     container (~5-10 s). That's the expected signal of a successful clear.
     """

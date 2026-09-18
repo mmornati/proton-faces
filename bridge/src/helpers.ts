@@ -59,6 +59,41 @@ export function nodeToJson(node: PhotoNodeLike): Record<string, unknown> {
 /** SDK cache files the "clear cache" endpoint unlinks (WAL/SHM siblings too). */
 export const CACHE_FILE_GLOB = /^cache-.*\.sqlite(-(shm|wal))?$/i;
 
+/** Minimal shape of an unlink error — enough to classify ENOENT vs real failures. */
+interface UnlinkErrorLike {
+    code?: string;
+}
+
+/**
+ * Unlink a batch of cache files, classifying each outcome. Only `ENOENT`
+ * (already gone — e.g. a rotation in flight) counts as "removed"; any other
+ * error (EACCES, EIO, …) lands in `failed` so the caller can report that the
+ * clear was not actually complete instead of claiming a clean sweep.
+ *
+ * Pure function: `unlink` is injected so it can be unit-tested without
+ * touching the filesystem. The bridge passes a closure over `Bun.file().unlink()`.
+ */
+export async function clearCacheFiles(
+    names: string[],
+    unlink: (name: string) => Promise<void>,
+): Promise<{ removed: string[]; failed: string[] }> {
+    const removed: string[] = [];
+    const failed: string[] = [];
+    for (const name of names) {
+        try {
+            await unlink(name);
+            removed.push(name);
+        } catch (err) {
+            if ((err as UnlinkErrorLike)?.code === 'ENOENT') {
+                removed.push(name);
+            } else {
+                failed.push(name);
+            }
+        }
+    }
+    return { removed, failed };
+}
+
 /**
  * Sweep stale work files from a directory. Removes any file matching
  * {@link STALE_WORK_FILE_GLOB} that is older than `maxAgeMs` milliseconds.

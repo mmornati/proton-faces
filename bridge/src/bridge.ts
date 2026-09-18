@@ -10,11 +10,14 @@
  *                                     admin "stale cache" check can detect a
  *                                     hung getFileDownloader without scraping
  *                                     logs.
- *   POST /cache/clear            →  {ok, removed:[...]} — unlinks the SDK
- *                                     caches in DATA_DIR and exits with code
- *                                     1 so compose restarts us with a fresh
+ *   POST /cache/clear            →  {ok, removed:[...], failed:[...]} — unlinks
+ *                                     the SDK caches in DATA_DIR and exits with
+ *                                     code 1 so compose restarts us with a fresh
  *                                     cache (fixes the "stale cache after a
- *                                     Proton incident" hang).
+ *                                     Proton incident" hang). Files that failed
+ *                                     to unlink (EACCES/EIO, not ENOENT) are
+ *                                     reported in `failed` so the caller knows
+ *                                     the clear was incomplete.
  *   GET  /timeline               →  array of photo nodes (uid, name, captureTime, sha1, mediaType)
  *   POST /nodes                   →  body {"uids": [...]} → array of photo nodes
  *                                     for the requested uids (used by the
@@ -36,7 +39,7 @@ import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, noteRetryAfterIfPresent, RateLimitQueueFullError, type TokenBucket } from './rateLimit';
-import { CACHE_FILE_GLOB, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, withTimeoutSignal } from './helpers';
+import { CACHE_FILE_GLOB, clearCacheFiles, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, withTimeoutSignal } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
 const BRIDGE_HOST = process.env.BRIDGE_HOST ?? '0.0.0.0';
@@ -117,23 +120,25 @@ function reportCache(): { files: Array<{ name: string; size: number; mtime: numb
 // Linux unlinking an open file is safe — the inode is freed only when the
 // SDK closes its handles, and the SDK will simply recreate a fresh empty
 // DB on the next write after restart.
-async function clearCache(): Promise<{ removed: string[] }> {
-    const removed: string[] = [];
+//
+// Any other unlink error (EACCES, EIO, …) is NOT counted as removed: it is
+// logged and returned in `failed` so the caller can tell the operator the
+// clear was incomplete instead of reporting a clean sweep (issue #67).
+async function clearCache(): Promise<{ removed: string[]; failed: string[] }> {
+    let names: string[] = [];
     try {
-        for (const name of readdirSync(DATA_DIR)) {
-            if (!CACHE_FILE_GLOB.test(name)) continue;
-            const p = path.join(DATA_DIR, name);
-            try {
-                await Bun.file(p).unlink();
-                removed.push(name);
-            } catch {
-                removed.push(name); // already gone counts as removed
-            }
-        }
-    } catch {
-        // ignore — return whatever we managed to remove
+        names = readdirSync(DATA_DIR).filter((name) => CACHE_FILE_GLOB.test(name));
+    } catch (err) {
+        console.error('[bridge] failed to list cache files:', err);
+        return { removed: [], failed: [] };
     }
-    return { removed };
+    const { removed, failed } = await clearCacheFiles(names, async (name) => {
+        await Bun.file(path.join(DATA_DIR, name)).unlink();
+    });
+    for (const name of failed) {
+        console.error(`[bridge] failed to unlink cache file: ${name}`);
+    }
+    return { removed, failed };
 }
 
 async function ensureLoggedIn(ctx: Awaited<ReturnType<typeof init>>): Promise<Response> {
