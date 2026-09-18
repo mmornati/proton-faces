@@ -36,7 +36,7 @@ import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, noteRetryAfterIfPresent, RateLimitQueueFullError, type TokenBucket } from './rateLimit';
-import { CACHE_FILE_GLOB, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles } from './helpers';
+import { CACHE_FILE_GLOB, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, withTimeoutSignal } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
 const BRIDGE_HOST = process.env.BRIDGE_HOST ?? '0.0.0.0';
@@ -168,18 +168,21 @@ async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: Tok
             const send = (line: string) => controller.enqueue(encoder.encode(`${line}\n`));
             try {
                 const uids: string[] = [];
+                let collected = 0;
                 let lastPing = Date.now();
                 await limiter.acquire();
                 for await (const item of ctx.photosSdk.iterateTimeline(signal)) {
-                    if (limit > 0 && uids.length >= limit) {
+                    if (limit > 0 && collected >= limit) {
                         break;
                     }
                     if (idsOnly) {
                         send(JSON.stringify({ uid: item.nodeUid, captureTime: item.captureTime.toISOString() }));
+                    } else {
+                        uids.push(item.nodeUid);
                     }
-                    uids.push(item.nodeUid);
+                    collected++;
                     if (Date.now() - lastPing > 15000) {
-                        send(`# progress: collected ${uids.length} uids`);
+                        send(`# progress: collected ${collected} uids`);
                         lastPing = Date.now();
                     }
                 }
@@ -204,7 +207,7 @@ async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: Tok
                 // Terminal sentinel: the client verifies that the number of uid
                 // rows it parsed matches this count, so a silently-truncated
                 // stream is detected instead of being mistaken for "no photos".
-                send(`# done: ${uids.length}`);
+                send(`# done: ${collected}`);
                 controller.close();
             } catch (error) {
                 noteRetryAfterIfPresent(limiter, error);
@@ -404,9 +407,18 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
 
     // Combine the client disconnect signal with the timeout so the download
     // aborts promptly when the client disconnects (e.g. fast grid scrolling)
-    // instead of holding a DownloadQueue slot until the timeout fires.
-    const combinedSignal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
-    const downloader = await ctx.photosSdk.getFileDownloader(uid, combinedSignal);
+    // instead of holding a DownloadQueue slot until the timeout fires. Unlike
+    // AbortSignal.timeout(), the timer is referenceable and cleared once the
+    // download settles, so an early completion doesn't keep a 5-minute timer
+    // pending.
+    const timeout = withTimeoutSignal(request.signal, timeoutMs);
+    let downloader: Awaited<ReturnType<typeof ctx.photosSdk.getFileDownloader>>;
+    try {
+        downloader = await ctx.photosSdk.getFileDownloader(uid, timeout.signal);
+    } catch (err) {
+        timeout.clear();
+        throw err;
+    }
 
     // Optional guard against materializing a huge video to disk (issue #62).
     // When PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES is set and the node's claimed
@@ -450,14 +462,17 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
                     controller.close();
                 } catch (err) {
                     controller.error(err);
+                } finally {
+                    timeout.clear();
                 }
             },
             cancel() {
                 // The client disconnected (e.g. browser abandoned an <img> load
                 // while scrolling fast through the grid). The download is already
-                // aborted via request.signal → combinedSignal → getFileDownloader,
+                // aborted via request.signal → timeout.signal → getFileDownloader,
                 // but the cancel handler is a belt-and-suspenders guard in case
                 // the stream is cancelled through other paths.
+                timeout.clear();
             },
         });
 
@@ -512,6 +527,8 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
         } catch (err) {
             await sink.end(err instanceof Error ? err : new Error(String(err))).catch(() => {});
             throw err;
+        } finally {
+            timeout.clear();
         }
         await sink.end();
 
@@ -578,6 +595,7 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
 
         return new Response(body, { status, headers });
     } catch (err) {
+        timeout.clear();
         await Bun.file(tmp).unlink().catch(() => {});
         const ref = randomUUID().slice(0, 8);
         console.error(`[bridge] full photo ref=${ref}:`, err);

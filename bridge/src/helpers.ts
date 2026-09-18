@@ -164,6 +164,41 @@ export function parseRange(rangeHeader: string | null | undefined, size: number)
     return { status: 206, range: { start, end, length: end - start + 1 } };
 }
 
+/** A timeout signal that can be cleared once the operation it guards settles. */
+export interface TimeoutSignal {
+    signal: AbortSignal;
+    clear: () => void;
+}
+
+/**
+ * Build an AbortSignal that fires after `timeoutMs`, or as soon as
+ * `innerSignal` aborts (whichever comes first). Unlike `AbortSignal.timeout()`,
+ * the underlying timer is referenceable and can be released via `clear()`, so
+ * an operation that settles early (e.g. a fast download) does not keep a timer
+ * pending for the full timeout duration.
+ *
+ * `clear()` is idempotent and safe to call more than once; it stops the timer
+ * and detaches the inner-signal listener. Call it in a `finally` (or on the
+ * cancel path) once the guarded operation has settled.
+ */
+export function withTimeoutSignal(innerSignal: AbortSignal, timeoutMs: number): TimeoutSignal {
+    const controller = new AbortController();
+    const onInnerAbort = () => controller.abort();
+    if (innerSignal.aborted) {
+        controller.abort();
+    } else {
+        innerSignal.addEventListener('abort', onInnerAbort, { once: true });
+    }
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    return {
+        signal: controller.signal,
+        clear: () => {
+            clearTimeout(timer);
+            innerSignal.removeEventListener('abort', onInnerAbort);
+        },
+    };
+}
+
 /**
  * Build the status + headers for a HEAD response served from node metadata,
  * so the bridge never downloads a file just to answer a HEAD request (issue

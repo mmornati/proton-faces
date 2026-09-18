@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CACHE_FILE_GLOB, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike } from '../src/helpers';
+import { CACHE_FILE_GLOB, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike, withTimeoutSignal } from '../src/helpers';
 
 function makeNode(overrides: Partial<PhotoNodeLike> = {}): PhotoNodeLike {
     return {
@@ -350,5 +350,58 @@ describe('sanitizedErrorBody', () => {
         const body = sanitizedErrorBody('a1b2c3d4');
         expect(body.ref.length).toBeGreaterThan(0);
         expect(body.ref.length).toBeLessThanOrEqual(16);
+    });
+});
+
+describe('withTimeoutSignal', () => {
+    test('aborts the returned signal after the timeout elapses', async () => {
+        const inner = new AbortController().signal;
+        const { signal, clear } = withTimeoutSignal(inner, 20);
+        try {
+            expect(signal.aborted).toBe(false);
+            await Bun.sleep(60);
+            expect(signal.aborted).toBe(true);
+        } finally {
+            clear();
+        }
+    });
+
+    test('aborts when the inner signal aborts', () => {
+        const controller = new AbortController();
+        const { signal, clear } = withTimeoutSignal(controller.signal, 10_000);
+        try {
+            expect(signal.aborted).toBe(false);
+            controller.abort();
+            expect(signal.aborted).toBe(true);
+        } finally {
+            clear();
+        }
+    });
+
+    test('clear() prevents the timeout from firing', async () => {
+        const inner = new AbortController().signal;
+        const { signal, clear } = withTimeoutSignal(inner, 20);
+        clear();
+        await Bun.sleep(60);
+        expect(signal.aborted).toBe(false);
+    });
+
+    test('clear() is idempotent', () => {
+        const inner = new AbortController().signal;
+        const { signal, clear } = withTimeoutSignal(inner, 10_000);
+        clear();
+        clear();
+        expect(signal.aborted).toBe(false);
+    });
+
+    test('handles an already-aborted inner signal', () => {
+        const controller = new AbortController();
+        controller.abort();
+        const { signal, clear } = withTimeoutSignal(controller.signal, 10_000);
+        try {
+            expect(signal.aborted).toBe(true);
+        } finally {
+            clear();
+        }
     });
 });
