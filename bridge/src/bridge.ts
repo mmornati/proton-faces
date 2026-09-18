@@ -52,6 +52,11 @@ const THUMBNAILS_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_THUMBNAILS_TIMEOU
 // download starts, so a multi-GB video can never exhaust a shared volume.
 const MAX_VIDEO_TEMP_BYTES = Number(process.env.PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES ?? 0);
 const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN ?? '';
+// Full Proton SDK console logging (per-block download detail, upstream debug
+// statements). Default OFF — the SDK's unaudited log statements are noisy and
+// widen the blast radius for accidental secret logging. Set to '1' only when
+// troubleshooting a bridge issue.
+const BRIDGE_SDK_LOGS = process.env.BRIDGE_SDK_LOGS === '1';
 // Max time SIGTERM waits for in-flight requests to drain before forcing an
 // exit. A long full-res download must not block `docker stop` forever.
 const SHUTDOWN_GRACE_MS = 10_000;
@@ -668,7 +673,7 @@ async function main(): Promise<void> {
         appVersion: 'cli-drive@0.8.0',
         sdkVersion: 'js@0.21.0',
         enablePersistedEvents: false,
-        enableConsoleLog: true,
+        enableConsoleLog: BRIDGE_SDK_LOGS,
         enableMetrics: false,
         flags: {
             DriveCryptoEncryptBlocksWithPgpAead: true,

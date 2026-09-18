@@ -149,6 +149,10 @@ ENV PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS=300000
 # node's claimed size exceeds it, the bridge refuses with 507 before any
 # download starts. Set per-deployment in compose.yml.
 ENV PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES=
+# Full Proton SDK console logging (per-block download detail). Empty = OFF
+# (default). Set to 1 per-deployment in compose.yml only when troubleshooting
+# a bridge issue (issue #70).
+ENV BRIDGE_SDK_LOGS=
 
 # The session/auth files live in DATA_DIR (mounted volume).
 EXPOSE 8090
