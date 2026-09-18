@@ -509,17 +509,17 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
         // nonexistent method before any download begins) stops the 5-slot queue
         // from leaking and starving every /photo/{uid}/full request.
         const sink = Bun.file(tmp).writer();
-        const writable = {
-            getWriter: () => sink,
-            close: async () => {
-                await sink.end();
+        const writable = new WritableStream<Uint8Array>({
+            write(chunk) {
+                sink.write(chunk);
             },
-            abort: async () => {
-                await sink.end();
-                await Bun.file(tmp).unlink().catch(() => {});
+            close() {
+                sink.end();
             },
-            locked: false,
-        } as unknown as WritableStream;
+            abort(err) {
+                sink.end(err instanceof Error ? err : new Error(String(err)));
+            },
+        });
 
         try {
             const dlController = downloader.downloadToStream(writable);
