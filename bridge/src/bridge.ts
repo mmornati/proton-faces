@@ -31,8 +31,7 @@
 import { init } from './init';
 import type { PhotoNode } from '@protontech/drive-sdk';
 import { ThumbnailType } from '@protontech/drive-sdk';
-import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
-import { openSync, fsyncSync, closeSync, statSync, readdirSync } from 'node:fs';
+import { mkdir, open, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createRateLimiter, noteRetryAfterIfPresent, RateLimitQueueFullError, type TokenBucket } from './rateLimit';
@@ -96,13 +95,13 @@ function isAuthorized(request: Request, url: URL): boolean {
 // Cache-control knobs for the admin "stale cache" check. We report the
 // cache files' sizes + mtimes so the Python admin check can flag a
 // hung/stale SDK without having to scrape logs.
-function reportCache(): { files: Array<{ name: string; size: number; mtime: number }>; uptimeSec: number } {
+async function reportCache(): Promise<{ files: Array<{ name: string; size: number; mtime: number }>; uptimeSec: number }> {
     const files: Array<{ name: string; size: number; mtime: number }> = [];
     try {
-        for (const name of readdirSync(DATA_DIR)) {
+        for (const name of await readdir(DATA_DIR)) {
             if (!CACHE_FILE_GLOB.test(name)) continue;
             try {
-                const st = statSync(path.join(DATA_DIR, name));
+                const st = await stat(path.join(DATA_DIR, name));
                 files.push({ name, size: st.size, mtime: Math.floor(st.mtimeMs / 1000) });
             } catch {
                 // file vanished between readdir and stat (e.g. concurrent
@@ -125,7 +124,7 @@ function reportCache(): { files: Array<{ name: string; size: number; mtime: numb
 async function clearCache(): Promise<{ removed: string[] }> {
     const removed: string[] = [];
     try {
-        for (const name of readdirSync(DATA_DIR)) {
+        for (const name of await readdir(DATA_DIR)) {
             if (!CACHE_FILE_GLOB.test(name)) continue;
             const p = path.join(DATA_DIR, name);
             try {
@@ -549,11 +548,11 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
         }
         await sink.end();
 
-        const ff = openSync(tmp, 'r');
+        const handle = await open(tmp, 'r');
         try {
-            fsyncSync(ff);
+            await handle.datasync();
         } finally {
-            closeSync(ff);
+            await handle.close();
         }
 
         const file = Bun.file(tmp);
@@ -627,7 +626,7 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
 async function sweepWorkDir(): Promise<void> {
     const workDir = path.join(DATA_DIR, 'work');
     try {
-        for (const name of readdirSync(workDir)) {
+        for (const name of await readdir(workDir)) {
             if (!STALE_WORK_FILE_GLOB.test(name)) continue;
             try {
                 await Bun.file(path.join(workDir, name)).unlink();
@@ -703,10 +702,10 @@ async function main(): Promise<void> {
     const workDir = path.join(DATA_DIR, 'work');
     try {
         const entries: Array<{ name: string; mtimeMs: number }> = [];
-        for (const name of readdirSync(workDir)) {
+        for (const name of await readdir(workDir)) {
             if (!STALE_WORK_FILE_GLOB.test(name)) continue;
             try {
-                const st = statSync(path.join(workDir, name));
+                const st = await stat(path.join(workDir, name));
                 entries.push({ name, mtimeMs: st.mtimeMs });
             } catch {
                 // vanished between readdir and stat — skip
@@ -771,7 +770,7 @@ async function main(): Promise<void> {
                     // network, and exposing cache file sizes/mtimes to the
                     // app container is necessary for the admin "stale
                     // cache" check to work.
-                    return Response.json({ ok: true, ...reportCache() });
+                    return Response.json({ ok: true, ...(await reportCache()) });
                 }
                 if (url.pathname === '/cache/clear' && request.method === 'POST') {
                     // Unlink the on-disk SDK caches and restart the
