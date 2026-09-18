@@ -48,6 +48,20 @@ scripts/export-session.sh
 docker compose restart proton-bridge
 ```
 
+### Bridge logs are quiet — how to enable full SDK logging
+
+By default the bridge suppresses the Proton SDK's verbose console logging
+(per-block download detail, upstream debug statements) to keep `docker logs`
+readable (issue #70). `warn`/`error` lines are always emitted. To restore the
+full SDK logging while troubleshooting:
+
+```bash
+BRIDGE_SDK_LOGS=1 docker compose up -d proton-bridge
+```
+
+Remember to unset it afterwards — the extra output is noisy and the upstream
+log statements are unaudited.
+
 ### Full-resolution downloads hang (stale Proton SDK cache)
 
 **Symptom:** `/api/photos/{uid}/full` requests take ~30 seconds and return
