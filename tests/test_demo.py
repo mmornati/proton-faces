@@ -52,7 +52,10 @@ class TestDemoBridge:
 
     def test_cache_status_and_clear(self, demo_bridge):
         assert demo_bridge.cache_status()["demo"] is True
-        assert demo_bridge.clear_cache()["demo"] is True
+        out = demo_bridge.clear_cache()
+        assert out["demo"] is True
+        assert out["removed"] == []
+        assert out["failed"] == []
 
     def test_close_is_noop(self, demo_bridge):
         demo_bridge.close()  # must not raise

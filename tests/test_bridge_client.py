@@ -228,6 +228,39 @@ class TestCacheManagement:
         bc = client_factory(handler)
         assert bc.clear_cache()["removed"] == ["cache-x.sqlite"]
 
+    def test_clear_cache_returns_failed_list(self, client_factory):
+        def handler(req):
+            return httpx.Response(
+                200,
+                json={"ok": True, "removed": ["cache-x.sqlite"], "failed": ["cache-y.sqlite"]},
+            )
+
+        bc = client_factory(handler)
+        out = bc.clear_cache()
+        assert out["removed"] == ["cache-x.sqlite"]
+        assert out["failed"] == ["cache-y.sqlite"]
+
+    def test_clear_cache_logs_failures(self, client_factory, caplog):
+        def handler(req):
+            return httpx.Response(
+                200,
+                json={"ok": True, "removed": [], "failed": ["cache-a.sqlite", "cache-b.sqlite"]},
+            )
+
+        bc = client_factory(handler)
+        with caplog.at_level("ERROR", logger="bridge_client"):
+            bc.clear_cache()
+        assert any("2 file(s) failed to unlink" in rec.message for rec in caplog.records)
+
+    def test_clear_cache_no_failure_log_when_clean(self, client_factory, caplog):
+        def handler(req):
+            return httpx.Response(200, json={"ok": True, "removed": ["cache-x.sqlite"]})
+
+        bc = client_factory(handler)
+        with caplog.at_level("ERROR", logger="bridge_client"):
+            bc.clear_cache()
+        assert not any("failed to unlink" in rec.message for rec in caplog.records)
+
 
 class TestGetBridge:
     def test_bridge_client_selected_by_default(self, monkeypatch):

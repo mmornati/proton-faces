@@ -87,7 +87,11 @@ auto-invalidates this scenario, so a manual clear is required.
 2. Look at the **Bridge cache** row. If it's `stale`, click
    **Clear bridge cache**. The bridge unlinks its cache files and exits;
    compose's `restart: unless-stopped` policy respawns it ~5-10 seconds
-   later with a fresh cache. Auth-session state is preserved.
+   later with a fresh cache. Auth-session state is preserved. If the
+   confirmation reports files that **failed to unlink**, the clear was
+   incomplete — stale files survived, so check
+   `docker compose logs proton-bridge` for the unlink errors before
+   relying on the restart to fix the hang.
 3. Click **Run checks now** to confirm `Bridge cache` is back to `ok`
    and that `/api/photos/{uid}/full` returns 200 again.
 

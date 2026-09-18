@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CACHE_FILE_GLOB, classifyMediaType, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike, withTimeoutSignal } from '../src/helpers';
+import { CACHE_FILE_GLOB, classifyMediaType, clearCacheFiles, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, type PhotoNodeLike, withTimeoutSignal } from '../src/helpers';
 
 function makeNode(overrides: Partial<PhotoNodeLike> = {}): PhotoNodeLike {
     return {
@@ -161,6 +161,57 @@ describe('CACHE_FILE_GLOB', () => {
             expect(CACHE_FILE_GLOB.test(name)).toBe(expected);
         });
     }
+});
+
+describe('clearCacheFiles', () => {
+    test('reports successfully unlinked files as removed', async () => {
+        const { removed, failed } = await clearCacheFiles(['cache-a.sqlite', 'cache-b.sqlite'], async () => {});
+        expect(removed).toEqual(['cache-a.sqlite', 'cache-b.sqlite']);
+        expect(failed).toEqual([]);
+    });
+
+    test('treats ENOENT as removed (already gone)', async () => {
+        const { removed, failed } = await clearCacheFiles(['cache-a.sqlite'], async () => {
+            throw Object.assign(new Error('no such file'), { code: 'ENOENT' });
+        });
+        expect(removed).toEqual(['cache-a.sqlite']);
+        expect(failed).toEqual([]);
+    });
+
+    test('collects EACCES into failed', async () => {
+        const { removed, failed } = await clearCacheFiles(['cache-a.sqlite'], async () => {
+            throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+        });
+        expect(removed).toEqual([]);
+        expect(failed).toEqual(['cache-a.sqlite']);
+    });
+
+    test('collects EIO into failed', async () => {
+        const { removed, failed } = await clearCacheFiles(['cache-a.sqlite'], async () => {
+            throw Object.assign(new Error('i/o error'), { code: 'EIO' });
+        });
+        expect(removed).toEqual([]);
+        expect(failed).toEqual(['cache-a.sqlite']);
+    });
+
+    test('classifies a mixed batch independently', async () => {
+        const { removed, failed } = await clearCacheFiles(
+            ['cache-ok.sqlite', 'cache-gone.sqlite', 'cache-locked.sqlite'],
+            async (name) => {
+                if (name === 'cache-ok.sqlite') return;
+                if (name === 'cache-gone.sqlite') throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+                throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+            },
+        );
+        expect(removed).toEqual(['cache-ok.sqlite', 'cache-gone.sqlite']);
+        expect(failed).toEqual(['cache-locked.sqlite']);
+    });
+
+    test('returns empty lists for empty input', async () => {
+        const { removed, failed } = await clearCacheFiles([], async () => {});
+        expect(removed).toEqual([]);
+        expect(failed).toEqual([]);
+    });
 });
 
 describe('STALE_WORK_FILE_GLOB', () => {

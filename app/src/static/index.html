@@ -3753,7 +3753,12 @@ function wireAdminHandlers() {
       toast("Clearing bridge cache…");
       try {
         const r = await api("/api/admin/bridge/cache/clear", { method: "POST" });
-        toast(`Bridge cache cleared (${(r.removed || []).length} files); restarting…`);
+        const failed = (r.failed || []).length;
+        if (failed > 0) {
+          toast(`Bridge cache cleared (${(r.removed || []).length} files); ${failed} failed to unlink — check bridge logs`);
+        } else {
+          toast(`Bridge cache cleared (${(r.removed || []).length} files); restarting…`);
+        }
       } catch (e) {
         toast("Bridge cache clear failed: " + (e.message || e));
         adminBusy = false;

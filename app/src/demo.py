@@ -225,7 +225,7 @@ class DemoBridge:
         return {"ok": True, "files": [], "uptimeSec": 0, "demo": True}
 
     def clear_cache(self) -> dict:
-        return {"ok": True, "removed": [], "demo": True}
+        return {"ok": True, "removed": [], "failed": [], "demo": True}
 
 
 # --- Auto-create a default admin on first start ----------------------------
