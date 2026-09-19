@@ -19,7 +19,7 @@ import { DownloadTelemetry } from './telemetry';
  * for a single file. This is to prevent downloading too many blocks
  * at the same time and running out of memory.
  */
-const MAX_DOWNLOAD_BLOCK_SIZE = 10;
+const MAX_CONCURRENT_DOWNLOAD_BLOCKS = 10;
 
 // Per-block download detail is gated behind the same flag as the SDK's
 // console logging (BRIDGE_SDK_LOGS=1, see bridge.ts). Default OFF: the
@@ -368,7 +368,7 @@ export class FileDownloader {
     }
 
     private async waitForDownloadCapacity() {
-        if (this.ongoingDownloads.size >= MAX_DOWNLOAD_BLOCK_SIZE) {
+        if (this.ongoingDownloads.size >= MAX_CONCURRENT_DOWNLOAD_BLOCKS) {
             this.logger.info(`Download limit reached, waiting for next block to be finished`);
 
             // We need to ensure the next block is downloaded, otherwise the
