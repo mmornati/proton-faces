@@ -926,7 +926,7 @@ def _video_poster(src: Path, uid: str) -> None:
         from PIL import Image
         with Image.open(dest) as img:
             img = img.convert("RGB")
-            img.save(dest, format="WEBP", quality=82, method=6)
+            img.save(dest, format="WEBP", quality=82, method=settings.webp_method)
 
     if duration_sec is not None:
         set_photo_duration(uid, duration_sec)
@@ -950,7 +950,7 @@ def _resize_to_thumb(src: Path, dest: Path, max_side: int = 512) -> None:
     with Image.open(src) as img:
         img.thumbnail((max_side, max_side))
         img = img.convert("RGB")
-        img.save(dest, format="WEBP", quality=82, method=6)
+        img.save(dest, format="WEBP", quality=82, method=settings.webp_method)
 
 
 def _extract_exif_gps(path: Path) -> tuple[float, float] | None:

@@ -185,7 +185,7 @@ class DemoBridge:
                 with Image.open(src) as img:
                     img.thumbnail((512, 512))
                     img = img.convert("RGB")
-                    img.save(dest, format="WEBP", quality=82, method=6)
+                    img.save(dest, format="WEBP", quality=82, method=settings.webp_method)
             except Exception as exc:  # pragma: no cover
                 log.warning("demo: thumbnail encode failed for %s: %s", uid, exc)
                 results.append({"uid": uid, "ok": False, "error": str(exc)[:200]})

@@ -95,6 +95,22 @@ class TestResizeToThumb:
         with Image.open(dest) as img:
             assert img.size[0] <= 512 and img.size[1] <= 512
 
+    def test_uses_configured_webp_method(self, tmp_path, monkeypatch):
+        src = tmp_path / "in.jpg"
+        Image.fromarray(np.full((100, 80, 3), 128, dtype=np.uint8)).save(src, "JPEG")
+        dest = tmp_path / "out.webp"
+        monkeypatch.setattr(indexer.settings, "webp_method", 2)
+        seen = {}
+        original_save = Image.Image.save
+
+        def fake_save(self, *args, **kwargs):
+            seen.update(kwargs)
+            return original_save(self, *args, **kwargs)
+
+        monkeypatch.setattr(Image.Image, "save", fake_save)
+        indexer._resize_to_thumb(src, dest)
+        assert seen.get("method") == 2
+
 
 def _jpg_with_gps(path, lat=39.564, lng=2.619):
     """Write a JPEG carrying EXIF GPS coordinates (Mallorca-style)."""
