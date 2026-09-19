@@ -376,8 +376,12 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     // without downloading the file (issue #62).
     let mediaType: string | null = null;
     let claimedSize: number | null = null;
+    // One token gates the whole request — metadata lookup and the heavy
+    // download below — so the limiter actually throttles the expensive part.
+    // A queue-full error here propagates to the route's 503 handler instead
+    // of being swallowed by the metadata catch below.
+    await limiter.acquire();
     try {
-        await limiter.acquire();
         for await (const node of ctx.photosSdk.iterateNodes([uid], AbortSignal.timeout(FULL_RES_TIMEOUT_MS))) {
             if (!('missingUid' in node)) {
                 const photoNode = node as PhotoNode;
@@ -831,7 +835,8 @@ async function main(): Promise<void> {
                     }
                     return await fetchThumbnails(ctx, limiter, body);
                 }
-                if (url.pathname.startsWith('/photo/') && url.pathname.endsWith('/full')) {
+                const fullPhotoMatch = url.pathname.match(/^\/photo\/([^/]+)\/full$/);
+                if (fullPhotoMatch) {
                     if (request.method !== 'GET' && request.method !== 'HEAD') {
                         return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD' } });
                     }

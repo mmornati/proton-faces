@@ -118,7 +118,7 @@ export class Addresses {
         }
         return this.getOtherPublicKeys(email, forceRefresh);
     }
-private async getOwnPublicKeys(address: coreComponents['schemas']['AddressUser']): Promise<PublicKeyReference[]> {
+    private async getOwnPublicKeys(address: coreComponents['schemas']['AddressUser']): Promise<PublicKeyReference[]> {
         const keys: PublicKeyReference[] = [];
         const errors: unknown[] = [];
         for (const key of address.Keys || []) {
