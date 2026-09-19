@@ -1705,8 +1705,6 @@ def _face_crop_bytes(face_id: int) -> bytes | None:
     requests serve a plain file (and `api_person_cover` / `api_face_crop`
     can use `FileResponse` with immutable cache headers).
     """
-    import json
-
     from PIL import Image
 
     cache_path = _crop_cache_path(face_id)
@@ -1907,8 +1905,6 @@ def api_photo_faces(uid: str):
     rows = faces_for_photo(uid)
     faces = []
     for r in rows:
-        import json
-
         faces.append(
             {
                 "id": r["id"],
