@@ -39,6 +39,22 @@ class TestDemoBridge:
         assert out["results"][0]["ok"] is True
         assert (app_settings.work_dir / f"{item['uid']}.webp").exists()
 
+    def test_thumbnails_uses_configured_webp_method(self, demo_bridge, monkeypatch):
+        from PIL import Image
+
+        item = demo_bridge.timeline()[0]
+        monkeypatch.setattr(demo.settings, "webp_method", 2)
+        seen = {}
+        original_save = Image.Image.save
+
+        def fake_save(self, *args, **kwargs):
+            seen.update(kwargs)
+            return original_save(self, *args, **kwargs)
+
+        monkeypatch.setattr(Image.Image, "save", fake_save)
+        demo_bridge.thumbnails([item["uid"]])
+        assert seen.get("method") == 2
+
     def test_full_photo_returns_bytes(self, demo_bridge):
         item = demo_bridge.timeline()[0]
         resp = demo_bridge.full_photo(item["uid"])

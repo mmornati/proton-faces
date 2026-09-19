@@ -57,6 +57,17 @@ def test_settings_uvicorn_workers_override(monkeypatch):
     assert s.uvicorn_workers == 4
 
 
+def test_settings_webp_method_default():
+    s = config.Settings()
+    assert s.webp_method == 4
+
+
+def test_settings_webp_method_override(monkeypatch):
+    monkeypatch.setenv("WEBP_METHOD", "2")
+    s = config.Settings()
+    assert s.webp_method == 2
+
+
 def test_settings_defaults():
     s = config.Settings()
     assert s.port == 8080

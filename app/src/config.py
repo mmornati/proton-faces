@@ -68,6 +68,10 @@ class Settings:
         # reliably deep during a bulk download backlog, which is exactly when
         # the batch wins.
         self.clip_batch_queue_depth = int(os.environ.get("CLIP_BATCH_QUEUE_DEPTH", "8"))
+        # WebP encoder effort for thumbnails/video posters. 6 (Pillow default)
+        # is the slowest; 4 is near-identical size at a fraction of the CPU
+        # (issue #101).
+        self.webp_method = int(os.environ.get("WEBP_METHOD", "4"))
         # How many uvicorn workers serve the API. Each worker lazily loads its
         # own CLIP ONNX session (~838 MB RSS measured) + a per-worker matrix
         # cache, so the count is the dominant term in the `app` container's
