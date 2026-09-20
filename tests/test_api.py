@@ -7,6 +7,7 @@ module-level ML functions (embed_text / embed_query_face) monkeypatched.
 """
 
 import asyncio
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -682,7 +683,17 @@ class TestSecurityHeaders:
         assert "frame-ancestors 'none'" in csp
         assert r.headers["x-content-type-options"] == "nosniff"
         assert r.headers["x-frame-options"] == "DENY"
-        assert r.headers["referrer-policy"] == "same-origin"
+        assert r.headers["referrer-policy"] == "no-referrer"
+        for directive in ("connect-src 'self'", "object-src 'none'", "base-uri 'self'", "form-action 'self'"):
+            assert directive in csp
+        assert "jsdelivr" not in csp
+        assert "permissions-policy" in r.headers
+        assert "strict-transport-security" not in r.headers
+
+    def test_hsts_when_cookie_secure(self, client, monkeypatch):
+        monkeypatch.setattr(config.settings, "auth_cookie_secure", True)
+        r = client.get("/api/health")
+        assert r.headers["strict-transport-security"].startswith("max-age=31536000")
 
     def test_headers_on_404(self, client):
         r = client.get("/no-such-route")
@@ -3014,3 +3025,71 @@ class TestPeopleNoise:
         _seed_user(username="writer", role="write", password_hash=password_hash)
         headers = _bearer(client, username="writer")
         assert client.post("/api/admin/people/prune-small", json={}, headers=headers).status_code == 403
+
+
+
+class TestHygieneBatch:
+    def test_auth_responses_are_never_gzipped(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"},
+                        headers={"accept-encoding": "gzip"})
+        assert r.status_code == 200
+        assert "content-encoding" not in r.headers
+
+    def test_small_json_declares_vary(self, client):
+        r = client.get("/api/health", headers={"accept-encoding": "gzip"})
+        assert "accept-encoding" in r.headers.get("vary", "").lower()
+
+    def test_uid_regex_rejects_trailing_newline(self):
+        assert bridge_client.is_valid_uid("abc") is True
+        assert bridge_client.is_valid_uid("abc\n") is False
+        assert bridge_client.is_valid_uid("") is False
+
+    def test_last_admin_cannot_be_demoted_or_disabled(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        me = client.get("/api/auth/me", headers=headers).json()
+        r = client.patch(f"/api/admin/users/{me['id']}", json={"role": "read"}, headers=headers)
+        assert r.status_code == 400
+        r = client.patch(f"/api/admin/users/{me['id']}", json={"disabled": True}, headers=headers)
+        assert r.status_code == 400
+        # Display-name edits still work, and a second admin lifts the guard.
+        assert client.patch(f"/api/admin/users/{me['id']}", json={"display_name": "Root"},
+                            headers=headers).status_code == 200
+        other = client.post("/api/admin/users", json={"username": "second", "password": "password123",
+                                                       "role": "admin"}, headers=headers)
+        assert other.status_code in (200, 201), other.text
+        assert client.patch(f"/api/admin/users/{me['id']}", json={"role": "read"},
+                            headers=headers).status_code == 200
+
+    def test_totp_key_prefers_dedicated_env(self, monkeypatch):
+        base = auth._2fa_secret_key()
+        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", "another-root-secret")
+        assert auth._2fa_secret_key() != base
+        monkeypatch.delenv("TOTP_ENCRYPTION_KEY")
+        assert auth._2fa_secret_key() == base
+
+    def test_demo_secret_shared_via_env(self, monkeypatch):
+        import main
+        monkeypatch.delenv("SIGNING_SECRET", raising=False)
+        monkeypatch.setenv("DEMO_MODE", "1")
+        main._share_demo_signing_secret()
+        first = os.environ["SIGNING_SECRET"]
+        assert len(first) == 64
+        main._share_demo_signing_secret()
+        assert os.environ["SIGNING_SECRET"] == first
+        monkeypatch.delenv("SIGNING_SECRET")
+        monkeypatch.setenv("DEMO_MODE", "0")
+        main._share_demo_signing_secret()
+        assert "SIGNING_SECRET" not in os.environ
+
+    def test_spa_has_no_cdn_and_vendor_assets_exist(self):
+        from pathlib import Path
+        static = Path(__file__).resolve().parent.parent / "app" / "src" / "static"
+        html = (static / "index.html").read_text()
+        assert "cdn.jsdelivr.net" not in html
+        for rel in ("vendor/leaflet/leaflet.js", "vendor/leaflet/leaflet.css",
+                    "vendor/leaflet/images/marker-icon.png",
+                    "vendor/markercluster/leaflet.markercluster.js",
+                    "vendor/markercluster/MarkerCluster.Default.css"):
+            assert (static / rel).is_file(), rel

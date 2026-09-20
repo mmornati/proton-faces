@@ -63,5 +63,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           platforms: linux/amd64
+          # Attach a build provenance attestation and an SBOM to every
+          # pushed image so consumers can verify what is inside `:latest`.
+          provenance: true
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max

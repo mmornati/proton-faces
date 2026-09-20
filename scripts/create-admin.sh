@@ -35,4 +35,11 @@ for arg in "$@"; do
   esac
 done
 
-docker compose exec -T app python main.py --create-admin "$@" "${DISPLAY_NAME_FLAG[@]}"
+if [[ -n "${ADMIN_PASSWORD:-}" ]]; then
+  # Non-interactive: feed the password on stdin. Passing it with `-e` would
+  # expose it in `docker inspect` and the container's /proc/*/environ;
+  # main.py's getpass falls back to stdin when there is no TTY.
+  printf '%s\n' "$ADMIN_PASSWORD" | docker compose exec -T app python main.py --create-admin "$@" "${DISPLAY_NAME_FLAG[@]}"
+else
+  docker compose exec app python main.py --create-admin "$@" "${DISPLAY_NAME_FLAG[@]}"
+fi

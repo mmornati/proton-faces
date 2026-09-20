@@ -738,3 +738,31 @@ admin changes victim's password
 URL (added 3 checks for `/docs`/`/redoc`/`/openapi.json`, 4 checks for
 P-04, 1 check for P-05). Server uptime preserved through every test.
 
+
+
+## 11. 2026-09 project audit — follow-up fixes
+
+A full code + production audit (September 2026) found two invariants from
+the fix matrix that had regressed during the `api.py` split (#231) and a set
+of new items. All are fixed on `main` with tests; the list is kept here so the
+matrix above stays honest.
+
+| Item | Status | Fix |
+|---|---|---|
+| F-09 regressed: `/api/search/face` buffered the whole upload before the size check | fixed | bounded `read(MAX+1)`, route moved off the event loop, `TestSecurityRegressions::test_face_search_upload_cap_413` |
+| F-03 regressed: `/api/status` `config` block gated on bearer *presence* | fixed | `_bearer_is_valid` resolves the token; bogus/refresh/expired bearer tests |
+| Stored XSS in the photo metadata panel (Proton filename rendered unescaped) | fixed | every value escaped unless marked as pre-built pill HTML; static guard test |
+| Login CPU exhaustion (bcrypt-12 per attempt, limiter keyed per username) | fixed | per-IP budget, bcrypt concurrency gate (503 + Retry-After), 256 KB JSON body cap, `/api/sign` path cap |
+| Login limiter prune reset live counters; TOTP codes replayable in the ±1 window | fixed | age-based prune, `users.totp_last_counter` replay guard |
+| Bulk people merge unbounded (`threshold`, `max_sources`) | fixed | clamped, `dry_run` |
+| `BRIDGE_TOKEN` failed open | fixed | compose `:?`, bridge exits on empty token unless loopback / `BRIDGE_AUTH_DISABLED=1` |
+| Committed demo password in `verify-hardening.sh` | fixed | variable required, no default — **rotate the demo password** |
+| `SIGNING_SECRET` doubled as the TOTP root; demo compose hard-coded it | fixed | `TOTP_ENCRYPTION_KEY`, per-boot demo secret shared across workers |
+| In-app CSP weaker than the documented proxy CSP; Leaflet from a CDN without SRI | fixed | full directive set in-app, HSTS with `AUTH_COOKIE_SECURE=1`, Leaflet vendored |
+| Binary media `Cache-Control: public` | fixed | `private, immutable` |
+| Backup script copied a live WAL database | fixed | `VACUUM INTO`, mode 600 |
+| Release workflow interpolated an input into `run:` | fixed | passed via `env` |
+
+Not yet done (tracked as follow-ups): nonce-based `script-src` (issue #47),
+`read_only` root filesystems in compose, Pydantic request models instead of
+`dict` bodies, an image vulnerability scan in the publish workflow.

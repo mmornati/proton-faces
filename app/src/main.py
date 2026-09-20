@@ -202,6 +202,7 @@ def main() -> None:
     # Fail closed before spawning workers: signed binary URLs need an explicit
     # SIGNING_SECRET outside DEMO_MODE. Raising here beats a fleet of workers
     # serving intermittent 401/500s on /thumb /full /cover /crop.
+    _share_demo_signing_secret()
     from auth import require_signing_secret
     require_signing_secret()
 
@@ -269,6 +270,25 @@ def _proxy_kwargs(trusted: str) -> dict:
     if not trusted:
         return {}
     return {"proxy_headers": True, "forwarded_allow_ips": trusted}
+
+
+def _share_demo_signing_secret() -> None:
+    """DEMO_MODE without SIGNING_SECRET: mint one per boot in the parent.
+
+    uvicorn workers are separate processes; a per-process ephemeral secret
+    (auth._signing_secret's fallback) would make signed URLs minted by one
+    worker fail on another. Generating it here, before the workers fork,
+    puts a single value in the environment they all inherit — so the demo
+    compose no longer needs a hard-coded, public signing secret.
+    """
+    if os.environ.get("SIGNING_SECRET", "").strip() or not _env_bool("DEMO_MODE", False):
+        return
+    import secrets
+
+    os.environ["SIGNING_SECRET"] = secrets.token_hex(32)
+    logging.getLogger(__name__).warning(
+        "SIGNING_SECRET not set; DEMO_MODE minted a per-boot secret shared by all workers"
+    )
 
 
 def _start_token_janitor() -> None:

@@ -1,5 +1,8 @@
 """ASGI middleware that gzips JSON/UI responses, skipping binary media.
 
+Level 6 (zlib default) rather than 9: on JSON payloads level 9 costs ~2-3x
+the CPU for about 1% smaller output, and this runs on every list response.
+
 Self-contained (stdlib zlib only) so it behaves identically on the starlette
 0.4x pinned by CI and the newer starlette in local dev — the upstream
 GZipMiddleware signature changed between the two.
@@ -16,10 +19,15 @@ _COMPRESSIBLE_EXACT = ("image/svg+xml",)
 
 
 class CompressionMiddleware:
-    def __init__(self, app: ASGIApp, minimum_size: int = 500, compresslevel: int = 9) -> None:
+    def __init__(self, app: ASGIApp, minimum_size: int = 500, compresslevel: int = 6) -> None:
         self.app = app
         self.minimum_size = minimum_size
         self.compresslevel = compresslevel
+
+    # Responses that carry bearer/refresh tokens are never compressed: a
+    # compressed body that mixes a secret with attacker-influenced text is
+    # the BREACH precondition. Nothing here is big enough to miss gzip.
+    _UNCOMPRESSED_PREFIXES = ("/api/auth/", "/api/sign")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -27,6 +35,9 @@ class CompressionMiddleware:
             return
         headers = Headers(scope=scope)
         if "gzip" not in headers.get("Accept-Encoding", ""):
+            await self.app(scope, receive, send)
+            return
+        if scope.get("path", "").startswith(self._UNCOMPRESSED_PREFIXES):
             await self.app(scope, receive, send)
             return
         await _GzipResponder(self.app, self.minimum_size, self.compresslevel)(scope, receive, send)
@@ -77,7 +88,12 @@ class _GzipResponder:
                 body = message.get("body", b"")
                 more_body = message.get("more_body", False)
                 if len(body) < self.minimum_size and not more_body:
-                    # Don't apply compression to small outgoing responses.
+                    # Don't apply compression to small outgoing responses —
+                    # but still declare Vary so a shared cache keyed on the
+                    # request never serves this uncompressed body to a
+                    # client that would have received gzip (or vice versa).
+                    headers = MutableHeaders(raw=self.initial_message["headers"])
+                    headers.add_vary_header("Accept-Encoding")
                     await self.send(self.initial_message)
                     await self.send(message)
                 elif not more_body:
