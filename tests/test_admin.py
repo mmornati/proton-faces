@@ -2,6 +2,7 @@
 import pytest
 
 import admin
+import disk_usage
 
 
 class TestBackups:
@@ -85,6 +86,35 @@ class TestSchedule:
 
 def _ok_check(name="x"):
     return {"name": name, "ok": True, "status": "ok", "detail": ""}
+
+
+class TestOverview:
+    def test_overview_uses_shared_cache(self, tmp_db, monkeypatch):
+        """Issue #103: overview() must reuse the shared 1 h cache instead of
+        walking the whole data dir on every admin page load."""
+        disk_usage._dirsize_cache = {}
+        top_walks: list[None] = []
+        real_walk = disk_usage.dir_size_bytes
+
+        def spy_walk(path):
+            if path == admin.settings.data_dir:
+                top_walks.append(None)
+            return real_walk(path)
+
+        monkeypatch.setattr(disk_usage, "dir_size_bytes", spy_walk)
+        out = admin.overview()
+        assert "disk" in out
+        assert "data_bytes" in out["disk"]
+        # exactly one top-level walk for the data dir (cached on the second call)
+        assert len(top_walks) == 1
+        admin.overview()
+        assert len(top_walks) == 1
+
+    def test_overview_redacted_hides_path(self, tmp_db, monkeypatch):
+        monkeypatch.delenv("EXPOSE_OPERATIONAL_DETAILS", raising=False)
+        out = admin.overview()
+        assert out["disk"]["path"] is None
+        assert out["server"]["hostname"] is None
 
 
 class TestRunChecks:

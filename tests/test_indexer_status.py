@@ -72,6 +72,19 @@ class TestStatus:
         store.upsert_photos([{"uid": "a2", "name": "a2", "media_type": "image/jpeg", "capture_time": 1}])
         assert indexer_client.get("/status", headers=_auth()).json()["pending_db"] == 2
 
+    def test_status_includes_disk_block(self, tmp_db, monkeypatch, indexer_client):
+        """Issue #103: the indexer computes dir sizes once and ships them in
+        the payload so N app workers don't each re-walk the thumb dir."""
+        monkeypatch.setattr(
+            indexer, "get_indexer_state", lambda: {"remote": True, "running": False}
+        )
+        out = indexer_client.get("/status", headers=_auth()).json()
+        disk = out["disk"]
+        assert set(disk) == {"thumb_dir_bytes", "db_bytes", "data_dir_bytes"}
+        assert disk["thumb_dir_bytes"] >= 0
+        assert disk["db_bytes"] >= 0
+        assert disk["data_dir_bytes"] >= 0
+
 
 class TestTriggerSync:
     def test_triggers_full_sync(self, tmp_db, monkeypatch, indexer_client):

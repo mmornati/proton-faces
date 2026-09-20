@@ -101,13 +101,18 @@ def _reset_module_state():
         api._anchors_cache = None
         api._people_cache = OrderedDict()
         api._stats_cache = None
-        api._dirsize_cache = {}
         api._clip_cache = None
         api._bridge_health_cache = None
         api._indexer_proxy_cache = None
         api._indexer_proxy_client = None
         api._full_semaphore = asyncio.Semaphore(api._FULL_SEMAPHORE_MAX)
         api._full_res_failure_ts.clear()
+    except ImportError:
+        pass
+    try:
+        import disk_usage
+
+        disk_usage._dirsize_cache = {}
     except ImportError:
         pass
     try:
