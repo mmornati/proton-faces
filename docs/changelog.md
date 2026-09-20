@@ -6,6 +6,11 @@ Releases are cut by pushing a `v*` tag (or running the **Release** workflow with
 
 ## Unreleased
 
+### Fixed
+
+- **Admin schedule setter no longer silently ignores invalid values** — `PUT /api/admin/schedule` now returns `400` with the list of rejected fields (out-of-range hour/minute/keep, non-numeric values, non-boolean `enabled`) instead of keeping the old values and reporting success (issue #111).
+- **Scheduled backups no longer skip their minute** — the backup worker now catches up with a single backup if it was down at the scheduled time, instead of racing the exact `hh:mm` on its 60-second tick and silently missing the slot (issue #111).
+
 ### Added
 
 - **User-selectable person cover photo** — the "main photo" shown on each People card is no longer stuck at "highest-confidence crop". A **Set photo** button on each card opens a face-crop grid picker; a **Set as cover** action is also available from the face popover in photo detail. Backed by `GET /api/people/{id}/faces` and `POST /api/people/{id}/cover`.

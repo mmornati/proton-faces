@@ -151,48 +151,68 @@ def get_schedule() -> dict:
 
 
 def set_schedule(body: dict) -> dict:
-    """Validate and persist admin_config.json."""
+    """Validate and persist admin_config.json.
+
+    Raises ValueError listing every rejected field when any provided value is
+    invalid; nothing is written in that case.
+    """
     sched = get_schedule()
-    sched["enabled"] = bool(body.get("enabled", sched["enabled"]))
-    try:
-        h = int(body.get("hour", sched["hour"]))
-        sched["hour"] = max(0, min(23, h))
-    except (TypeError, ValueError):
-        pass
-    try:
-        m = int(body.get("minute", sched["minute"]))
-        sched["minute"] = max(0, min(59, m))
-    except (TypeError, ValueError):
-        pass
-    try:
-        sched["keep"] = max(1, min(365, int(body.get("keep", sched["keep"]))))
-    except (TypeError, ValueError):
-        pass
+    rejected: list[str] = []
+
+    def _int_field(name: str, lo: int, hi: int) -> int:
+        if name not in body:
+            return sched[name]
+        v = body[name]
+        if isinstance(v, bool) or not isinstance(v, int):
+            rejected.append(name)
+            return sched[name]
+        if not lo <= v <= hi:
+            rejected.append(name)
+            return sched[name]
+        return v
+
+    if "enabled" in body and not isinstance(body["enabled"], bool):
+        rejected.append("enabled")
+
+    hour = _int_field("hour", 0, 23)
+    minute = _int_field("minute", 0, 59)
+    keep = _int_field("keep", 1, 365)
+
+    if rejected:
+        raise ValueError("invalid schedule fields: " + ", ".join(rejected))
+
+    sched["enabled"] = body.get("enabled", sched["enabled"])
+    sched["hour"] = hour
+    sched["minute"] = minute
+    sched["keep"] = keep
     # Preserve the last_backup_at field when re-saving.
     out = {k: sched[k] for k in _DEFAULT_SCHEDULE}
     _schedule_path().write_text(json.dumps(out, indent=2))
     return out
 
 
-def _now_hm() -> tuple[int, int]:
-    t = time.localtime()
-    return t.tm_hour, t.tm_min
+def _backup_due(sched: dict, now: datetime | None = None) -> bool:
+    """True when a scheduled backup should run now (catch-up included).
 
-
-def _backup_due(sched: dict) -> bool:
+    Fires at most once per scheduled slot: once ``last_backup_at`` is at or
+    past the slot's start, the next fire waits for the following day's slot.
+    """
     if not sched.get("enabled"):
         return False
-    hh, mm = _now_hm()
-    if hh != int(sched.get("hour", 0)) or mm != int(sched.get("minute", 0)):
+    now = now or datetime.now(tz=timezone.utc)
+    slot = now.replace(hour=int(sched.get("hour", 0)),
+                       minute=int(sched.get("minute", 0)),
+                       second=0, microsecond=0)
+    if now < slot:
         return False
     last = sched.get("last_backup_at")
     if not last:
         return True
     try:
-        last_d = datetime.fromtimestamp(float(last), tz=timezone.utc).date()
-        return last_d != datetime.now(tz=timezone.utc).date()
-    except Exception:
+        last_dt = datetime.fromtimestamp(float(last), tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
         return True
+    return last_dt < slot
 
 
 def _worker_loop() -> None:

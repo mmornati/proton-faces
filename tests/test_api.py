@@ -2020,6 +2020,18 @@ class TestAdmin:
         r2 = client.get("/api/admin/schedule", headers=headers)
         assert r2.json()["keep"] == 7
 
+    def test_admin_schedule_rejects_invalid_fields(self, client, password_hash):
+        headers = self._seed_admin(client, password_hash)
+        r = client.put("/api/admin/schedule", json={"hour": 99}, headers=headers)
+        assert r.status_code == 400
+        assert "hour" in r.json()["detail"]
+        r2 = client.put("/api/admin/schedule", json={"hour": 99, "minute": -1, "keep": 0},
+                        headers=headers)
+        assert r2.status_code == 400
+        assert r2.json()["detail"] == "invalid schedule fields: hour, minute, keep"
+        # rejected write must not have changed the stored schedule
+        assert client.get("/api/admin/schedule", headers=headers).json()["hour"] == 3
+
     def test_admin_sync(self, client, monkeypatch, password_hash):
         headers = self._seed_admin(client, password_hash)
         monkeypatch.setattr(

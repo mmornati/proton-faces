@@ -69,19 +69,80 @@ class TestSchedule:
         assert sched["minute"] == 30
         assert sched["keep"] == 10  # default retained
 
-    def test_set_schedule_clamps_values(self, app_settings):
-        admin.set_schedule({"hour": 99, "minute": -5, "keep": 9999})
+    def test_set_schedule_rejects_invalid_values(self, app_settings):
+        for body in ({"hour": 99}, {"hour": -1}, {"minute": 60}, {"minute": -5},
+                     {"keep": 0}, {"keep": 9999}, {"hour": "3"}, {"minute": 3.5},
+                     {"enabled": "false"}):
+            with pytest.raises(ValueError):
+                admin.set_schedule(body)
+        # nothing was written by the failed calls
+        assert admin.get_schedule()["hour"] == 3
+        assert admin.get_schedule()["keep"] == 10
+
+    def test_set_schedule_rejects_lists_all_bad_fields(self, app_settings):
+        with pytest.raises(ValueError, match="hour, minute, keep"):
+            admin.set_schedule({"hour": 99, "minute": -1, "keep": 0})
+
+    def test_set_schedule_partial_update_merges(self, app_settings):
+        admin.set_schedule({"enabled": True, "hour": 4, "minute": 30})
         sched = admin.get_schedule()
-        assert sched["hour"] == 23
-        assert sched["minute"] == 0
-        assert sched["keep"] == 365
-        admin.set_schedule({"keep": 0})
-        assert admin.get_schedule()["keep"] == 1
+        assert sched["enabled"] is True
+        assert sched["hour"] == 4
+        assert sched["minute"] == 30
+        assert sched["keep"] == 10  # default retained
 
     def test_last_backup_at_falls_back_to_filesystem(self, tmp_db):
         admin.snapshot_backup()
         sched = admin.get_schedule()
         assert sched["last_backup_at"] is not None
+
+
+def _utc(y, mo, d, h, mi, s=0):
+    from datetime import datetime, timezone
+    return datetime(y, mo, d, h, mi, s, tzinfo=timezone.utc)
+
+
+class TestBackupDue:
+    def _sched(self, **kw):
+        s = {"enabled": True, "hour": 3, "minute": 0, "keep": 10, "last_backup_at": None}
+        s.update(kw)
+        return s
+
+    def test_disabled_never_due(self):
+        assert admin._backup_due(self._sched(enabled=False), _utc(2024, 1, 1, 3, 0)) is False
+
+    def test_before_slot_not_due(self):
+        assert admin._backup_due(self._sched(), _utc(2024, 1, 1, 2, 59)) is False
+
+    def test_at_slot_without_last_backup_due(self):
+        assert admin._backup_due(self._sched(), _utc(2024, 1, 1, 3, 0)) is True
+
+    def test_after_slot_without_last_backup_due(self):
+        # worker was down at 03:00, wakes at 03:05 -> catch-up fires once
+        assert admin._backup_due(self._sched(), _utc(2024, 1, 1, 3, 5)) is True
+
+    def test_after_slot_with_last_backup_before_slot_due(self):
+        # last backup yesterday 02:00 -> today's 03:00 slot is still owed
+        last = _utc(2024, 1, 1, 2, 0).timestamp()
+        assert admin._backup_due(self._sched(last_backup_at=last), _utc(2024, 1, 1, 3, 5)) is True
+
+    def test_after_slot_with_last_backup_at_slot_not_due(self):
+        # already ran today's slot -> no double fire
+        last = _utc(2024, 1, 1, 3, 0).timestamp()
+        assert admin._backup_due(self._sched(last_backup_at=last), _utc(2024, 1, 1, 3, 5)) is False
+
+    def test_after_slot_with_last_backup_yesterday_not_due(self):
+        # ran yesterday's slot -> today's slot is owed (catch-up across days)
+        last = _utc(2024, 1, 1, 3, 0).timestamp()
+        assert admin._backup_due(self._sched(last_backup_at=last), _utc(2024, 1, 2, 3, 5)) is True
+
+    def test_multi_day_gap_fires_once(self):
+        # last backup 3 days ago -> still exactly one fire owed
+        last = _utc(2024, 1, 1, 3, 0).timestamp()
+        assert admin._backup_due(self._sched(last_backup_at=last), _utc(2024, 1, 4, 3, 5)) is True
+
+    def test_corrupt_last_backup_treated_as_due(self):
+        assert admin._backup_due(self._sched(last_backup_at="garbage"), _utc(2024, 1, 1, 3, 5)) is True
 
 
 def _ok_check(name="x"):
