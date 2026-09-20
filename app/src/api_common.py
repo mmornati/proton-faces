@@ -242,28 +242,9 @@ def _people_all_cached(q: str | None = None) -> list:
         return full
 
 
-def _people_cache_get_locked(q: str | None, now: float) -> list | None:
-    entry = api._people_cache.get(q)
-    if entry is None:
-        return None
-    ts, full = entry
-    if now - ts >= api._PEOPLE_CACHE_TTL:
-        return None
-    api._people_cache.move_to_end(q)
-    return full
-
-
-def _people_cache_put_locked(q: str | None, now: float, full: list) -> None:
-    api._people_cache[q] = (now, full)
-    api._people_cache.move_to_end(q)
-    while len(api._people_cache) > api._PEOPLE_CACHE_MAX:
-        api._people_cache.popitem(last=False)
-
-
 # --- Photo duplicates cache ------------------------------------------------
 
 def _duplicate_groups_cached(limit: int) -> list[list]:
-    global _photo_dups_cache
     now = time.time()
     cache = api._photo_dups_cache
     if cache is not None and now - cache[0] < api._PHOTO_DUPS_CACHE_TTL and limit in cache[1]:
@@ -284,7 +265,6 @@ def _duplicate_groups_cached(limit: int) -> list[list]:
 # --- Stats + bridge health caches -----------------------------------------
 
 def _cached_stats() -> dict:
-    global _stats_cache
     now = time.time()
     if api._stats_cache is not None and now - api._stats_cache[0] < api._STATS_CACHE_TTL:
         return api._stats_cache[1]
@@ -298,7 +278,6 @@ def _cached_stats() -> dict:
 
 
 def _cached_bridge_health() -> tuple[bool, bool]:
-    global _bridge_health_cache
     now = time.time()
     if api._bridge_health_cache is not None and now - api._bridge_health_cache[0] < api._BRIDGE_HEALTH_CACHE_TTL:
         return api._bridge_health_cache[1]
@@ -488,7 +467,6 @@ def _topk_indices(scores: np.ndarray, k: int) -> np.ndarray:
 
 
 def _get_clip_matrix() -> tuple[list[str], np.ndarray]:
-    global _clip_cache
     now = time.time()
     if api._clip_cache is not None:
         ts, _, uids, X = api._clip_cache
@@ -848,7 +826,6 @@ def _empty_indexer_state(pending_db: int | None = None) -> dict:
 
 
 def _fetch_remote_indexer_state() -> dict:
-    global _indexer_proxy_cache, _indexer_proxy_last_warn
     now = time.time()
     if api._indexer_proxy_cache is not None and now - api._indexer_proxy_cache[0] < api._INDEXER_PROXY_CACHE_TTL:
         return api._indexer_proxy_cache[1]

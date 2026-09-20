@@ -127,14 +127,20 @@ _IMMUTABLE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
 # --- Cache invalidation helpers --------------------------------------------
 
 def _invalidate_dups_cache() -> None:
-    global _dups_cache
-    _dups_cache = None
-    _suggested_cache.clear()
+    # Mutate through api's live namespace, not this module's own `global`:
+    # every reader/writer of these caches (api_common, api_routes_people,
+    # api_routes_photos) goes through `api.<name>`, which is a separate
+    # binding from this module's own once the aggregator re-exports it.
+    # Rebinding the bare name here would silently no-op from their
+    # perspective (see issue #108 code review).
+    import api
+    api._dups_cache = None
+    api._suggested_cache.clear()
 
 
 def _invalidate_photo_dups_cache() -> None:
-    global _photo_dups_cache
-    _photo_dups_cache = None
+    import api
+    api._photo_dups_cache = None
 
 
 def _invalidate_people_cache() -> None:
@@ -143,5 +149,5 @@ def _invalidate_people_cache() -> None:
 
 
 def _invalidate_clip_cache() -> None:
-    global _clip_cache
-    _clip_cache = None
+    import api
+    api._clip_cache = None

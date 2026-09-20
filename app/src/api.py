@@ -34,9 +34,13 @@ The actual route bodies live in sibling modules:
   bridge_cache.
 - ``api_routes_status`` — health/stats/bridge_health/status.
 
-The split is purely mechanical: zero behavior change, every auth/
-security invariant (F-01…F-14) preserved, every test-coupling
-preserved.
+The split is mechanical: every auth/security invariant (F-01…F-14) is
+preserved and every test-coupling preserved. A handful of small,
+intentional behavior deltas landed alongside the split rather than in a
+separate PR: a new ``GET /api/bridge_health`` endpoint, a lower default
+``limit`` for ``/api/search`` (100→60), and pagination (``offset``, and a
+lower default ``limit``) on ``/api/faces/unassigned`` and
+``/api/people/{id}/faces``.
 """
 from __future__ import annotations
 
@@ -135,6 +139,7 @@ from api_routes_auth import (  # noqa: F401  (re-exported for tests)
     api_2fa_setup,
     api_2fa_verify,
     api_change_password,
+    api_limits,
     api_login,
     api_logout,
     api_me,
@@ -154,8 +159,8 @@ from api_routes_binary import router as _binary_router
 from api_routes_people import (  # noqa: F401  (re-exported for tests)
     api_assign_face,
     api_face_suggest,
+    api_merge_all,
     api_merge_all_similar,
-    api_merge_all_similar_explicit,
     api_merge_people,
     api_people,
     api_people_duplicates,

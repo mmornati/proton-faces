@@ -1261,6 +1261,26 @@ class TestFacesAndPeople:
         assert r.status_code == 200
         assert r.json()["faces"][0]["id"] == face_id
 
+    def test_person_faces_pagination(self, client, password_hash):
+        # Regression: faces_for_person has no store-level offset, so the
+        # route must over-fetch and slice locally rather than slicing an
+        # already-`limit`-sized page (issue #108 code review).
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        _seed_done_photo("p2")
+        fa = _seed_face("p1")
+        fb = _seed_face("p2")
+        pid = store.create_person(name="Alice", cover_uid="p1", cover_face_id=fa)
+        store.assign_face_person(fa, pid)
+        store.assign_face_person(fb, pid)
+        headers = _bearer(client)
+        full = client.get(f"/api/people/{pid}/faces", params={"limit": 10},
+                           headers=headers).json()["faces"]
+        assert len(full) == 2
+        page2 = client.get(f"/api/people/{pid}/faces", params={"limit": 1, "offset": 1},
+                            headers=headers).json()["faces"]
+        assert page2 == full[1:2]
+
     def test_person_set_cover(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1")
@@ -1298,6 +1318,23 @@ class TestFacesAndPeople:
         headers = _bearer(client)
         r = client.get("/api/faces/unassigned", headers=headers)
         assert r.json()["faces"][0]["id"] == face_id
+
+    def test_unassigned_faces_pagination(self, client, password_hash):
+        # Regression: unassigned_faces has no store-level offset, so the
+        # route must over-fetch and slice locally rather than slicing an
+        # already-`limit`-sized page (issue #108 code review).
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        _seed_done_photo("p2")
+        _seed_face("p1")
+        _seed_face("p2")
+        headers = _bearer(client)
+        full = client.get("/api/faces/unassigned", params={"limit": 10},
+                           headers=headers).json()["faces"]
+        assert len(full) == 2
+        page2 = client.get("/api/faces/unassigned", params={"limit": 1, "offset": 1},
+                            headers=headers).json()["faces"]
+        assert page2 == full[1:2]
 
     def test_photo_faces(self, client, password_hash):
         _seed_user(password_hash=password_hash)
@@ -2428,6 +2465,23 @@ class TestTTLCacheSingleFlight:
         self._run_concurrent(api.api_people_duplicates)
         assert calls == 1
         assert api._dups_cache[1] == {"duplicates": []}
+
+    def test_invalidate_dups_cache_clears_api_namespace(self):
+        # Regression: _invalidate_dups_cache lives in api_state.py but every
+        # reader/writer of _dups_cache goes through api.<name>. A bare
+        # `global _dups_cache; _dups_cache = None` inside api_state rebinds
+        # api_state's own attribute, not api's, so the cache the route
+        # actually reads never gets cleared (issue #108 code review).
+        api._dups_cache = (time.time(), {"duplicates": ["stale"]})
+        api._suggested_cache[0.4] = (time.time(), ["stale"])
+        api._invalidate_dups_cache()
+        assert api._dups_cache is None
+        assert api._suggested_cache == {}
+
+    def test_invalidate_photo_dups_cache_clears_api_namespace(self):
+        api._photo_dups_cache = (time.time(), {200: []})
+        api._invalidate_photo_dups_cache()
+        assert api._photo_dups_cache is None
 
     def test_photo_duplicates_single_flight(self, monkeypatch):
         api._photo_dups_cache = None

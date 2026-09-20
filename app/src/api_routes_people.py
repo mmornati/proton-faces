@@ -56,7 +56,11 @@ def api_people_faces(person_id: int, limit: int = 200, offset: int = 0,
                       user: CurrentUser = Depends(require_user)):
     """List faces belonging to a person."""
     from store import faces_for_person
-    rows = faces_for_person(person_id, limit=limit)
+    # faces_for_person has no offset support at the store layer, so fetch
+    # enough rows to cover the page and slice locally (see issue #108 code
+    # review — slicing a `limit`-sized fetch always returned empty pages
+    # past the first).
+    rows = faces_for_person(person_id, limit=limit + offset)
     return {"faces": [api._face_row(r["id"]) for r in rows[offset:offset+limit]]}
 
 
@@ -79,7 +83,10 @@ def api_set_person_cover(person_id: int, body: dict = Body(...),
 @router.get("/api/faces/unassigned")
 def api_unassigned_faces(limit: int = 200, offset: int = 0):
     """List faces that have not been assigned to a person."""
-    rows = unassigned_faces(limit=limit)
+    # unassigned_faces has no offset support at the store layer; see the
+    # comment in api_people_faces above for why we over-fetch instead of
+    # slicing a `limit`-sized result.
+    rows = unassigned_faces(limit=limit + offset)
     return {"faces": [api._face_row(r["id"]) for r in rows[offset:offset+limit]]}
 
 
@@ -280,8 +287,8 @@ def api_people_similar(person_id: int, threshold: float = 0.40, limit: int = 50,
 
 
 @router.post("/api/people/{target_id}/merge_all")
-def api_merge_all_similar(target_id: int, body: dict = Body(default={}),
-                           user: CurrentUser = Depends(require_role("write"))):
+def api_merge_all(target_id: int, body: dict = Body(default={}),
+                   user: CurrentUser = Depends(require_role("write"))):
     """Merge many people into `target_id` in one call."""
     source_ids = body.get("source_ids")
     if not isinstance(source_ids, list) or not source_ids:
@@ -317,8 +324,8 @@ def api_merge_all_similar(target_id: int, body: dict = Body(default={}),
 
 
 @router.post("/api/people/{target_id}/merge_all_similar")
-def api_merge_all_similar_explicit(target_id: int, body: dict = Body(default={}),
-                                    user: CurrentUser = Depends(require_role("write"))):
+def api_merge_all_similar(target_id: int, body: dict = Body(default={}),
+                           user: CurrentUser = Depends(require_role("write"))):
     """Merge every person whose mean embedding is similar to the target's."""
     threshold = float(body.get("threshold", 0.40))
     max_sources = int(body.get("max_sources", 5000))
