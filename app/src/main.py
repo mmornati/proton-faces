@@ -24,7 +24,7 @@ import uvicorn
 
 import store
 from api import app  # noqa: F401  (registers FastAPI routes; also runs init)
-from auth import hash_password
+from auth import MAX_PASSWORD_BYTES, hash_password, password_too_long
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,6 +58,9 @@ def _create_admin(username: str, display_name: str | None) -> int:
     if len(pw) < 8:
         print("password must be at least 8 characters", file=sys.stderr)
         return 2
+    if password_too_long(pw):
+        print(f"password must be at most {MAX_PASSWORD_BYTES} bytes", file=sys.stderr)
+        return 2
     user_id = store.create_user(
         username=username,
         password_hash=hash_password(pw),
@@ -82,6 +85,9 @@ def _reset_password(username: str) -> int:
     pw = os.environ.get("ADMIN_PASSWORD") or getpass.getpass("new password: ")
     if len(pw) < 8:
         print("password must be at least 8 characters", file=sys.stderr)
+        return 2
+    if password_too_long(pw):
+        print(f"password must be at most {MAX_PASSWORD_BYTES} bytes", file=sys.stderr)
         return 2
     store.update_user(row["id"], password_hash=hash_password(pw))
     n = store.revoke_all_tokens(row["id"])

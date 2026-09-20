@@ -325,7 +325,7 @@ class TestAuthEndpoints:
     def test_limits_public(self, client):
         r = client.get("/api/auth/limits")
         assert r.status_code == 200
-        assert r.json() == {"min_username": 2, "min_password": 8}
+        assert r.json() == {"min_username": 2, "min_password": 8, "max_password": 72}
 
     def test_me(self, client, password_hash):
         _seed_user(password_hash=password_hash)
@@ -361,6 +361,15 @@ class TestAuthEndpoints:
         headers = _bearer(client)
         r = client.post("/api/auth/password", headers=headers,
                         json={"current_password": "password123", "new_password": "short"})
+        assert r.status_code == 400
+
+    def test_change_password_over_72_bytes_rejected_cleanly(self, client, password_hash):
+        # bcrypt 5.0+ raises ValueError past 72 bytes; the route must catch
+        # this at the boundary as a 400, not let it surface as a 500 (#197).
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        r = client.post("/api/auth/password", headers=headers,
+                        json={"current_password": "password123", "new_password": "a" * 73})
         assert r.status_code == 400
 
     def test_change_password_requires_auth(self, client):
@@ -2040,6 +2049,16 @@ class TestAdmin:
                            headers=headers).status_code == 400
         assert client.post("/api/admin/users", json={"username": "bob", "password": "password123",
                                                      "role": "superuser"}, headers=headers).status_code == 400
+        # bcrypt 5.0+ raises ValueError past 72 bytes (#197) — must be a
+        # clean 400, not an unhandled 500.
+        assert client.post("/api/admin/users", json={"username": "bob", "password": "a" * 73},
+                           headers=headers).status_code == 400
+
+    def test_admin_update_user_password_over_72_bytes_rejected(self, client, password_hash):
+        headers = self._seed_admin(client, password_hash)
+        uid = _seed_user("bob", "read", password_hash)
+        r = client.patch(f"/api/admin/users/{uid}", json={"password": "a" * 73}, headers=headers)
+        assert r.status_code == 400
 
     def test_admin_update_user(self, client, monkeypatch, password_hash):
         headers = self._seed_admin(client, password_hash)
@@ -2348,7 +2367,7 @@ class TestCompression:
     def test_small_json_passthrough(self, client):
         r = client.get("/api/auth/limits", headers={"Accept-Encoding": "gzip"})
         assert r.status_code == 200
-        assert r.json() == {"min_username": 2, "min_password": 8}
+        assert r.json() == {"min_username": 2, "min_password": 8, "max_password": 72}
         assert "content-encoding" not in r.headers
 
     def test_no_accept_encoding_no_compression(self, client, password_hash):

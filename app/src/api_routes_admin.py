@@ -12,10 +12,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 import admin
 import api  # noqa: E402  (intentional: see api_common docstring)
 from auth import (
+    MAX_PASSWORD_BYTES,
     ROLE_RANK,
     CurrentUser,
     demo_disable_backups,
     hash_password,
+    password_too_long,
     require_role,
 )
 from store import (
@@ -59,6 +61,8 @@ def api_admin_create_user(body: dict = Body(...),
         raise HTTPException(400, "username must be at least 2 characters")
     if len(password) < 8:
         raise HTTPException(400, "password must be at least 8 characters")
+    if password_too_long(password):
+        raise HTTPException(400, f"password must be at most {MAX_PASSWORD_BYTES} bytes")
     if role not in ROLE_RANK:
         raise HTTPException(400, f"role must be one of {sorted(ROLE_RANK)}")
     if get_user_by_username(username) is not None:
@@ -81,11 +85,13 @@ def api_admin_patch_user(user_id: int, body: dict = Body(...),
     role = body.get("role")
     disabled = body.get("disabled")
     password = body.get("password")
-    password_hash = hash_password(password) if password else None
     if role is not None and role not in ROLE_RANK:
         raise HTTPException(400, f"role must be one of {sorted(ROLE_RANK)}")
     if password is not None and len(password) < 8:
         raise HTTPException(400, "password must be at least 8 characters")
+    if password is not None and password_too_long(password):
+        raise HTTPException(400, f"password must be at most {MAX_PASSWORD_BYTES} bytes")
+    password_hash = hash_password(password) if password else None
     try:
         update_user(user_id, display_name=display_name, role=role,
                     disabled=disabled, password_hash=password_hash)

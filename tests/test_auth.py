@@ -43,6 +43,54 @@ class TestPassword:
     def test_malformed_hash_fails(self):
         assert auth.verify_password("pw", "not-a-bcrypt-hash") is False
 
+    def test_72_byte_boundary_hashes_and_verifies(self):
+        # bcrypt 5.x's limit is exactly 72 bytes — the boundary itself must
+        # still work (regression for #197).
+        pw = "a" * auth.MAX_PASSWORD_BYTES
+        assert len(pw.encode("utf-8")) == 72
+        h = auth.hash_password(pw)
+        assert auth.verify_password(pw, h) is True
+
+    def test_over_72_bytes_rejected_by_password_too_long(self):
+        pw = "a" * (auth.MAX_PASSWORD_BYTES + 1)
+        assert auth.password_too_long(pw) is True
+
+    def test_72_byte_boundary_not_flagged_too_long(self):
+        pw = "a" * auth.MAX_PASSWORD_BYTES
+        assert auth.password_too_long(pw) is False
+
+    def test_multibyte_password_counted_by_bytes_not_chars(self):
+        # bcrypt truncates/rejects by *bytes*, not characters — a 73-char
+        # multibyte string can exceed 72 bytes while staying under 72 chars.
+        pw = "é" * 40  # 2 bytes/char in UTF-8 -> 80 bytes, 40 chars
+        assert len(pw) < auth.MAX_PASSWORD_BYTES
+        assert auth.password_too_long(pw) is True
+
+    def test_hashpw_raises_valueerror_over_72_bytes(self):
+        # Direct bcrypt regression check: bcrypt 5.0+ raises ValueError
+        # instead of silently truncating (the behavior change #197 upgrades
+        # for). hash_password() intentionally does NOT catch this — callers
+        # must reject oversized passwords before calling it (see
+        # password_too_long / the api_routes_auth and api_routes_admin
+        # checks), the same way bcrypt<5 silent truncation was never safe to
+        # rely on either.
+        pw = "a" * (auth.MAX_PASSWORD_BYTES + 1)
+        with pytest.raises(ValueError):
+            auth.hash_password(pw)
+
+    def test_verify_password_over_72_bytes_fails_cleanly(self):
+        # verify_password() already catches ValueError/TypeError, so a
+        # too-long login attempt is treated as a wrong password (401) rather
+        # than crashing (500).
+        h = auth.hash_password("correct")
+        long_pw = "a" * (auth.MAX_PASSWORD_BYTES + 1)
+        assert auth.verify_password(long_pw, h) is False
+
+    def test_cost_factor_is_12(self):
+        # F-list security invariant: bcrypt cost must not be lowered.
+        h = auth.hash_password("s3cret!")
+        assert h.startswith("$2b$12$")
+
 
 class TestSignedTokens:
     def test_valid_token(self):
