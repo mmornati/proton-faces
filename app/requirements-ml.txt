@@ -6,6 +6,6 @@
 # (faces._load, clip._load).
 
 pillow-heif>=1.0,<1.8
-onnxruntime>=1.18,<1.31
+onnxruntime>=1.30.0,<1.31
 insightface>=2.0,<3
 tokenizers>=0.19,<0.24
