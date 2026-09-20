@@ -113,6 +113,7 @@ class TestInitAndUpsert:
         store.insert_face("p2", pid, 0.9, "[]", EMB.tobytes())
         with store.get_conn() as conn:
             conn.execute("UPDATE people SET face_count=0, photo_count=0 WHERE id=?", (pid,))
+            conn.execute("PRAGMA user_version = 0")  # simulate a pre-gate DB
             store.migrate(conn)
             row = conn.execute(
                 "SELECT face_count, photo_count FROM people WHERE id=?", (pid,)
@@ -120,6 +121,67 @@ class TestInitAndUpsert:
             assert (row["face_count"], row["photo_count"]) == (2, 2)
             idx = {r[1] for r in conn.execute("PRAGMA index_list(people)")}
         assert "idx_people_photo_count" in idx
+
+    def test_migrate_backfills_run_on_version_zero(self, tmp_db):
+        # A DB that predates the version gate (user_version=0) must still get
+        # the people-cover and denormalized-counts backfills applied.
+        store.upsert_photos([_photo("p1"), _photo("p2")])
+        store.set_photo_done("p1", "t1.webp", None, None)
+        store.set_photo_done("p2", "t2.webp", None, None)
+        pid = store.create_person("Bob", "p1", None)
+        store.insert_face("p1", pid, 0.9, "[]", EMB.tobytes())
+        store.insert_face("p2", pid, 0.9, "[]", EMB.tobytes())
+        with store.get_conn() as conn:
+            conn.execute("UPDATE people SET face_count=0, photo_count=0 WHERE id=?", (pid,))
+            conn.execute("PRAGMA user_version = 0")
+            store.migrate(conn)
+            row = conn.execute(
+                "SELECT cover_face_id, face_count, photo_count FROM people WHERE id=?", (pid,)
+            ).fetchone()
+            assert row["cover_face_id"] is not None
+            assert (row["face_count"], row["photo_count"]) == (2, 2)
+
+    def test_migrate_skips_backfills_at_current_version(self, tmp_db):
+        # Once a DB is at _SCHEMA_VERSION, migrate() must NOT re-run the
+        # correlated UPDATEs over all people (issue #104): a person with a
+        # NULL cover_face_id and zeroed counts stays untouched.
+        store.upsert_photos([_photo("p1")])
+        store.set_photo_done("p1", "t1.webp", None, None)
+        pid = store.create_person("Bob", "p1", None)
+        store.insert_face("p1", pid, 0.9, "[]", EMB.tobytes())
+        with store.get_conn() as conn:
+            conn.execute("UPDATE people SET face_count=0, photo_count=0 WHERE id=?", (pid,))
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == store._SCHEMA_VERSION
+            store.migrate(conn)
+            row = conn.execute(
+                "SELECT cover_face_id, face_count, photo_count FROM people WHERE id=?", (pid,)
+            ).fetchone()
+            assert row["cover_face_id"] is None
+            assert (row["face_count"], row["photo_count"]) == (0, 0)
+
+    def test_migrate_skips_auth_token_wipe_at_current_version(self, tmp_db):
+        # The issue #34 auth_tokens wipe is one-time: at _SCHEMA_VERSION a
+        # second migrate() must not log everyone out again.
+        store.create_user("alice", "hash", role="admin")
+        with store.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO auth_tokens (token, user_id, kind, expires_at, created_at) "
+                "VALUES ('tok1', 1, 'access', 9999999999, 1000)"
+            )
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == store._SCHEMA_VERSION
+            store.migrate(conn)
+            n = conn.execute("SELECT COUNT(*) FROM auth_tokens").fetchone()[0]
+        assert n == 1
+
+    def test_migrate_ddl_still_runs_when_gated(self, tmp_db):
+        # The version gate only skips data backfills — cheap idempotent DDL
+        # (index recreation) must still run on a DB already at _SCHEMA_VERSION.
+        with store.get_conn() as conn:
+            conn.execute("DROP INDEX idx_photos_status_time")
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == store._SCHEMA_VERSION
+            store.migrate(conn)
+            idx = {r[1] for r in conn.execute("PRAGMA index_list(photos)")}
+        assert "idx_photos_status_time" in idx
 
     def test_upsert_new_photo(self, tmp_db):
         assert store.upsert_photos([_photo()]) == 1
