@@ -40,7 +40,7 @@ If you put a reverse proxy in front of `:8080` (Traefik, Caddy, nginx), it's you
 
 `proton-bridge` is built inside the [Proton Drive SDK monorepo](https://github.com/mmornati/proton-drive-sdk) and pins a specific release tag. It exposes only `GET /timeline`, `POST /nodes`, `GET /albums`, `POST /thumbnails`, `GET /photo/{uid}/full`, `GET /health`.
 
-There is no `POST`/`PUT`/`DELETE` for write operations. There is no `upload`, no `delete`, no `move`. The session file is mounted read-only. The data dir is shared with the indexer for thumbnail caching only — not for write-back.
+There is no `POST`/`PUT`/`DELETE` for write operations. There is no `upload`, no `delete`, no `move`. The session file is mounted writable (the SDK rewrites tokens on refresh) but only into the bridge container — the `app` and `indexer` containers have no path to it. The data dir is shared with the indexer for thumbnail caching only — not for write-back.
 
 ## Multi-user auth
 
