@@ -1,0 +1,35 @@
+/* proton·faces — design tokens
+ * Nocturne palette, type, radius, shadow scale. See DESIGN.md for the full spec.
+ * Dark is the default; data-theme="light" or prefers-color-scheme:light switch the set. */
+:root, :root[data-theme="dark"] {
+  --bg: #101114; --bg2: #15161a; --panel: #17181d; --panel2: #1e2026;
+  --text: #f2f3f5; --muted: #9aa0ab; --faint: #5c616d;
+  --border: #26282f; --border2: #32353e;
+  --accent: #5ac272; --accent-strong: #7edb93; --accent-soft: rgba(90,194,114,.14); --on-accent: #04140a;
+  --ok: #5ac272; --bad: #f0645a;
+  --shadow: 0 1px 2px rgba(0,0,0,.35), 0 16px 34px -18px rgba(0,0,0,.6);
+  --shadow-lg: 0 2px 4px rgba(0,0,0,.4), 0 34px 80px -30px rgba(0,0,0,.75);
+  --radius: 12px; --radius-sm: 8px; --radius-xs: 6px;
+  --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f4f5f7; --bg2: #eef0f3; --panel: #ffffff; --panel2: #f0f2f5;
+    --text: #17191d; --muted: #6b7078; --faint: #9aa0ab;
+    --border: #e3e5ea; --border2: #d5d8df;
+    --accent: #1f9d4d; --accent-strong: #17803e; --accent-soft: rgba(31,157,77,.12); --on-accent: #ffffff;
+    --ok: #1f9d4d; --bad: #d4483e;
+    --shadow: 0 1px 2px rgba(16,17,20,.08), 0 16px 34px -20px rgba(16,17,20,.25);
+    --shadow-lg: 0 2px 4px rgba(16,17,20,.1), 0 34px 80px -34px rgba(16,17,20,.3);
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f4f5f7; --bg2: #eef0f3; --panel: #ffffff; --panel2: #f0f2f5;
+  --text: #17191d; --muted: #6b7078; --faint: #9aa0ab;
+  --border: #e3e5ea; --border2: #d5d8df;
+  --accent: #1f9d4d; --accent-strong: #17803e; --accent-soft: rgba(31,157,77,.12); --on-accent: #ffffff;
+  --ok: #1f9d4d; --bad: #d4483e;
+  --shadow: 0 1px 2px rgba(16,17,20,.08), 0 16px 34px -20px rgba(16,17,20,.25);
+  --shadow-lg: 0 2px 4px rgba(16,17,20,.1), 0 34px 80px -34px rgba(16,17,20,.3);
+}
