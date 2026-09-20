@@ -5,6 +5,7 @@ from ``api.py`` (tests call them as ``api.api_people(...)`` etc.).
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 
@@ -54,14 +55,31 @@ def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
 @router.get("/api/people/{person_id}/faces")
 def api_people_faces(person_id: int, limit: int = 200, offset: int = 0,
                       user: CurrentUser = Depends(require_user)):
-    """List faces belonging to a person."""
+    """Every face of a person, for the cover picker.
+
+    Returns face ids plus a signed crop URL for each, so the front-end can
+    render a grid of candidate face-crops without knowing bbox math.
+    """
     from store import faces_for_person
+    person = get_person(person_id)
+    if person is None:
+        raise HTTPException(404, "person not found")
     # faces_for_person has no offset support at the store layer, so fetch
     # enough rows to cover the page and slice locally (see issue #108 code
     # review — slicing a `limit`-sized fetch always returned empty pages
     # past the first).
     rows = faces_for_person(person_id, limit=limit + offset)
-    return {"faces": [api._face_row(r["id"]) for r in rows[offset:offset+limit]]}
+    faces = [
+        {
+            "id": r["id"],
+            "photo_uid": r["photo_uid"],
+            "confidence": r["confidence"],
+            "crop_url": api._sign_if_needed(f"/api/faces/{r['id']}/crop"),
+            "is_cover": r["id"] == person["cover_face_id"],
+        }
+        for r in rows[offset:offset+limit]
+    ]
+    return {"faces": faces, "cover_face_id": person["cover_face_id"], "count": len(faces)}
 
 
 @router.post("/api/people/{person_id}/cover")
@@ -87,7 +105,17 @@ def api_unassigned_faces(limit: int = 200, offset: int = 0):
     # comment in api_people_faces above for why we over-fetch instead of
     # slicing a `limit`-sized result.
     rows = unassigned_faces(limit=limit + offset)
-    return {"faces": [api._face_row(r["id"]) for r in rows[offset:offset+limit]]}
+    faces = [
+        {
+            "id": r["id"],
+            "photo_uid": r["photo_uid"],
+            "confidence": r["confidence"],
+            "thumb_url": api._sign_if_needed(f"/api/photos/{r['photo_uid']}/thumb"),
+            "crop_url": api._sign_if_needed(f"/api/faces/{r['id']}/crop"),
+        }
+        for r in rows[offset:offset+limit]
+    ]
+    return {"faces": faces}
 
 
 @router.get("/api/faces/{face_id}/suggest")
@@ -126,7 +154,17 @@ def api_photo_faces(uid: str):
     """List faces detected in a photo."""
     from store import faces_for_photo
     rows = faces_for_photo(uid)
-    return {"faces": [api._face_row(r["id"]) for r in rows]}
+    faces = [
+        {
+            "id": r["id"],
+            "person_id": r["person_id"],
+            "person_name": r["person_name"],
+            "bbox": json.loads(r["bbox"]),
+            "confidence": r["confidence"],
+        }
+        for r in rows
+    ]
+    return {"faces": faces}
 
 
 @router.post("/api/faces/{face_id}/person")

@@ -1328,7 +1328,14 @@ class TestFacesAndPeople:
         headers = _bearer(client)
         r = client.get(f"/api/people/{pid}/faces", headers=headers)
         assert r.status_code == 200
-        assert r.json()["faces"][0]["id"] == face_id
+        body = r.json()
+        face = body["faces"][0]
+        assert face["id"] == face_id
+        # Regression: the cover picker reads `crop_url`/`is_cover` directly
+        # off each face — a raw db row is missing both (issue #108).
+        assert face["crop_url"]
+        assert face["is_cover"] is True
+        assert body["cover_face_id"] == face_id
 
     def test_person_faces_pagination(self, client, password_hash):
         # Regression: faces_for_person has no store-level offset, so the
@@ -1386,7 +1393,12 @@ class TestFacesAndPeople:
         face_id = _seed_face("p1")
         headers = _bearer(client)
         r = client.get("/api/faces/unassigned", headers=headers)
-        assert r.json()["faces"][0]["id"] == face_id
+        face = r.json()["faces"][0]
+        assert face["id"] == face_id
+        # Regression: the unassigned queue reads `crop_url`/`thumb_url`
+        # directly off each face — a raw db row is missing both (issue #108).
+        assert face["crop_url"]
+        assert face["thumb_url"]
 
     def test_unassigned_faces_pagination(self, client, password_hash):
         # Regression: unassigned_faces has no store-level offset, so the
@@ -1408,10 +1420,19 @@ class TestFacesAndPeople:
     def test_photo_faces(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1")
-        _seed_face("p1")
+        face_id = _seed_face("p1", bbox=(0.1, 0.2, 0.3, 0.4))
+        pid = store.create_person(name="Alice", cover_uid="p1", cover_face_id=face_id)
+        store.assign_face_person(face_id, pid)
         headers = _bearer(client)
         r = client.get("/api/photos/p1/faces", headers=headers)
-        assert len(r.json()["faces"]) == 1
+        faces = r.json()["faces"]
+        assert len(faces) == 1
+        # Regression: the overlay in the photo viewer destructures
+        # `bbox` as a 4-number array and reads `person_name` directly —
+        # a raw JSON string or a missing name renders nothing (issue #108).
+        assert faces[0]["bbox"] == [0.1, 0.2, 0.3, 0.4]
+        assert faces[0]["person_name"] == "Alice"
+        assert faces[0]["person_id"] == pid
 
     def test_face_crop(self, client, password_hash):
         _seed_user(password_hash=password_hash)
