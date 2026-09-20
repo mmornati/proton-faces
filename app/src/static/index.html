@@ -363,17 +363,24 @@ async function authFetch(path, opts = {}) {
 async function _refreshAccess() {
   // No body — the server reads the refresh token from the HttpOnly cookie
   // that's sent automatically with credentials: "include".
+  //
+  // Concurrent 401s (Promise.all over several endpoints, the boot burst)
+  // must share ONE refresh: the server rotates the refresh token, so a
+  // second call would fail and force a logout. The shared promise resolves
+  // to the parsed body — sharing the Response object made every awaiter
+  // but the first throw "body already consumed" and sign the user out.
   if (!_refreshInflight) {
     _refreshInflight = fetch("/api/auth/refresh", {
       method: "POST",
       credentials: "include",
       headers: { "content-type": "application/json" },
       body: "{}",
+    }).then(async (r) => {
+      if (!r.ok) throw new Error("refresh failed");
+      return r.json();
     }).finally(() => { _refreshInflight = null; });
   }
-  const r = await _refreshInflight;
-  if (!r.ok) throw new Error("refresh failed");
-  return r.json();
+  return _refreshInflight;
 }
 
 async function login(username, password) {
@@ -432,6 +439,12 @@ async function logout() {
 function _signOutLocal() {
   localStorage.removeItem(AUTH_STORAGE);
   _me = null;
+  // Shared-device hygiene: drop everything the service worker cached. The
+  // shell is re-cached on the next load; signed media never enters Cache
+  // Storage (sw.js skips /api and the binary suffixes) but clearing is cheap.
+  try {
+    if (window.caches) caches.keys().then((ks) => Promise.all(ks.map((k) => caches.delete(k)))).catch(() => {});
+  } catch (e) { /* ignore */ }
 }
 
 async function fetchMe() {
@@ -572,6 +585,37 @@ function hideLoader() {
   $("#loader").classList.remove("open");
 }
 
+// One delegated listener on #view instead of re-binding every card after
+// each infinite-scroll append: the old code re-queried the WHOLE grid, so a
+// card rendered on page 1 carried N listeners after N pages — N PATCH
+// requests per star click and N openDetail() calls per tap.
+function _bindGridDelegation(el) {
+  if (el.dataset.gridBound) return;
+  el.dataset.gridBound = "1";
+  el.addEventListener("click", async (e) => {
+    const star = e.target.closest(".starbtn");
+    if (star && el.contains(star)) {
+      e.stopPropagation();
+      const uid = star.dataset.uid;
+      const newVal = !star.classList.contains("on");
+      try {
+        const updated = await api(`/api/photos/${uid}`, { method: "PATCH", headers: {"content-type": "application/json"}, body: JSON.stringify({ favorited: newVal }) });
+        star.classList.toggle("on", updated.favorited_by_me);
+        star.textContent = updated.favorited_by_me ? "★" : "☆";
+        star.closest(".card")?.classList.toggle("favorited", updated.favorited_by_me);
+        // Patch the in-memory row so re-renders don't lose the state.
+        const row = state.photos.find((x) => x.uid === uid);
+        if (row) row.favorited_by_me = updated.favorited_by_me;
+      } catch (err) { toast("Favorite failed: " + err.message); }
+      return;
+    }
+    const badge = e.target.closest(".facebadge");
+    if (badge && el.contains(badge)) { e.stopPropagation(); openDetail(badge.dataset.uid); return; }
+    const img = e.target.closest(".card img");
+    if (img && el.contains(img) && img.dataset.uid) openDetail(img.dataset.uid);
+  });
+}
+
 function renderPhotos(list, append) {
   const el = $("#view");
   if (!list.length && !append) {
@@ -585,22 +629,7 @@ function renderPhotos(list, append) {
     if (!grid) { el.innerHTML = `<div class="grid">${list.map(cardHtml).join("")}</div>`; }
     else grid.insertAdjacentHTML("beforeend", list.map(cardHtml).join(""));
   }
-  el.querySelectorAll(".card img").forEach((img) => img.addEventListener("click", () => openDetail(img.dataset.uid)));
-  el.querySelectorAll(".facebadge").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); openDetail(b.dataset.uid); }));
-  el.querySelectorAll(".starbtn").forEach((b) => b.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    const uid = b.dataset.uid;
-    const newVal = !b.classList.contains("on");
-    try {
-      const updated = await api(`/api/photos/${uid}`, { method: "PATCH", headers: {"content-type": "application/json"}, body: JSON.stringify({ favorited: newVal }) });
-      b.classList.toggle("on", updated.favorited_by_me);
-      b.textContent = updated.favorited_by_me ? "★" : "☆";
-      b.closest(".card").classList.toggle("favorited", updated.favorited_by_me);
-      // Patch the in-memory row so re-renders don't lose the state.
-      const row = state.photos.find((x) => x.uid === uid);
-      if (row) row.favorited_by_me = updated.favorited_by_me;
-    } catch (err) { toast("Favorite failed: " + err.message); }
-  }));
+  _bindGridDelegation(el);
   // sentinel for infinite scroll (Photos and Albums views)
   if ((state.view === "photos" || state.view === "albums") && !state.q && !photoDone) {
     let sentinel = $("#sentinel");
@@ -650,7 +679,7 @@ async function _signPaths(paths) {
   }
 }
 
-async function openLightbox(uid, kindHint) {
+async function openLightbox(uid, kindHint, meta) {
   _updateNav();
   $("#lightbox").classList.add("open");
   const img = $("#lbimg");
@@ -667,11 +696,18 @@ async function openLightbox(uid, kindHint) {
   vid.removeAttribute("src");
   showLoader("Loading full resolution…");
   const fullPath = `/api/photos/${uid}/full`;
-  const signed = await _signPaths([fullPath]);
-  const fullSrc = signed[fullPath] || fullPath;
+  // /meta now carries a signed full_url (1 h TTL — long videos kept
+  // re-requesting byte ranges past the old 5 min signature and stalled);
+  // fall back to /api/sign only when the caller had no meta to hand over.
+  let fullSrc = meta?.full_url;
+  if (!fullSrc) {
+    const signed = await _signPaths([fullPath]);
+    fullSrc = signed[fullPath] || fullPath;
+  }
   const isVideo = kindHint === "video";
   try {
-    const m = await api(`/api/photos/${uid}/meta`);
+    const m = meta || await api(`/api/photos/${uid}/meta`);
+    if (!meta && m.full_url) fullSrc = m.full_url;
     if (m.kind === "video") {
       vid.onerror = fail;
       vid.onloadeddata = loaded;
@@ -736,7 +772,7 @@ async function openDetail(uid) {
   _updateNav();
   $("#detail").classList.add("open");
   $("#dname").textContent = "Loading…";
-  $("#dfull").onclick = () => openLightbox(uid, meta?.kind);
+  $("#dfull").onclick = () => openLightbox(uid, meta?.kind, meta);
   let meta;
   try {
     meta = await api(`/api/photos/${uid}/meta`);
@@ -780,14 +816,18 @@ async function openDetail(uid) {
     vid.onloadeddata = () => hideLoader();
     showLoader("Loading video…");
     const fullPath = `/api/photos/${uid}/full`;
-    const signed = await _signPaths([fullPath]);
-    vid.src = signed[fullPath] || fullPath;
+    let src = meta.full_url;
+    if (!src) { const signed = await _signPaths([fullPath]); src = signed[fullPath] || fullPath; }
+    vid.src = src;
     vid.style.display = "block";
   } else {
     img.onerror = () => toast("Couldn't load image");
     const thumbPath = `/api/photos/${uid}/thumb`;
-    const signed = await _signPaths([thumbPath]);
-    img.src = signed[thumbPath] || thumbPath;
+    // Signed URLs ride along in /meta (one round-trip fewer before the
+    // image can start downloading); /api/sign is only the fallback.
+    let src = meta?.thumb_url;
+    if (!src) { const signed = await _signPaths([thumbPath]); src = signed[thumbPath] || thumbPath; }
+    img.src = src;
     img.dataset.uid = uid;
     img.style.display = "block";
     img.onload = () => loadFaceBoxes(uid);
@@ -985,12 +1025,17 @@ async function openFacePopover(face, x, y) {
          </button>`).join("");
     ac.querySelectorAll(".ac-item").forEach((el) => el.addEventListener("click", () => pick(el)));
   };
+  let acAbort = null;
   const searchAc = (q) => {
     acItems = [];
     const trimmed = q.trim();
+    if (acAbort) acAbort.abort();
     if (!trimmed) { ac.style.display = "none"; return; }
-    api(`/api/people?q=${encodeURIComponent(trimmed)}&limit=8`)
+    acAbort = new AbortController();
+    const mine = acAbort;
+    api(`/api/people?q=${encodeURIComponent(trimmed)}&limit=8`, { signal: mine.signal })
       .then((data) => {
+        if (mine.signal.aborted) return;
         const people = data.people || [];
         const exact = people.find((p) => (p.name || "").toLowerCase() === trimmed.toLowerCase());
         acItems = people
@@ -999,7 +1044,7 @@ async function openFacePopover(face, x, y) {
         if (!exact) acItems.push({ name: trimmed, create: true });
         renderAc();
       })
-      .catch(() => { acItems = []; renderAc(); });
+      .catch(() => { if (mine.signal.aborted) return; acItems = []; renderAc(); });
   };
   name.addEventListener("input", () => {
     createBtn.disabled = !name.value.trim();
@@ -1138,8 +1183,16 @@ async function loadMemories() {
   }
 }
 
+let _photosAbort = null;
+
 async function loadPhotos() {
   resetPhotoPaging();
+  // Supersede any in-flight load: two debounced searches ("be" then
+  // "beach") could otherwise resolve out of order and the slower, stale
+  // one would overwrite the grid and state.photos.
+  if (_photosAbort) _photosAbort.abort();
+  const abort = new AbortController();
+  _photosAbort = abort;
   const src = state.photoSource || { type: "all" };
   if (src.type === "all") loadMemories(); else $("#memorieswrap").style.display = "none";
   let url;
@@ -1164,7 +1217,14 @@ async function loadPhotos() {
   }
   if (src.type === "album") showLoader("Loading album…");
   try {
-    const data = await api(url);
+    let data;
+    try {
+      data = await api(url, { signal: abort.signal });
+    } catch (e) {
+      if (abort.signal.aborted) return; // superseded by a newer load
+      throw e;
+    }
+    if (abort.signal.aborted) return;
     const rows = data.results || data.photos || [];
     renderPhotos(rows, false);
     state.photos = rows;
@@ -2234,15 +2294,15 @@ $("#facesubmit").addEventListener("click", async () => {
   try {
     const fd = new FormData();
     fd.append("file", faceFile);
-    const r = await fetch("/api/search/face", { method: "POST", body: fd });
-    if (!r.ok) {
-      const txt = await r.text();
-      let msg = "No face found in that image.";
-      try { const j = JSON.parse(txt); if (j.detail) msg = j.detail; } catch {}
-      toast("Search failed: " + msg);
+    // Through api() so the bearer token rides along: a bare fetch() got a
+    // 401 outside demo mode and the UI blamed the photo ("no face found").
+    let data;
+    try {
+      data = await api("/api/search/face", { method: "POST", body: fd });
+    } catch (err) {
+      toast("Search failed: " + (err.message || "No face found in that image."));
       return;
     }
-    const data = await r.json();
     state.q = "";
     $("#q").value = "";
     state.photoSource = { type: "all" };

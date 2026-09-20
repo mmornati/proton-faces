@@ -121,7 +121,9 @@ def _get_indexer_proxy_client() -> httpx.Client:
 # --- Crop cache lock + immutable headers -----------------------------------
 
 _crop_lock = threading.Lock()
-_IMMUTABLE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
+# `private`: these bytes are per-user (bearer or signed URL); a shared forward
+# proxy must never store and re-serve them. Still immutable for the browser.
+_IMMUTABLE_HEADERS = {"Cache-Control": "private, max-age=31536000, immutable"}
 
 
 # --- Cache invalidation helpers --------------------------------------------

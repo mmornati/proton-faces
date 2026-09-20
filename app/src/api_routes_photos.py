@@ -37,6 +37,8 @@ router = APIRouter()
 # Places/map payloads are small per row (no per-row signing), so they get a
 # higher ceiling than grid pages.
 MAP_MAX_LIMIT = 5000
+# Signed-URL lifetime for /full links handed out in /meta (video playback).
+FULL_URL_TTL_SEC = 3600
 
 
 @router.get("/api/photos")
@@ -257,6 +259,12 @@ def api_photo_meta(uid: str, user: CurrentUser = Depends(require_user)):
         people.setdefault(pid, f["person_name"])
     meta["face_count"] = len(faces)
     meta["people"] = [{"person_id": k, "name": v} for k, v in people.items()]
+    # Signed media URLs travel with the metadata so the detail view needs no
+    # extra /api/sign round-trip before the image can load. The full-res URL
+    # gets a 1 h TTL: <video> keeps issuing Range requests for the whole
+    # playback and a 5 min signature stalled anything longer than that.
+    meta["thumb_url"] = api._sign_if_needed(f"/api/photos/{uid}/thumb")
+    meta["full_url"] = api._sign_if_needed(f"/api/photos/{uid}/full", ttl_seconds=FULL_URL_TTL_SEC)
     try:
         nodes = get_bridge().nodes([uid], timeout_sec=5.0)
         if nodes:
