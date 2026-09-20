@@ -348,16 +348,17 @@ These are NOT in scope for this hardening pass but worth noting:
 
 ---
 
-## 7. Open follow-ups (separate PRs)
+## 7. Known gaps (tracked in #112)
 
-| ID | Title | Effort |
+The full remediation backlog (83 findings, #29–#111) is tracked in
+[#112](https://github.com/mmornati/proton-faces/issues/112). The items below
+are the ones still open as of this document; everything else in the backlog
+has landed and is reflected in the sections above.
+
+| ID | Gap | Effort |
 |---|---|---|
-| FP-2 | `/api/search/face` UploadFile size cap (8 MB) | S |
 | FP-3 | `_face_similarity` per-user-per-minute counter | M |
-| FP-4 | Refresh-token rotation on `/api/auth/refresh` | S |
 | FP-5 | Admin audit log table | M |
-| FP-6 | Bridge `Range` parser 416 fallback | S |
-| FP-7 | Proton session file mount with chmod 600 | S |
 
 ---
 
