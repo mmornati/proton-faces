@@ -63,6 +63,9 @@ Set inside `compose.yml` for each service. Most match the compose-level defaults
 | `AUTH_REFRESH_TTL` | `2592000` (30 days) | Bearer refresh-token lifetime in seconds. |
 | `AUTH_2FA_PENDING_TTL` | `300` (5 minutes) | How long a pending 2FA token stays valid (seconds) during the two-step login. After this window the user must re-enter username + password. |
 | `AUTH_COOKIE_SECURE` | `0` | FP-1: set the `Secure` flag on the HttpOnly refresh-token cookie (`pf_refresh`). Default `0` so local `http://` testing and the demo work; set `1` behind TLS (the `app` compose service does). A `Secure` cookie is only sent over HTTPS, so leaving it `0` behind TLS is a regression of the XSS-exfiltration fix. |
+| `TRUSTED_PROXY_IPS` | _(unset)_ | Comma-separated IPs/CIDRs (or `*`) whose `X-Forwarded-For`/`X-Forwarded-Proto` uvicorn trusts. Unset keeps uvicorn's loopback-only default, so behind a reverse proxy every request carries the proxy's address and the login limiter's per-IP layer throttles everyone behind it together. Set it to the proxy's network (e.g. `172.18.0.0/16`) so the real client IP reaches the limiter. |
+| `AUTH_MAX_CONCURRENT_LOGINS` | `4` | Max bcrypt password checks running at once per uvicorn worker. Excess logins wait up to 10 s and then receive `503` + `Retry-After` — bounds the CPU a credential-stuffing flood can pin. |
+| `MAX_JSON_BODY_BYTES` | `262144` (256 KB) | Ceiling on any non-multipart request body; larger bodies get `413` before parsing. `/api/search/face` is exempt and bounded by `FACE_SEARCH_MAX_UPLOAD_BYTES`. |
 | `ADMIN_PASSWORD` | unset → prompt | Pre-set the first admin's password so `--create-admin` runs non-interactively (e.g. from an init container). At least 8 characters or the command rejects it. |
 
 ## Performance tuning

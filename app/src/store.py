@@ -178,7 +178,9 @@ CREATE TABLE IF NOT EXISTS users (
     -- secret can exist while disabled during the setup "confirm the code"
     -- step, so a half-finished enrollment never locks anyone out.
     totp_secret_enc TEXT,
-    totp_enabled   INTEGER NOT NULL DEFAULT 0
+    totp_enabled   INTEGER NOT NULL DEFAULT 0,
+    -- Counter of the last accepted TOTP code (RFC 6238 §5.2 replay guard).
+    totp_last_counter INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS auth_tokens (
@@ -507,6 +509,8 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN totp_secret_enc TEXT")
     if "totp_enabled" not in ucols:
         conn.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
+    if "totp_last_counter" not in ucols:
+        conn.execute("ALTER TABLE users ADD COLUMN totp_last_counter INTEGER")
 
 
 # --- photos ---------------------------------------------------------------
@@ -2607,7 +2611,10 @@ def set_totp_secret(user_id: int, secret_enc: str | None) -> None:
     must also call ``set_totp_enabled`` once the user confirms a valid code.
     """
     with get_conn() as conn:
-        conn.execute("UPDATE users SET totp_secret_enc=? WHERE id=?", (secret_enc, user_id))
+        if secret_enc is None:
+            conn.execute("UPDATE users SET totp_secret_enc=NULL, totp_last_counter=NULL WHERE id=?", (user_id,))
+        else:
+            conn.execute("UPDATE users SET totp_secret_enc=? WHERE id=?", (secret_enc, user_id))
 
 
 def get_totp_secret(user_id: int) -> str | None:
@@ -2624,6 +2631,19 @@ def set_totp_enabled(user_id: int, enabled: bool) -> None:
         conn.execute(
             "UPDATE users SET totp_enabled=? WHERE id=?", (1 if enabled else 0, user_id)
         )
+
+
+def get_totp_last_counter(user_id: int) -> int | None:
+    """Counter of the last TOTP code this user redeemed (None = never)."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT totp_last_counter FROM users WHERE id=?", (user_id,)).fetchone()
+    return row["totp_last_counter"] if row else None
+
+
+def set_totp_last_counter(user_id: int, counter: int | None) -> None:
+    """Record the counter of an accepted TOTP code so it cannot be replayed."""
+    with get_conn() as conn:
+        conn.execute("UPDATE users SET totp_last_counter=? WHERE id=?", (counter, user_id))
 
 
 def totp_enabled(user_id: int) -> bool:

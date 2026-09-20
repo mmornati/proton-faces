@@ -283,6 +283,7 @@ from auth import (  # noqa: F401  (re-exported for tests)
 from auth import (  # noqa: F401  (re-exported for tests)
     refresh_ttl as auth_refresh_ttl,
 )
+from body_limit import BodyLimitMiddleware
 
 # Re-export bridge_client symbols that tests monkeypatch via `api.<name>`.
 from bridge_client import get_bridge  # noqa: F401  (re-exported for tests)
@@ -378,6 +379,14 @@ app = FastAPI(
 
 app.add_middleware(CompressionMiddleware, minimum_size=1024)
 app.add_middleware(SecurityHeadersMiddleware)
+# Outermost: reject oversized bodies before anything else touches them. The
+# face-search upload has its own byte cap (F-09) and is multipart, so it is
+# exempt here.
+app.add_middleware(
+    BodyLimitMiddleware,
+    max_bytes=settings.max_json_body_bytes,
+    exempt_prefixes=("/api/search/face",),
+)
 
 _STATIC = Path(__file__).parent / "static"
 
