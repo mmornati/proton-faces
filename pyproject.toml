@@ -17,7 +17,7 @@ skip_covered = true
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py312"
 src = ["app/src", "tests", "scripts"]
 
 [tool.ruff.lint]
