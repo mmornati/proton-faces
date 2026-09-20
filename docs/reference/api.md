@@ -119,7 +119,7 @@ Authentication is via `Authorization: Bearer <token>`. Get a token from `POST /a
 | DELETE | `/api/admin/backups/{name}` | admin | Delete a snapshot |
 | POST | `/api/admin/backups/prune` | admin | Prune `{keep}` |
 | GET | `/api/admin/schedule` | admin | Read the auto-backup schedule |
-| PUT | `/api/admin/schedule` | admin | Update the schedule (`{enabled, hour, minute, keep}`) |
+| PUT | `/api/admin/schedule` | admin | Update the schedule (`{enabled, hour, minute, keep}`); `400` with the rejected field names on invalid values |
 | POST | `/api/admin/checks` | admin | Run the seven health checks on demand |
 | POST | `/api/admin/people/gc-empty` | admin | Delete anonymous, face-less placeholder `people` rows (`{deleted: N, ok: true}`); idempotent sweep, never touches named people |
 

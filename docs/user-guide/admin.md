@@ -56,7 +56,9 @@ A daily auto-backup runs inside the `app` container. Configurable:
 - **Minute** — 0–59.
 - **Keep** — 1–365 (oldest pruned after every successful backup).
 
-Stored at `DATA_DIR/admin_config.json`. The daemon thread wakes every minute and runs at most one backup per UTC day, so a missed backup doesn't pile up.
+Stored at `DATA_DIR/admin_config.json`. The daemon thread wakes every minute and runs at most one backup per UTC day, so a missed backup doesn't pile up — if the worker was down at the scheduled time, it catches up with a single backup on the next wake.
+
+Invalid values (out-of-range hour/minute/keep, non-numeric, or a non-boolean `enabled`) are rejected with `400` and a `detail` listing every rejected field; the stored schedule is left unchanged.
 
 ### API
 

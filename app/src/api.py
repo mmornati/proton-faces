@@ -2857,7 +2857,10 @@ def api_admin_set_schedule(body: dict = Body(...),
                            _: CurrentUser = Depends(require_role("admin"))):
     if demo_disable_admin_area():
         raise HTTPException(404, "not found")
-    return admin.set_schedule(body)
+    try:
+        return admin.set_schedule(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.get("/api/admin/sync")
