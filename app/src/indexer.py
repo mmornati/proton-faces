@@ -27,7 +27,7 @@ from PIL import Image
 
 from bridge_client import BridgeError, BridgeTransientError, get_bridge
 from clip import embed_batch, embed_pil
-from cluster import cluster_once, match_person
+from cluster import _person_means_cached, cluster_once, match_person
 from config import settings
 from faces import detect_faces
 from geocode import reverse_geocode_many
@@ -42,20 +42,24 @@ from store import (
     confirm_deletions,
     count_faces_for_photo,
     delete_empty_people,
+    deleted_photos_to_purge,
     get_photos,
     get_photos_keyset,
     get_photos_without_gps,
     init_db,
     insert_clip,
     insert_face,
+    mark_gps_checked,
     mark_pending_removal,
+    purge_deleted_photo_media,
+    release_download_claims,
     reset_stuck_fullres,
-    set_photo_deleted,
     set_photo_done,
     set_photo_duration,
     set_photo_error,
     set_photo_full,
     set_photo_gps,
+    set_photos_error,
     sync_albums,
     transaction,
     upsert_photos,
@@ -124,22 +128,50 @@ def _sidcar_mark_dirty() -> None:
         _sidcar_dirty = True
 
 
-def _sidcar_flush() -> None:
-    """Rewrite sidecar files if dirty and debounce period has elapsed."""
+def _sidcar_flush() -> bool:
+    """Rewrite sidecar files if dirty and the debounce period has elapsed.
+
+    Returns True when a write happened. On failure the dirty flag is set
+    again so the next tick retries instead of silently dropping the update.
+    """
     global _sidcar_dirty, _sidcar_last_write
     now = time.time()
     with _sidcar_lock:
         if not _sidcar_dirty:
-            return
+            return False
         if now - _sidcar_last_write < _sidcar_debounce_sec:
-            return
+            return False
         _sidcar_dirty = False
-        _sidcar_last_write = now
     try:
         _sidcar_write_face()
         _sidcar_write_clip()
     except Exception:
         log.warning("sidecar write failed", exc_info=True)
+        with _sidcar_lock:
+            _sidcar_dirty = True
+        return False
+    with _sidcar_lock:
+        _sidcar_last_write = time.time()
+    return True
+
+
+_SIDECAR_LOOP_TICK_SEC = 15.0
+
+
+def _sidecar_loop() -> None:
+    """Dedicated flush thread.
+
+    The flush used to be the last statement of the sync loop body, which
+    every other branch `continue`d past — with SYNC_ENABLED=0 the sidecar
+    was never rewritten and new faces never reached face search, suggest
+    or duplicates. A tiny loop of its own makes the flush unconditional.
+    """
+    while True:
+        time.sleep(_SIDECAR_LOOP_TICK_SEC)
+        try:
+            _sidcar_flush()
+        except Exception:  # pragma: no cover
+            log.exception("sidecar loop error")
 
 
 def _sidcar_write_face() -> None:
@@ -240,10 +272,19 @@ def set_sync_config(partial: dict) -> dict:
         elif key == "last_full_scan":
             cfg["last_full_scan"] = float(val) if val is not None else None
     try:
-        _sync_config_path().write_text(json.dumps(cfg))
+        _write_json_atomic(_sync_config_path(), cfg)
     except Exception as exc:
         log.warning("failed to persist sync_config: %s", exc)
     return cfg
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    """tmp + os.replace so a crash mid-write never leaves truncated JSON
+    (which get_sync_config would read as defaults and trigger an unscheduled
+    full scan)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload))
+    os.replace(tmp, path)
 
 
 def request_full_sync() -> None:
@@ -337,6 +378,22 @@ def _norm_bbox(bbox: list, w: int, h: int) -> list:
 
 # --- sync loop -------------------------------------------------------------
 
+def _deletion_grace_seconds() -> int:
+    """How long a uid must stay missing before pending_removal becomes deleted.
+
+    Deletions are only staged/confirmed by FULL scans, so the grace is
+    measured in full-scan intervals — not tip-check intervals — otherwise two
+    manual "sync now" presses a few minutes apart during a partial Proton
+    outage would confirm-delete real photos.
+    """
+    try:
+        full_interval = int(get_sync_config().get("full_scan_interval") or 0)
+    except Exception:  # pragma: no cover
+        full_interval = 0
+    cadence = max(1, settings.sync_interval, full_interval)
+    return max(1, settings.grace_cycles) * cadence
+
+
 def _sync_once() -> None:
     """Full scan: reconcile the local index against the full remote timeline.
 
@@ -403,7 +460,7 @@ def _sync_once() -> None:
     # grace_cycles * SYNC_INTERVAL seconds have elapsed without the uid
     # coming back. If the uid reappears in `remote` before then, the
     # upsert_photos reclaim path resets it to 'new' (and clears was_deleted_at).
-    grace_seconds = max(1, settings.grace_cycles) * max(1, settings.sync_interval)
+    grace_seconds = _deletion_grace_seconds()
     if gone:
         staged = mark_pending_removal(gone)
         confirmed = confirm_deletions(grace_seconds=grace_seconds)
@@ -499,48 +556,72 @@ def _db_conn():
 
 # --- downloader ------------------------------------------------------------
 
+_DOWNLOAD_ERROR_PAUSE_SEC = 5.0
+
+
+def _downloader_tick(bridge) -> float:
+    """One downloader iteration. Returns how long the loop should sleep.
+
+    Bridge failures used to flag the whole claimed batch as `error` and
+    retry immediately: during a Proton incident that flipped a 200k backlog
+    to `error` in minutes (one commit per photo) while hammering the bridge.
+    Transient statuses (429/5xx) now hand the claims back to `new` and pause
+    for the upstream Retry-After; other failures are batched into one commit
+    and paced.
+    """
+    photos = get_photos("new", limit=settings.thumbnails_batch)
+    if not photos:
+        return 5.0
+    uids = [r["uid"] for r in photos]
+    # One UPDATE ... RETURNING claims the whole batch instead of N
+    # separate per-uid connections/commits; only the uids that were
+    # actually 'new' come back.
+    claimed = claim_photos_for_download(uids)
+    if not claimed:
+        return 5.0
+    try:
+        resp = bridge.thumbnails(claimed)
+    except BridgeTransientError as exc:
+        released = release_download_claims(claimed)
+        pause = min(600.0, max(exc.retry_after_sec, 30.0))
+        log.warning(
+            "thumbnail batch transient %s; released %d claims, pausing %.0fs",
+            exc.status_code, released, pause,
+        )
+        return pause
+    except Exception as exc:
+        log.warning("thumbnail batch failed: %s", exc)
+        set_photos_error(claimed, str(exc)[:300])
+        return _DOWNLOAD_ERROR_PAUSE_SEC
+    for r in resp.get("results", []):
+        uid = r.get("uid")
+        if not uid:
+            continue
+        if r.get("ok"):
+            _pending.put(uid)
+        else:
+            err = r.get("error", "thumbnail unavailable")
+            if "no image preview" in str(err).lower():
+                # No server-side preview. Both HEIC/HEIF images AND
+                # videos get routed to the fullres loop: the loop
+                # dispatches on media_type to either decode-with-Pillow
+                # or extract-a-frame-with-ffmpeg.
+                if _is_image(uid) or _is_video(uid):
+                    set_photo_full(uid)
+                else:
+                    set_photo_done(uid, "", None, None)
+            else:
+                set_photo_error(uid, str(err)[:300])
+    return 0.0
+
+
 def _downloader_loop() -> None:
     bridge = get_bridge()
     while True:
         try:
-            photos = get_photos("new", limit=settings.thumbnails_batch)
-            if not photos:
-                time.sleep(5)
-                continue
-            uids = [r["uid"] for r in photos]
-            # One UPDATE ... RETURNING claims the whole batch instead of N
-            # separate per-uid connections/commits; only the uids that were
-            # actually 'new' come back.
-            claimed = claim_photos_for_download(uids)
-            if not claimed:
-                time.sleep(5)
-                continue
-            try:
-                resp = bridge.thumbnails(claimed)
-            except Exception as exc:
-                log.warning("thumbnail batch failed: %s", exc)
-                for u in claimed:
-                    set_photo_error(u, str(exc)[:300])
-                continue
-            for r in resp.get("results", []):
-                uid = r.get("uid")
-                if not uid:
-                    continue
-                if r.get("ok"):
-                    _pending.put(uid)
-                else:
-                    err = r.get("error", "thumbnail unavailable")
-                    if "no image preview" in str(err).lower():
-                        # No server-side preview. Both HEIC/HEIF images AND
-                        # videos get routed to the fullres loop: the loop
-                        # dispatches on media_type to either decode-with-Pillow
-                        # or extract-a-frame-with-ffmpeg.
-                        if _is_image(uid) or _is_video(uid):
-                            set_photo_full(uid)
-                        else:
-                            set_photo_done(uid, "", None, None)
-                    else:
-                        set_photo_error(uid, str(err)[:300])
+            pause = _downloader_tick(bridge)
+            if pause > 0:
+                time.sleep(pause)
         except Exception as exc:  # pragma: no cover
             log.exception("downloader loop error: %s", exc)
             time.sleep(10)
@@ -612,7 +693,7 @@ def _process_batch(uids: list[str]) -> None:
             continue
         try:
             with Image.open(work) as img:
-                decoded[uid] = img.convert("RGB")
+                decoded[uid] = _oriented(img).convert("RGB")
         except Exception as exc:  # pragma: no cover
             log.warning("could not decode %s: %s", uid, exc)
 
@@ -641,6 +722,13 @@ def _process_one(
     clip_vec: np.ndarray | None = None,
 ) -> None:
     work = _work_path(uid)
+    # Warm the person-means cache before opening the transaction: a cold
+    # first load issues its own store calls, and those must not run inside
+    # the per-photo transaction below.
+    try:
+        _person_means_cached()
+    except Exception:  # pragma: no cover - match_person degrades to None
+        log.warning("person-means warm-up failed", exc_info=True)
 
     # One transaction per photo: the claim, the read, every per-face insert,
     # the clip insert and the final 'done' mark all run on a single
@@ -662,7 +750,7 @@ def _process_one(
             rgb = work_img
         else:
             with Image.open(work) as img:
-                rgb = img.convert("RGB")
+                rgb = _oriented(img).convert("RGB")
         w, h = rgb.size
         arr = np.asarray(rgb)
         bgr = arr[:, :, ::-1].copy()  # PIL -> OpenCV BGR
@@ -787,12 +875,7 @@ def _fullres_loop() -> None:
             now = time.time()
             for uid_ in [u for u, t in _fullres_backoff.items() if t <= now]:
                 del _fullres_backoff[uid_]
-            photos = get_photos("full", limit=50)
-            uid = None
-            for row in photos:
-                if _fullres_backoff.get(row["uid"], 0) <= now:
-                    uid = row["uid"]
-                    break
+            uid = _fullres_pick_next(now)
             if uid is None:
                 # Crash recovery: any photo stuck in 'fullres' gets retried.
                 stuck = get_photos("fullres", limit=1)
@@ -871,9 +954,37 @@ def _fullres_loop() -> None:
                 tmp.unlink(missing_ok=True)
                 _fullres_backoff[uid] = time.time() + settings.fullres_backoff_sec
                 set_photo_error(uid, str(exc)[:300])
+                # Pace the failure path too: a bridge answering 500 for
+                # every item must not burn through the whole backlog (one
+                # commit each) at full request rate.
+                time.sleep(min(60.0, max(1.0, float(settings.fullres_drain_interval_sec))))
         except Exception as exc:  # pragma: no cover
             log.exception("fullres loop error: %s", exc)
             time.sleep(10)
+
+
+_FULLRES_PICK_PAGE = 50
+_FULLRES_PICK_MAX_PAGES = 40
+
+
+def _fullres_pick_next(now: float) -> str | None:
+    """Next `full` uid not currently backed off, paging past a backed-off head.
+
+    `get_photos` orders oldest-first, so once the 50 oldest rows are all in
+    backoff the loop used to re-read the same page every 5 s and make zero
+    progress for the whole backoff window — even with thousands of healthy
+    rows queued behind them. Page through (bounded) until a candidate shows.
+    """
+    for page in range(_FULLRES_PICK_MAX_PAGES):
+        rows = get_photos("full", limit=_FULLRES_PICK_PAGE, offset=page * _FULLRES_PICK_PAGE)
+        if not rows:
+            return None
+        for row in rows:
+            if _fullres_backoff.get(row["uid"], 0) <= now:
+                return row["uid"]
+        if len(rows) < _FULLRES_PICK_PAGE:
+            return None
+    return None
 
 
 def _video_poster(src: Path, uid: str) -> None:
@@ -948,9 +1059,25 @@ def _resize_to_thumb(src: Path, dest: Path, max_side: int = 512) -> None:
     except Exception:  # pragma: no cover
         pass
     with Image.open(src) as img:
+        # Apply the EXIF Orientation tag BEFORE downscaling: the WebP output
+        # carries no EXIF, so a rotation that is not baked into the pixels
+        # here is lost forever (sideways thumbnails, and RetinaFace then runs
+        # on a rotated frame and misses most faces).
+        img = _oriented(img)
         img.thumbnail((max_side, max_side))
         img = img.convert("RGB")
         img.save(dest, format="WEBP", quality=82, method=settings.webp_method)
+
+
+def _oriented(img):
+    """Return `img` with its EXIF Orientation applied (no-op without the tag)."""
+    from PIL import ImageOps
+
+    try:
+        out = ImageOps.exif_transpose(img)
+    except Exception:  # pragma: no cover - corrupt EXIF must never fail a decode
+        return img
+    return out if out is not None else img
 
 
 def _extract_exif_gps(path: Path) -> tuple[float, float] | None:
@@ -1088,6 +1215,7 @@ def start() -> list[threading.Thread]:
         threading.Thread(target=_cluster_loop, name="cluster", daemon=True),
         threading.Thread(target=_gps_loop, name="gps", daemon=True),
         threading.Thread(target=_albums_loop, name="albums", daemon=True),
+        threading.Thread(target=_sidecar_loop, name="sidecar", daemon=True),
     ]
     for i in range(settings.workers):
         threads.append(threading.Thread(target=_worker_loop, name=f"worker-{i}", daemon=True))
@@ -1180,9 +1308,7 @@ def _sync_loop() -> None:
             else:
                 set_sync_config({"last_full_scan": time.time()})
         # else: nothing new — loop around and sleep until the next wakeup.
-
-        # Flush sidecar if dirty (debounced)
-        _sidcar_flush()
+        # (The sidecar flush runs on its own thread — see _sidecar_loop.)
 
 
 def _tip_check(cfg: dict) -> bool:
@@ -1318,7 +1444,10 @@ def backfill_gps_exif(media_type: str | None = None, limit: int = 0) -> int:
         rows = get_photos_without_gps(limit=500, offset=offset, media_type=media_type)
         if not rows:
             break
-        offset += len(rows)
+        # Rows that matched keep their place in the result set (they now have
+        # GPS and drop out), and rows marked as checked drop out too — so
+        # only rows that failed for another reason stay. Advance past those.
+        before = set(r["uid"] for r in rows)
         for row in rows:
             if limit and matched >= limit:
                 return matched
@@ -1338,6 +1467,10 @@ def backfill_gps_exif(media_type: str | None = None, limit: int = 0) -> int:
                     set_photo_gps(uid, gps[0], gps[1])
                     matched += 1
                     log.info("gps exif backfill: %s -> %s", uid, gps)
+                else:
+                    # Remember the miss: otherwise this photo is re-downloaded
+                    # from Proton on every sweep, forever.
+                    mark_gps_checked([uid])
             except BridgeTransientError as exc:
                 log.warning(
                     "gps exif backfill transient %s for %s; sleeping %.0fs",
@@ -1348,6 +1481,8 @@ def backfill_gps_exif(media_type: str | None = None, limit: int = 0) -> int:
                 log.warning("gps exif backfill failed for %s: %s", uid, exc)
             finally:
                 tmp.unlink(missing_ok=True)
+        remaining = {r["uid"] for r in get_photos_without_gps(limit=len(before), offset=offset, media_type=media_type)}
+        offset += len(before & remaining)
     log.info("gps exif backfill matched %d photos", matched)
     return matched
 
@@ -1432,17 +1567,21 @@ def cleanup_deleted() -> None:
     so a recently-reclaimed (falsely deleted) photo doesn't have its thumbnail
     purged before the reclaim path can reuse it.
     """
-    grace = DELETED_THUMB_GRACE_SEC
-    now = int(time.time())
-    with _db_conn() as conn:
-        rows = conn.execute(
-            "SELECT uid, thumb_path, was_deleted_at FROM photos WHERE status='deleted'"
-        ).fetchall()
+    rows = deleted_photos_to_purge(DELETED_THUMB_GRACE_SEC)
+    if not rows:
+        return
     for r in rows:
-        if r["was_deleted_at"] is not None and now - r["was_deleted_at"] < grace:
-            continue
         if r["thumb_path"]:
             p = settings.thumb_dir / r["thumb_path"]
             if p.exists():
                 p.unlink(missing_ok=True)
-        set_photo_deleted(r["uid"])
+    # One batched pass instead of a no-op UPDATE + commit per historical
+    # deletion on every full scan. Faces and CLIP vectors go with the
+    # thumbnail so deleted photos leave the search matrices and people
+    # counts; the touched people are recounted inside the same commit.
+    touched = purge_deleted_photo_media([r["uid"] for r in rows])
+    if touched:
+        log.info("cleanup_deleted: purged media of %d photos; recounted %d people", len(rows), len(touched))
+    from store import invalidate_embedding_cache
+    invalidate_embedding_cache()
+    _sidcar_mark_dirty()

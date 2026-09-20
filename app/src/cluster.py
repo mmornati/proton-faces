@@ -39,43 +39,51 @@ def _decode(row) -> np.ndarray:
 # (stale-while-revalidate, same pattern as the API embedding cache).
 _PERSON_MEANS_TTL = 300.0
 _person_means: dict[int, np.ndarray] | None = None
-# Parallel arrays stacked once when the cache is built so match_person can do
-# a single matrix-vector product instead of a per-person Python loop. `pids[i]`
-# holds the person_id whose mean embedding is row `i` of `mat`.
-_person_means_pids: np.ndarray | None = None
-_person_means_mat: np.ndarray | None = None
+# (pids, mat) stacked once when the cache is built so match_person can do a
+# single matrix-vector product instead of a per-person Python loop. `pids[i]`
+# holds the person_id whose mean embedding is row `i` of `mat`. Published as
+# ONE tuple, together with the dict, under `_person_means_lock`: two separate
+# global writes let a worker argmax against the old matrix and index the new
+# pids — a face silently attached to the wrong person after every merge.
+_person_means_stack: tuple[np.ndarray, np.ndarray] | None = None
 _person_means_ts = 0.0
 _person_means_lock = threading.Lock()
 _person_means_refreshing = False
 
 
-def _build_person_means() -> dict[int, np.ndarray]:
-    """Fetch {person_id: L2-normalized mean embedding} and refresh the stacked
-    (P, 512) matrix + person-id arrays. Runs WITHOUT `_person_means_lock` so
-    the heavy SQLite fetch doesn't block concurrent readers (only the final
-    swap takes the lock in the caller)."""
-    global _person_means_pids, _person_means_mat
+def _build_person_means() -> tuple[dict[int, np.ndarray], tuple[np.ndarray, np.ndarray] | None]:
+    """Fetch {person_id: L2-normalized mean embedding} plus its stacked
+    (pids, mat) form. Pure: touches no globals, so it can run WITHOUT
+    `_person_means_lock` while readers keep using the previous generation;
+    the caller publishes the result under the lock in one assignment."""
     means = person_mean_embeddings()
-    if means:
-        _person_means_pids = np.array(list(means.keys()), dtype=np.int64)
-        _person_means_mat = np.stack(list(means.values())).astype(np.float32)
-    else:
-        _person_means_pids = None
-        _person_means_mat = None
-    return means
+    if not means:
+        return means, None
+    pids = np.array(list(means.keys()), dtype=np.int64)
+    mat = np.stack(list(means.values())).astype(np.float32)
+    return means, (pids, mat)
+
+
+def _publish_person_means(means: dict[int, np.ndarray],
+                          stack: tuple[np.ndarray, np.ndarray] | None) -> None:
+    """Swap in a new generation. Caller must hold `_person_means_lock`."""
+    global _person_means, _person_means_stack, _person_means_ts
+    _person_means = means
+    _person_means_stack = stack
+    _person_means_ts = time.time()
 
 
 def _background_refresh_person_means() -> None:
-    global _person_means, _person_means_ts, _person_means_refreshing
+    global _person_means_refreshing
     try:
-        means = _build_person_means()
+        means, stack = _build_person_means()
     except Exception:
         log.exception("background person-means refresh failed")
-        _person_means_refreshing = False
+        with _person_means_lock:
+            _person_means_refreshing = False
         return
     with _person_means_lock:
-        _person_means = means
-        _person_means_ts = time.time()
+        _publish_person_means(means, stack)
         _person_means_refreshing = False
 
 
@@ -86,17 +94,16 @@ def _person_means_cached():
     Returns the dict for compatibility. Expired caches are served stale while
     a single background thread refreshes, so workers never stall.
     """
-    global _person_means, _person_means_ts, _person_means_refreshing
+    global _person_means_refreshing
     now = time.time()
     if _person_means is not None and now - _person_means_ts < _PERSON_MEANS_TTL:
         return _person_means
     if _person_means is None:
         # First load: synchronous, we have nothing to serve stale.
         with _person_means_lock:
-            now = time.time()
             if _person_means is None:
-                _person_means = _build_person_means()
-                _person_means_ts = now
+                means, stack = _build_person_means()
+                _publish_person_means(means, stack)
         return _person_means
     # Expired but we have a stale cache: serve it and refresh in the background.
     with _person_means_lock:
@@ -116,16 +123,18 @@ def match_person(embedding: bytes, threshold: float) -> int | None:
     forming a duplicate person). Both vectors are L2-normalized, so the dot
     product is the cosine similarity.
     """
-    means = _person_means_cached()
-    if not means:
+    _person_means_cached()
+    stack = _person_means_stack  # one read: pids and mat from the same generation
+    if stack is None:
         return None
+    pids, mat = stack
     emb = np.frombuffer(embedding, dtype=np.float32)
-    sims = _person_means_mat @ emb
+    sims = mat @ emb
     i = int(np.argmax(sims))
     best_sim = float(sims[i])
     if best_sim < threshold:
         return None
-    return int(_person_means_pids[i])
+    return int(pids[i])
 
 
 def cluster_once(max_faces: int = 5000) -> int:

@@ -348,6 +348,9 @@ class TestPhotoClaims:
         store.upsert_photos([_photo("p1", media_type="image/heic")])
         store.upsert_photos([_photo("p2", media_type="image/heic")])
         store.upsert_photos([_photo("p3", media_type="image/jpeg")])
+        store.upsert_photos([_photo("p4", media_type="image/jpeg")])  # stays 'new': never swept
+        for uid in ("p1", "p2", "p3"):
+            store.set_photo_done(uid, f"{uid}.webp", None, None)
         store.set_photo_gps("p2", 1.0, 2.0)
         rows = store.get_photos_without_gps()
         assert {r["uid"] for r in rows} == {"p1", "p3"}
@@ -1720,3 +1723,97 @@ class TestBatchHelpersChunking:
         assert len(counts) == n and set(counts.values()) == {1}
         assert store.favorite_uids(user_id, uids) == set(uids[::2])
         assert store.get_photos_batch([]) == {} and store.favorite_uids(user_id, []) == set()
+
+
+
+class TestTransactionNesting:
+    """get_conn() inside transaction() must not commit the outer work (audit B-2)."""
+
+    def test_helper_inside_transaction_does_not_commit(self, tmp_db):
+        store.upsert_photos([{"uid": "t1", "name": "t1", "media_type": "image/jpeg", "capture_time": 1}])
+        with pytest.raises(RuntimeError):
+            with store.transaction() as conn:
+                assert store.claim_photo_for_processing("t1", conn) is False or True
+                conn.execute("UPDATE photos SET status='processing' WHERE uid='t1'")
+                # A helper that opens its own get_conn() on the same thread:
+                # previously this committed the half-done transaction.
+                store.person_mean_embeddings()
+                assert store.get_photo("t1")["status"] == "processing"
+                raise RuntimeError("abort")
+        assert store.get_photo("t1")["status"] == "new"
+
+    def test_nested_transaction_rejected(self, tmp_db):
+        with store.transaction():
+            with pytest.raises(RuntimeError):
+                with store.transaction():
+                    pass
+        # The flag is cleared afterwards so normal commits resume.
+        with store.get_conn() as conn:
+            conn.execute("SELECT 1")
+
+    def test_in_transaction_flag_cleared_after_rollback(self, tmp_db):
+        with pytest.raises(ValueError):
+            with store.transaction():
+                raise ValueError
+        assert getattr(store._local, "in_transaction", False) is False
+
+
+class TestDeletedMediaPurge:
+    def _seed(self, uid, deleted_at):
+        with store.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO photos (uid, name, media_type, capture_time, status, thumb_path, was_deleted_at) "
+                "VALUES (?, ?, 'image/jpeg', 1, 'deleted', ?, ?)",
+                (uid, uid, f"{uid}.webp", deleted_at),
+            )
+            conn.execute(
+                "INSERT INTO faces (photo_uid, confidence, bbox, embedding) VALUES (?, 0.9, '[0,0,1,1]', ?)",
+                (uid, np.ones(512, dtype=np.float32).tobytes()),
+            )
+            conn.execute("INSERT INTO clips (photo_uid, embedding) VALUES (?, ?)",
+                         (uid, np.ones(512, dtype=np.float32).tobytes()))
+
+    def test_purge_selects_only_past_grace_and_is_idempotent(self, tmp_db):
+        now = int(time.time())
+        self._seed("old", now - 10_000)
+        self._seed("fresh", now - 10)
+        rows = store.deleted_photos_to_purge(grace_sec=3600)
+        assert [r["uid"] for r in rows] == ["old"]
+        face_id = store.get_conn().__enter__().execute("SELECT id FROM faces WHERE photo_uid='old'").fetchone()[0]
+        pid = store.create_person(name="P", cover_uid="old", cover_face_id=face_id)
+        store.assign_face_person(face_id, pid)
+        touched = store.purge_deleted_photo_media(["old"])
+        assert touched == {pid}
+        assert store.count_faces_for_photo("old") == 0
+        assert store.clip_exists("old") is False
+        assert store.get_photo("old")["thumb_path"] is None
+        assert store.get_photo("old")["status"] == "deleted"
+        assert store.deleted_photos_to_purge(grace_sec=3600) == []
+        # Untouched: the fresh row still has its media.
+        assert store.count_faces_for_photo("fresh") == 1
+
+
+class TestDownloaderStoreHelpers:
+    def test_release_claims_and_batch_error(self, tmp_db):
+        store.upsert_photos([
+            {"uid": f"d{i}", "name": f"d{i}", "media_type": "image/jpeg", "capture_time": i} for i in range(3)
+        ])
+        claimed = store.claim_photos_for_download(["d0", "d1", "d2"])
+        assert set(claimed) == {"d0", "d1", "d2"}
+        assert store.release_download_claims(["d0", "d1"]) == 2
+        assert store.get_photo("d0")["status"] == "new"
+        assert store.get_photo("d2")["status"] == "downloading"
+        assert store.set_photos_error(["d2", "missing"], "boom") == 1
+        assert store.get_photo("d2")["status"] == "error"
+
+    def test_gps_backfill_marker(self, tmp_db):
+        with store.get_conn() as conn:
+            conn.executemany(
+                "INSERT INTO photos (uid, name, media_type, capture_time, status, thumb_path) "
+                "VALUES (?, ?, 'image/heic', 1, 'done', 'x.webp')",
+                [("g1", "g1"), ("g2", "g2")],
+            )
+        assert {r["uid"] for r in store.get_photos_without_gps(media_type="image/heic")} == {"g1", "g2"}
+        store.mark_gps_checked(["g1"])
+        assert [r["uid"] for r in store.get_photos_without_gps(media_type="image/heic")] == ["g2"]
+        assert store.get_photo("g1")["gps_checked_at"] is not None
