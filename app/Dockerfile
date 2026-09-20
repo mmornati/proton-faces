@@ -3,15 +3,16 @@
 # ML model weights are baked in at build time so the container has no
 # runtime download step: InsightFace buffalo_l + OpenCLIP ViT-B-32.
 #
-# Python 3.11 + numpy<1.24: insightface 0.7.3 relies on aliases (np.bool /
-# np.float) removed in numpy 1.24+ and has no cp312 wheels for older numpy.
+# Python 3.12 + numpy>=1.26: insightface >=2.0 ships a py3-none wheel with
+# no cp312 blocker and no reliance on numpy aliases removed in 1.24+.
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # System deps: onnxruntime wheels need libgomp1; build-essential is required to
-# compile insightface's Cython extension; curl downloads the baked CLIP models;
-# unzip extracts the pinned buffalo_l release asset. ffmpeg extracts video
-# poster frames + reads durations via ffprobe.
+# compile reverse_geocoder's Cython extension (insightface's own wheel is pure
+# Python as of >=2.0); curl downloads the baked CLIP models; unzip extracts the
+# pinned buffalo_l release asset. ffmpeg extracts video poster frames + reads
+# durations via ffprobe.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libgomp1 libglib2.0-0 ffmpeg build-essential curl unzip \
