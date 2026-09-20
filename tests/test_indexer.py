@@ -538,3 +538,82 @@ class TestSyncOnceDeletionSweep:
         assert store.get_photo("p1")["status"] == "pending_removal"
         assert store.get_photo("p2")["status"] == "deleted"
         assert store.get_photo("p3")["status"] == "done"
+
+
+class TestRebuildPendingKeyset:
+    """_rebuild_pending must re-queue every 'downloading' photo whose work
+    file exists, exactly once, using keyset pagination (no OFFSET)."""
+
+    def _seed_downloading(self, uid):
+        store.upsert_photos(
+            [{"uid": uid, "name": uid, "media_type": "image/jpeg", "capture_time": 1}]
+        )
+        assert store.claim_photo_for_download(uid) is True
+        return uid
+
+    def _write_work(self, uid):
+        work = indexer._work_path(uid)
+        work.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.full((50, 40, 3), 128, dtype=np.uint8)).save(work, "WEBP")
+
+    def test_requeues_all_with_work_file(self, tmp_db, app_settings, monkeypatch):
+        # More rows than one batch would need 2001 rows; use a small batch to
+        # force multiple pages cheaply.
+        monkeypatch.setattr(indexer, "_pending", queue.Queue())
+        uids = [self._seed_downloading(f"p{i}") for i in range(5)]
+        for uid in uids:
+            self._write_work(uid)
+        # One photo without a work file must be skipped.
+        self._seed_downloading("missing")
+
+        indexer._rebuild_pending(batch=2)
+
+        requeued = []
+        while not indexer._pending.empty():
+            requeued.append(indexer._pending.get())
+        assert sorted(requeued) == sorted(uids)
+
+    def test_no_work_file_not_requeued(self, tmp_db, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer, "_pending", queue.Queue())
+        self._seed_downloading("p1")
+        indexer._rebuild_pending()
+        assert indexer._pending.empty()
+
+
+class TestTipCheck:
+    """_tip_check must only consult the tip uids, never the full local set."""
+
+    class _FakeBridge:
+        def __init__(self, uids):
+            self._uids = uids
+
+        def timeline_ids(self, limit=0):
+            return [{"uid": u, "captureTime": 1} for u in self._uids]
+
+    def _seed(self, uid, status="done"):
+        store.upsert_photos(
+            [{"uid": uid, "name": uid, "media_type": "image/jpeg",
+              "capture_time": 1, "sha1": f"sha-{uid}", "albums": [], "size": 1}]
+        )
+        with store.get_conn() as conn:
+            conn.execute("UPDATE photos SET status=? WHERE uid=?", (status, uid))
+
+    def test_all_known_returns_false(self, tmp_db, app_settings, monkeypatch):
+        self._seed("p1")
+        self._seed("p2")
+        monkeypatch.setattr(indexer, "get_bridge", lambda: self._FakeBridge(["p1", "p2"]))
+        assert indexer._tip_check({"tip_size": 10}) is False
+
+    def test_new_uid_returns_true(self, tmp_db, app_settings, monkeypatch):
+        self._seed("p1")
+        monkeypatch.setattr(indexer, "get_bridge", lambda: self._FakeBridge(["p1", "p2"]))
+        assert indexer._tip_check({"tip_size": 10}) is True
+
+    def test_deleted_uid_counts_as_unknown(self, tmp_db, app_settings, monkeypatch):
+        self._seed("p1", status="deleted")
+        monkeypatch.setattr(indexer, "get_bridge", lambda: self._FakeBridge(["p1"]))
+        assert indexer._tip_check({"tip_size": 10}) is True
+
+    def test_empty_listing_returns_false(self, tmp_db, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer, "get_bridge", lambda: self._FakeBridge([]))
+        assert indexer._tip_check({"tip_size": 10}) is False

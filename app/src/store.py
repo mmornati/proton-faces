@@ -696,6 +696,23 @@ def get_photos(status: str, limit: int = 500, offset: int = 0) -> list[sqlite3.R
         ).fetchall()
 
 
+def get_photos_keyset(
+    status: str, limit: int = 500, after_rowid: int = 0
+) -> list[sqlite3.Row]:
+    """Keyset-paginated photos for a status, ordered by rowid.
+
+    Unlike get_photos (OFFSET), each page only scans rows after the previous
+    page's last rowid, so paging a large backlog is O(n) instead of O(n²).
+    Rows include the implicit ``rowid`` so the caller can advance the cursor.
+    """
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT rowid, * FROM photos "
+            "WHERE status=? AND rowid > ? ORDER BY rowid LIMIT ?",
+            (status, after_rowid, limit),
+        ).fetchall()
+
+
 def get_photos_without_gps(
     limit: int = 500, offset: int = 0, media_type: str | None = None
 ) -> list[sqlite3.Row]:
