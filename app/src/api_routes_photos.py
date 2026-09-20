@@ -258,7 +258,7 @@ def api_photo_meta(uid: str, user: CurrentUser = Depends(require_user)):
     meta["face_count"] = len(faces)
     meta["people"] = [{"person_id": k, "name": v} for k, v in people.items()]
     try:
-        nodes = get_bridge().nodes([uid])
+        nodes = get_bridge().nodes([uid], timeout_sec=5.0)
         if nodes:
             n = nodes[0]
             keys = (

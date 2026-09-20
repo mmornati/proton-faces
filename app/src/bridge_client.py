@@ -195,8 +195,22 @@ class BridgeClient:
             )
         return items
 
-    def nodes(self, uids: list[str]) -> list[dict]:
-        """Fetch full metadata for specific photo uids (NDJSON streamed)."""
+    @staticmethod
+    def _raise_transient(r: httpx.Response) -> None:
+        """Turn a 429/502/503 into BridgeTransientError so callers back off
+        instead of flagging photos as permanently failed."""
+        if r.status_code in (429, 502, 503):
+            retry_after = _parse_retry_after(r.headers.get("Retry-After") or r.headers.get("retry-after"))
+            msg = r.headers.get("X-Error-Message", "")
+            raise BridgeTransientError(r.status_code, msg or "upstream transient error", retry_after)
+
+    def nodes(self, uids: list[str], timeout_sec: float = 3600.0) -> list[dict]:
+        """Fetch full metadata for specific photo uids (NDJSON streamed).
+
+        ``timeout_sec`` is the read deadline: the indexer's bulk sync keeps
+        the hour-long default; request-path callers (photo meta) must pass a
+        short one so a wedged bridge cannot pin API threads for an hour.
+        """
         if not uids:
             return []
         with self._client.stream(
@@ -204,8 +218,9 @@ class BridgeClient:
             f"{self.base_url}/nodes",
             json={"uids": uids},
             headers=self._headers(),
-            timeout=httpx.Timeout(3600.0, connect=30.0),
+            timeout=httpx.Timeout(timeout_sec, connect=30.0),
         ) as r:
+            self._raise_transient(r)
             r.raise_for_status()
             return self._ndjson_items(r)
 
@@ -216,6 +231,7 @@ class BridgeClient:
             headers=self._headers(),
             timeout=httpx.Timeout(300.0, connect=30.0),
         )
+        self._raise_transient(r)
         r.raise_for_status()
         return r.json()
 
@@ -226,6 +242,7 @@ class BridgeClient:
         its WebP written on the shared volume.
         """
         r = self._client.post(f"{self.base_url}/thumbnails", json={"uids": uids}, headers=self._headers())
+        self._raise_transient(r)
         r.raise_for_status()
         return r.json()
 

@@ -94,6 +94,19 @@ def read_face_sidecar() -> dict | None:
             ]
             ids = np.asarray(meta["ids"], dtype=np.int64)
             person_ids = meta["person_ids"]
+            n = int(mat.shape[0])
+            if len(ids) != n or len(person_ids) != n or len(photo_uids) != n:
+                # A reader that lands between two sidecar generations (or a
+                # torn write) would otherwise index face ids / person ids by
+                # a row offset from a different matrix — silently assigning
+                # faces to the wrong people. Serve nothing instead.
+                log.warning(
+                    "face sidecar mismatch: meta=%d uids=%d mat=%d — ignoring",
+                    len(ids), len(photo_uids), n,
+                )
+                _face_mmap = None
+                _face_mmap_ts = 0.0
+                return None
             _face_mmap = {
                 "ids": ids,
                 "photo_uids": photo_uids,
@@ -115,7 +128,17 @@ def write_face_sidecar(
     person_ids: list[int | None],
     mat: np.ndarray,
 ) -> None:
-    """Write face embedding sidecar files atomically (tmp+rename)."""
+    """Write the face sidecar as a set: every temp file first, then the renames.
+
+    Each rename is atomic on its own, but a reader on another process could
+    land between two of them. All three temps are fully written (and
+    fsync'd) before any rename, and the metadata — the file readers open
+    first — is renamed LAST, so a reader that sees the new meta also sees
+    the new matrix. ``read_face_sidecar`` additionally refuses mismatched
+    lengths as a second line of defence.
+    """
+    if len(ids) != mat.shape[0] or len(photo_uids) != mat.shape[0] or len(person_ids) != mat.shape[0]:
+        raise ValueError("face sidecar inputs disagree on row count")
     d = _sidecar_dir()
     meta = {
         "count": len(ids),
@@ -123,15 +146,19 @@ def write_face_sidecar(
         "ids": ids,
         "person_ids": person_ids,
     }
-    _write_atomic(d / _FACE_META_PATH, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
-    _write_atomic_npy(d / _FACE_MAT_PATH, mat)
     # Store uids as fixed-width bytes for mmap-friendly loading
     max_len = max((len(u) for u in photo_uids), default=0) + 1  # +1 for null terminator
     uids_arr = np.zeros((len(photo_uids), max_len), dtype=np.uint8)
     for i, u in enumerate(photo_uids):
         encoded = u.encode("utf-8")
         uids_arr[i, : len(encoded)] = list(encoded)
-    _write_atomic_npy(d / _FACE_UIDS_PATH, uids_arr)
+    tmp_mat = _stage_npy(d / _FACE_MAT_PATH, mat)
+    tmp_uids = _stage_npy(d / _FACE_UIDS_PATH, uids_arr)
+    tmp_meta = _stage_bytes(d / _FACE_META_PATH, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+    os.replace(tmp_mat, d / _FACE_MAT_PATH)
+    os.replace(tmp_uids, d / _FACE_UIDS_PATH)
+    os.replace(tmp_meta, d / _FACE_META_PATH)
+    _fsync_dir(d)
 
 
 # --- CLIP sidecar ----------------------------------------------------------
@@ -169,6 +196,10 @@ def read_clip_sidecar() -> tuple[list[str], np.ndarray] | None:
             X = np.load(str(mat_path), mmap_mode="r")
             uids = meta["uids"]
             n = meta["count"]
+            if len(uids) != int(X.shape[0]):
+                log.warning("clip sidecar mismatch: meta=%d mat=%d — ignoring", len(uids), X.shape[0])
+                _clip_mmap = None
+                return None
             _clip_mmap = (now, n, uids, X)
             return uids, X
         except Exception:
@@ -178,15 +209,20 @@ def read_clip_sidecar() -> tuple[list[str], np.ndarray] | None:
 
 
 def write_clip_sidecar(uids: list[str], X: np.ndarray) -> None:
-    """Write CLIP matrix sidecar files atomically (tmp+rename)."""
+    """Write the CLIP sidecar as a set (see write_face_sidecar): matrix first, meta last."""
+    if len(uids) != X.shape[0]:
+        raise ValueError("clip sidecar inputs disagree on row count")
     d = _sidecar_dir()
     meta = {
         "count": len(uids),
         "generated_at": time.time(),
         "uids": uids,
     }
-    _write_atomic(d / _CLIP_META_PATH, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
-    _write_atomic_npy(d / _CLIP_MAT_PATH, X)
+    tmp_mat = _stage_npy(d / _CLIP_MAT_PATH, X)
+    tmp_meta = _stage_bytes(d / _CLIP_META_PATH, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+    os.replace(tmp_mat, d / _CLIP_MAT_PATH)
+    os.replace(tmp_meta, d / _CLIP_META_PATH)
+    _fsync_dir(d)
 
 
 # --- internal helpers ------------------------------------------------------
@@ -203,16 +239,42 @@ def _read_meta(name: str) -> dict | None:
         return None
 
 
-def _write_atomic(path: Path, data: bytes) -> None:
+def _fsync_file(path: Path) -> None:
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_dir(path: Path) -> None:
+    """Persist the renames themselves; a power loss otherwise can leave the
+    old directory entry pointing at a zero-length inode."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _stage_bytes(path: Path, data: bytes) -> Path:
+    """Write `data` to a temp sibling of `path`, fsync it, return the temp path."""
     tmp = path.with_suffix(".tmp" + path.suffix)
     tmp.write_bytes(data)
-    tmp.rename(path)
+    _fsync_file(tmp)
+    return tmp
 
 
-def _write_atomic_npy(path: Path, arr: np.ndarray) -> None:
+def _stage_npy(path: Path, arr: np.ndarray) -> Path:
     tmp = path.with_suffix(".tmp.npy")
     np.save(str(tmp), arr)
-    tmp.rename(path)
+    _fsync_file(tmp)
+    return tmp
 
 
 def invalidate_face_cache() -> None:

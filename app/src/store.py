@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS photos (
     -- reclaim so we have a historical record.
     was_deleted_at INTEGER,
     -- times a `status='full'` row has been re-queued; capped to avoid infinite loops
-    retry_count  INTEGER NOT NULL DEFAULT 0
+    retry_count  INTEGER NOT NULL DEFAULT 0,
+    gps_checked_at INTEGER              -- EXIF GPS backfill inspected this row (no coords found)
 );
 CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(status);
 -- Composite for the indexer poll query WHERE status=? ORDER BY capture_time
@@ -215,6 +216,9 @@ CREATE TABLE IF NOT EXISTS user_favorites (
     PRIMARY KEY (user_id, photo_uid)
 );
 CREATE INDEX IF NOT EXISTS idx_user_favorites_photo ON user_favorites(photo_uid);
+CREATE INDEX IF NOT EXISTS idx_photos_gps_missing
+  ON photos(capture_time)
+  WHERE gps_lat IS NULL AND gps_lng IS NULL AND gps_checked_at IS NULL;
 """
 
 _lock = threading.Lock()
@@ -273,7 +277,19 @@ def _get_persistent_conn(db_path: str, timeout: int = 30) -> sqlite3.Connection:
 
 @contextmanager
 def get_conn() -> sqlite3.Connection:
+    """Commit-on-exit connection — unless a ``transaction()`` is open.
+
+    Store helpers call ``get_conn()`` freely; when one of them runs *inside*
+    a ``transaction()`` block on the same thread (e.g. ``match_person`` warming
+    the person-means cache during ``_process_one``), it must not commit the
+    caller's half-finished per-photo transaction. In that case the open
+    connection is handed through untouched and the outer block owns the
+    commit/rollback.
+    """
     conn = _get_persistent_conn(str(settings.db_path))
+    if getattr(_local, "in_transaction", False):
+        yield conn
+        return
     try:
         yield conn
         conn.commit()
@@ -306,7 +322,12 @@ def transaction() -> sqlite3.Connection:
     this transaction instead of committing on their own connection.
     """
     conn = _get_persistent_conn(str(settings.db_path))
-    conn.execute("BEGIN")
+    if getattr(_local, "in_transaction", False):
+        raise RuntimeError("nested store.transaction() on the same thread")
+    # IMMEDIATE takes the write lock up front so a reader-turned-writer can
+    # never hit SQLITE_BUSY_SNAPSHOT (which bypasses busy_timeout entirely).
+    conn.execute("BEGIN IMMEDIATE")
+    _local.in_transaction = True
     try:
         yield conn
     except TransactionRollback:
@@ -316,6 +337,8 @@ def transaction() -> sqlite3.Connection:
         raise
     else:
         conn.commit()
+    finally:
+        _local.in_transaction = False
 
 
 @contextmanager
@@ -511,6 +534,11 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
     if "totp_last_counter" not in ucols:
         conn.execute("ALTER TABLE users ADD COLUMN totp_last_counter INTEGER")
+    # When the EXIF GPS backfill last inspected a photo that turned out to
+    # carry no coordinates. Without it the sweep re-downloaded the same
+    # GPS-less originals from Proton every cycle, forever.
+    if "gps_checked_at" not in pcols:
+        conn.execute("ALTER TABLE photos ADD COLUMN gps_checked_at INTEGER")
 
 
 # --- photos ---------------------------------------------------------------
@@ -747,21 +775,40 @@ def get_photos_without_gps(
     Used by the EXIF GPS backfill to sweep photos indexed before the
     fullres loop started extracting coordinates from originals.
     """
+    # Only rows the backfill has never inspected (gps_checked_at IS NULL) and
+    # that are actually indexed: the sweep re-downloads originals, so it must
+    # not spend Proton egress on deleted/errored rows.
+    base = (
+        "SELECT uid, media_type FROM photos "
+        "WHERE gps_lat IS NULL AND gps_lng IS NULL AND gps_checked_at IS NULL "
+        "AND status='done' "
+    )
     if media_type:
         with get_conn() as conn:
             return conn.execute(
-                "SELECT uid, media_type FROM photos "
-                "WHERE gps_lat IS NULL AND gps_lng IS NULL AND media_type LIKE ? "
-                "ORDER BY capture_time ASC LIMIT ? OFFSET ?",
+                base + "AND media_type LIKE ? ORDER BY capture_time ASC LIMIT ? OFFSET ?",
                 (f"{media_type}%", limit, offset),
             ).fetchall()
     with get_conn() as conn:
         return conn.execute(
-            "SELECT uid, media_type FROM photos "
-            "WHERE gps_lat IS NULL AND gps_lng IS NULL "
-            "ORDER BY capture_time ASC LIMIT ? OFFSET ?",
+            base + "ORDER BY capture_time ASC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
+
+
+def mark_gps_checked(uids: list[str]) -> None:
+    """Stamp photos the EXIF backfill inspected and found no coordinates in."""
+    if not uids:
+        return
+    now = int(time.time())
+    with get_conn() as conn:
+        for start in range(0, len(uids), _SQL_CHUNK):
+            chunk = uids[start : start + _SQL_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            conn.execute(
+                f"UPDATE photos SET gps_checked_at=? WHERE uid IN ({placeholders})",
+                [now, *chunk],
+            )
 
 
 def claim_photo_for_download(uid: str) -> bool:
@@ -912,6 +959,86 @@ def backfill_fullres_images() -> int:
 def set_photo_error(uid: str, error: str, conn: sqlite3.Connection | None = None) -> None:
     with _with_conn(conn) as c:
         c.execute("UPDATE photos SET status='error', error=? WHERE uid=?", (error, uid))
+
+
+def set_photos_error(uids: list[str], error: str) -> int:
+    """Flag a batch of photos as `error` in one commit (not one per uid)."""
+    if not uids:
+        return 0
+    n = 0
+    with get_conn() as conn:
+        for start in range(0, len(uids), _SQL_CHUNK):
+            chunk = uids[start : start + _SQL_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            n += conn.execute(
+                f"UPDATE photos SET status='error', error=? WHERE uid IN ({placeholders})",
+                [error, *chunk],
+            ).rowcount
+    return n
+
+
+def release_download_claims(uids: list[str]) -> int:
+    """Hand claimed-but-undownloaded photos back to `new` (transient bridge failure)."""
+    if not uids:
+        return 0
+    n = 0
+    with get_conn() as conn:
+        for start in range(0, len(uids), _SQL_CHUNK):
+            chunk = uids[start : start + _SQL_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            n += conn.execute(
+                f"UPDATE photos SET status='new' WHERE status='downloading' AND uid IN ({placeholders})",
+                chunk,
+            ).rowcount
+    return n
+
+
+def deleted_photos_to_purge(grace_sec: int) -> list[sqlite3.Row]:
+    """Confirmed-deleted rows past the reclaim grace that still hold local media.
+
+    A row is "purged" once thumb_path is NULL and its faces/clips are gone,
+    so each full scan only touches rows that still need work instead of
+    re-marking every historical deletion.
+    """
+    cutoff = int(time.time()) - grace_sec
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT uid, thumb_path FROM photos WHERE status='deleted' "
+            "AND (was_deleted_at IS NULL OR was_deleted_at <= ?) "
+            "AND (thumb_path IS NOT NULL "
+            "     OR EXISTS (SELECT 1 FROM faces f WHERE f.photo_uid = photos.uid) "
+            "     OR EXISTS (SELECT 1 FROM clips c WHERE c.photo_uid = photos.uid))",
+            (cutoff,),
+        ).fetchall()
+
+
+def purge_deleted_photo_media(uids: list[str]) -> set[int]:
+    """Drop faces + clips of deleted photos and clear thumb_path; return touched person ids.
+
+    Deleted photos otherwise stay in the face/CLIP matrices forever: search
+    results point at thumbnails cleanup_deleted unlinked, and merge
+    propagation can pull their faces into people. Callers recount the
+    returned people and mark the sidecar dirty.
+    """
+    if not uids:
+        return set()
+    touched: set[int] = set()
+    with get_conn() as conn:
+        for start in range(0, len(uids), _SQL_CHUNK):
+            chunk = uids[start : start + _SQL_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"SELECT DISTINCT person_id FROM faces WHERE person_id IS NOT NULL "
+                f"AND photo_uid IN ({placeholders})", chunk,
+            ):
+                touched.add(int(r["person_id"]))
+            conn.execute(f"DELETE FROM faces WHERE photo_uid IN ({placeholders})", chunk)
+            conn.execute(f"DELETE FROM clips WHERE photo_uid IN ({placeholders})", chunk)
+            _mark_dirty_for_photos(conn, list(chunk))
+            conn.execute(f"UPDATE photos SET thumb_path=NULL WHERE uid IN ({placeholders})", chunk)
+        for pid in touched:
+            _recount_person(pid, conn)
+    return touched
 
 
 def set_photo_deleted(uid: str) -> None:
@@ -1675,14 +1802,18 @@ def person_mean_embeddings_from_cache() -> dict[int, np.ndarray]:
         n = norms[i, 0]
         if n != 0:
             out[int(u)] = (means[i] / n).astype(np.float32)
-    _person_means_cache = out
     # Insertion order matches the dict keys (unique is sorted), so row i of M
-    # is the mean embedding of person pids[i].
-    _person_means_matrix = (
+    # is the mean embedding of person pids[i]. Publish dict, matrix and
+    # generation stamp together under the lock so a concurrent reader never
+    # pairs a new dict with an old matrix.
+    matrix = (
         np.array(list(out.keys()), dtype=np.int64),
         np.stack(list(out.values())) if out else _EMPTY_MAT,
     )
-    _person_means_cache_ts = _embedding_cache_ts
+    with _embedding_cache_lock:
+        _person_means_cache = out
+        _person_means_matrix = matrix
+        _person_means_cache_ts = _embedding_cache_ts
     return out
 
 

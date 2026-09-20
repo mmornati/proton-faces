@@ -86,7 +86,7 @@ class FakeBridge:
     def health(self):
         return {"ok": True, "loggedIn": True}
 
-    def nodes(self, uids):
+    def nodes(self, uids, **kw):
         return [self._nodes[u] for u in uids if u in self._nodes]
 
     def albums(self):
