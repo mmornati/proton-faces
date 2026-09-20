@@ -96,8 +96,14 @@ HAS_CONFIG_ANON=$(echo "$STATUS_ANON" | python3 -c "import json,sys;print('yes' 
 check "anon /api/status hides config block" "$HAS_CONFIG_ANON" "no"
 
 section "Auth round-trip"
+# The demo admin password must come from the environment — never keep a
+# default here (a committed credential is a credential).
+if [[ -z "${DEMO_ADMIN_PASSWORD:-}" ]]; then
+  echo "  FAIL  DEMO_ADMIN_PASSWORD is not set (export it before running this script)"
+  exit 1
+fi
 LOGIN=$(curl $CURL_OPTS -sS -X POST -H "content-type: application/json" \
-  -d '{"username":"demo","password":"'"${DEMO_ADMIN_PASSWORD:-protonface-demo-2026-Q9vK3m}"'"}' \
+  -d '{"username":"demo","password":"'"${DEMO_ADMIN_PASSWORD}"'"}' \
   "$BASE/api/auth/login")
 TOKEN=$(echo "$LOGIN" | python3 -c "import json,sys;print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || echo "")
 if [[ -z "$TOKEN" ]]; then

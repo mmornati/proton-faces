@@ -22,6 +22,7 @@ import numpy as np
 from fastapi import HTTPException, Request, Response
 
 import api  # noqa: E402  (intentional: see module docstring)
+import store
 from auth import allow_public_thumbs, make_signed_token
 from config import settings
 from store import (
@@ -61,6 +62,61 @@ def _extract_bearer(request: Request) -> str | None:
         return None
     token = auth.split(None, 1)[1].strip()
     return token or None
+
+
+def _bearer_is_valid(request: Request) -> bool:
+    """True only when the request carries a live *access* token (F-03).
+
+    Presence of an ``Authorization`` header is not enough: the config block
+    on ``/api/status`` must stay hidden from anyone who merely sends
+    ``Bearer x``. Resolves the token against ``auth_tokens`` exactly like
+    ``require_user`` does, minus the 401.
+    """
+    token = _extract_bearer(request)
+    if not token:
+        return False
+    row = store.lookup_token(token)
+    if row is None or row["disabled"] or row["kind"] != "access":
+        return False
+    return row["expires_at"] >= time.time()
+
+
+# --- Request-parameter clamps ---------------------------------------------
+# Every list endpoint accepts a client-controlled `limit`/`offset`; the
+# store helpers behind them build `IN (...)` lists or sign one URL per row,
+# so an unbounded limit is a memory/CPU amplifier for any authenticated
+# caller. LIST_MAX_LIMIT is the hard ceiling for grid-style pages; callers
+# that legitimately need more (map markers) pass their own `max_limit`.
+
+LIST_MAX_LIMIT = 500
+THRESHOLD_MIN = 0.2
+
+
+def _clamp_limit(limit: int, default: int = 200, max_limit: int = LIST_MAX_LIMIT) -> int:
+    if limit is None or limit < 1:
+        return min(default, max_limit)
+    return min(limit, max_limit)
+
+
+def _clamp_offset(offset: int) -> int:
+    return max(0, offset or 0)
+
+
+def _clamp_threshold(value, default: float = 0.40) -> float:
+    """Cosine-similarity threshold in [THRESHOLD_MIN, 1.0].
+
+    A threshold at or below zero matches every pair: the people-merge and
+    suggested-merge paths would then collapse the whole people table (or
+    walk an O(P^2) Python loop) from one request. Non-numeric input falls
+    back to `default` rather than surfacing a 500.
+    """
+    try:
+        t = float(value)
+    except (TypeError, ValueError):
+        t = default
+    if t != t:  # NaN
+        t = default
+    return max(THRESHOLD_MIN, min(1.0, t))
 
 
 # --- Signed URL helper -----------------------------------------------------

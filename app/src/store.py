@@ -928,12 +928,16 @@ def get_photos_batch(uids: list[str]) -> dict[str, sqlite3.Row]:
     """
     if not uids:
         return {}
-    placeholders = ",".join("?" * len(uids))
+    out: dict[str, sqlite3.Row] = {}
     with get_conn() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM photos WHERE uid IN ({placeholders})", uids
-        ).fetchall()
-    return {r["uid"]: r for r in rows}
+        for start in range(0, len(uids), _SQL_CHUNK):
+            chunk = uids[start : start + _SQL_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"SELECT * FROM photos WHERE uid IN ({placeholders})", chunk
+            ):
+                out[r["uid"]] = r
+    return out
 
 
 def stats() -> dict:
@@ -1104,14 +1108,18 @@ def face_counts_for_photos(uids: list[str]) -> dict[str, int]:
     """
     if not uids:
         return {}
-    placeholders = ",".join("?" * len(uids))
+    out: dict[str, int] = {}
     with get_conn() as conn:
-        rows = conn.execute(
-            f"SELECT photo_uid, COUNT(*) AS n FROM faces "
-            f"WHERE photo_uid IN ({placeholders}) GROUP BY photo_uid",
-            uids,
-        ).fetchall()
-    return {r["photo_uid"]: int(r["n"]) for r in rows}
+        for start in range(0, len(uids), _SQL_CHUNK):
+            chunk = uids[start : start + _SQL_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"SELECT photo_uid, COUNT(*) AS n FROM faces "
+                f"WHERE photo_uid IN ({placeholders}) GROUP BY photo_uid",
+                chunk,
+            ):
+                out[r["photo_uid"]] = int(r["n"])
+    return out
 
 
 def clip_exists(photo_uid: str, conn: sqlite3.Connection | None = None) -> bool:
@@ -2731,11 +2739,15 @@ def favorite_uids(user_id: int, uids: list[str]) -> set[str]:
     """Return the subset of `uids` that the user has favorited (batch query)."""
     if not uids:
         return set()
-    placeholders = ",".join("?" * len(uids))
+    out: set[str] = set()
     with get_conn() as conn:
-        rows = conn.execute(
-            f"SELECT photo_uid FROM user_favorites "
-            f"WHERE user_id=? AND photo_uid IN ({placeholders})",
-            [user_id, *uids],
-        ).fetchall()
-    return {r["photo_uid"] for r in rows}
+        for start in range(0, len(uids), _SQL_CHUNK):
+            chunk = uids[start : start + _SQL_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"SELECT photo_uid FROM user_favorites "
+                f"WHERE user_id=? AND photo_uid IN ({placeholders})",
+                [user_id, *chunk],
+            ):
+                out.add(r["photo_uid"])
+    return out

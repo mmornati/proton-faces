@@ -1689,3 +1689,34 @@ class TestClips:
         assert len(store.all_clips()) == 1
         store.insert_clip("p1", np.zeros(512, dtype=np.float32).tobytes())  # upsert, no dup
         assert store.clip_count() == 1
+
+
+
+class TestBatchHelpersChunking:
+    """IN(...) lists must be chunked below SQLite's variable limit (audit 2026-09)."""
+
+    def _seed_many(self, n):
+        uids = [f"u{i:05d}" for i in range(n)]
+        with store.get_conn() as conn:
+            conn.executemany(
+                "INSERT INTO photos (uid, name, media_type, capture_time, status, thumb_path) "
+                "VALUES (?, ?, 'image/jpeg', 1, 'done', 'x.webp')",
+                [(u, u) for u in uids],
+            )
+            conn.executemany(
+                "INSERT INTO faces (photo_uid, confidence, bbox, embedding) VALUES (?, 0.9, '[0,0,1,1]', ?)",
+                [(u, np.zeros(512, dtype=np.float32).tobytes()) for u in uids],
+            )
+        return uids
+
+    def test_batch_helpers_over_sql_variable_limit(self, tmp_db):
+        n = store._SQL_CHUNK * 3 + 7
+        uids = self._seed_many(n)
+        user_id = store.create_user(username="u", password_hash="x", role="read", display_name="u")
+        for u in uids[::2]:
+            store.favorite_photo(user_id, u)
+        assert len(store.get_photos_batch(uids)) == n
+        counts = store.face_counts_for_photos(uids)
+        assert len(counts) == n and set(counts.values()) == {1}
+        assert store.favorite_uids(user_id, uids) == set(uids[::2])
+        assert store.get_photos_batch([]) == {} and store.favorite_uids(user_id, []) == set()

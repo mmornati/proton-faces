@@ -73,7 +73,7 @@ def api_status(request: Request) -> dict:
         },
     }
     try:
-        if api._extract_bearer(request):
+        if api._bearer_is_valid(request):
             out["config"] = {
                 "sync_interval": api.settings.sync_interval,
                 "cluster_interval": api.settings.cluster_interval,

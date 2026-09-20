@@ -34,6 +34,10 @@ log = logging.getLogger("api")
 
 router = APIRouter()
 
+# Places/map payloads are small per row (no per-row signing), so they get a
+# higher ceiling than grid pages.
+MAP_MAX_LIMIT = 5000
+
 
 @router.get("/api/photos")
 def api_photos(limit: int = 200, offset: int = 0, place: str | None = None,
@@ -41,6 +45,8 @@ def api_photos(limit: int = 200, offset: int = 0, place: str | None = None,
                include_archived: bool = True, tag: str | None = None,
                user: CurrentUser = Depends(require_user)):
     """List photos with optional filters."""
+    limit = api._clamp_limit(limit)
+    offset = api._clamp_offset(offset)
     if tag:
         rows = photos_by_tag(tag, limit=limit, offset=offset)
     elif place:
@@ -57,6 +63,8 @@ def api_photos(limit: int = 200, offset: int = 0, place: str | None = None,
 def api_archived_photos(limit: int = 200, offset: int = 0,
                          user: CurrentUser = Depends(require_user)):
     """List archived photos."""
+    limit = api._clamp_limit(limit)
+    offset = api._clamp_offset(offset)
     return {"photos": api._user_photos(user.id, archived_photos(limit=limit, offset=offset))}
 
 
@@ -67,6 +75,7 @@ def api_memories(month: int | None = None, day: int | None = None, limit: int = 
     import datetime as _dt
 
     from store import memories_for_today
+    limit = api._clamp_limit(limit, default=60)
     now = _dt.datetime.utcnow()
     m = month if month is not None else now.month
     d = day if day is not None else now.day
@@ -82,6 +91,7 @@ def api_memories(month: int | None = None, day: int | None = None, limit: int = 
 @router.get("/api/duplicates")
 def api_duplicates(limit: int = 200, user: CurrentUser = Depends(require_user)):
     """Groups of photos that share a Proton content-hash (sha1)."""
+    limit = api._clamp_limit(limit)
     groups = api._duplicate_groups_cached(limit)
     all_uids = [r["uid"] for members in groups for r in members]
     fav_set = api.favorite_uids(user.id, all_uids) if all_uids else set()
@@ -177,6 +187,8 @@ def api_album_photos(album_uid: str, limit: int = 200, offset: int = 0,
                       user: CurrentUser = Depends(require_user)):
     """List photos in an album."""
     from store import album_photos
+    limit = api._clamp_limit(limit)
+    offset = api._clamp_offset(offset)
     rows = album_photos(album_uid, limit=limit, offset=offset)
     return {"photos": api._user_photos(user.id, rows)}
 
@@ -184,6 +196,7 @@ def api_album_photos(album_uid: str, limit: int = 200, offset: int = 0,
 @router.get("/api/places")
 def api_places(limit: int = 500, q: str | None = None):
     """List places with photo counts."""
+    limit = api._clamp_limit(limit, default=500, max_limit=MAP_MAX_LIMIT)
     q = (q or "").strip() or None
     rows = place_stats(limit=limit, q=q)
     places = []
@@ -197,6 +210,7 @@ def api_places(limit: int = 500, q: str | None = None):
 @router.get("/api/map")
 def api_map(limit: int = 1000, q: str | None = None):
     """Map markers for all places."""
+    limit = api._clamp_limit(limit, default=1000, max_limit=MAP_MAX_LIMIT)
     rows = map_markers(limit=limit, q=q)
     markers = []
     for r in rows:

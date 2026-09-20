@@ -144,3 +144,16 @@ def test_every_route_handler_is_reexported():
         if getattr(api, name, None) is not endpoint:
             unreachable.append((path, name))
     assert not unreachable, f"route handlers not re-exported from api.py: {unreachable}"
+
+
+
+def test_metadata_panel_escapes_values():
+    """The photo metadata table must escape every value that is not an
+    explicitly pre-built HTML pill (audit 2026-09: `m.name` is the Proton
+    filename, controllable by whoever shared the photo)."""
+    from pathlib import Path
+
+    html = Path(__file__).resolve().parent.parent / "app" / "src" / "static" / "index.html"
+    src = html.read_text()
+    assert '<td class="v">${v}</td>' not in src
+    assert '<td class="v">${html ? v : escv(v)}</td>' in src
