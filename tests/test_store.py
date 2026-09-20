@@ -1817,3 +1817,98 @@ class TestDownloaderStoreHelpers:
         store.mark_gps_checked(["g1"])
         assert [r["uid"] for r in store.get_photos_without_gps(media_type="image/heic")] == ["g2"]
         assert store.get_photo("g1")["gps_checked_at"] is not None
+
+
+
+class TestPerfPass:
+    """Audit PR 6: chunked syncs, query plans, index cleanup, cache generation."""
+
+    def test_upsert_chunks_commit_and_batch_dirty_marks(self, tmp_db, monkeypatch):
+        monkeypatch.setattr(store, "UPSERT_CHUNK", 7)
+        store.sync_albums([{"uid": "A", "name": "A"}, {"uid": "B", "name": "B"}])
+        rows = [_photo(f"c{i}", albums=["A"] if i % 2 else ["B"]) for i in range(20)]
+        assert store.upsert_photos(rows) == 20
+        assert store.upsert_photos(rows) == 0
+        with store.get_conn() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM photo_albums").fetchone()[0] == 20
+            dirty = {r[0] for r in conn.execute("SELECT uid FROM albums WHERE dirty=1")}
+        assert dirty == {"A", "B"}
+
+    def test_dropped_and_added_indexes(self, tmp_db):
+        with store.get_conn() as conn:
+            names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        assert not {"idx_photos_status", "idx_photos_favorited", "idx_photos_archived", "idx_photos_hidden"} & names
+        assert {"idx_photos_place_done", "idx_photos_gps_missing", "idx_photos_status_time"} <= names
+
+    def test_favorites_query_drives_from_favorites(self, tmp_db):
+        uid = store.create_user(username="f", password_hash="x", role="read", display_name="f")
+        store.upsert_photos([_photo(f"p{i}", capture_time=i) for i in range(5)])
+        for i in range(5):
+            store.set_photo_done(f"p{i}", "t.webp", None, None)
+        store.favorite_photo(uid, "p1")
+        store.favorite_photo(uid, "p3")
+        rows = store.done_photos(only_favorites=True, user_id=uid)
+        assert [r["uid"] for r in rows] == ["p3", "p1"]
+        assert store.done_photos(only_favorites=True, user_id=None) == []
+        with store.get_conn() as conn:
+            plan = " ".join(r[3] for r in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT p.* FROM user_favorites uf JOIN photos p ON p.uid = uf.photo_uid "
+                "WHERE uf.user_id=? AND p.status='done' AND p.thumb_path IS NOT NULL AND p.thumb_path != '' "
+                "AND p.hidden = 0 ORDER BY p.capture_time DESC LIMIT ? OFFSET ?", (uid, 200, 0)))
+        assert "user_favorites" in plan and "idx_photos_done_time" not in plan
+
+    def test_find_person_by_name_uses_index_and_is_case_insensitive(self, tmp_db):
+        pid = store.create_person(name="Alice", cover_uid=None)
+        assert store.find_person_by_name("aLICE")["id"] == pid
+        assert store.find_person_by_name("aLICE", exclude_id=pid) is None
+        with store.get_conn() as conn:
+            plan = " ".join(r[3] for r in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM people WHERE name = ? COLLATE NOCASE LIMIT 1", ("x",)))
+        assert "idx_people_name" in plan
+
+    def test_place_search_escapes_like_and_hides_hidden(self, tmp_db):
+        store.upsert_photos([_photo("p1"), _photo("p2"), _photo("p3")])
+        store.set_photo_done("p1", "t.webp", (1.0, 1.0), "100% Lille")
+        store.set_photo_done("p2", "t.webp", (1.0, 1.0), "Lille")
+        store.set_photo_done("p3", "t.webp", (1.0, 1.0), "100% Lille")
+        with store.get_conn() as conn:
+            conn.execute("UPDATE photos SET hidden=1 WHERE uid='p3'")
+        assert [r["uid"] for r in store.search_photos_by_place("100%")] == ["p1"]
+        assert {r["uid"] for r in store.search_photos_by_place("lille")} == {"p1", "p2"}
+
+    def test_duplicate_groups_limit_keeps_largest(self, tmp_db):
+        rows = []
+        for i in range(2):
+            rows.append(_photo(f"a{i}", sha1="A"))
+        for i in range(4):
+            rows.append(_photo(f"b{i}", sha1="B"))
+        store.upsert_photos(rows)
+        for r in rows:
+            store.set_photo_done(r["uid"], "t.webp", None, None)
+        groups = store.duplicate_groups(limit=1)
+        assert len(groups) == 1 and groups[0][0]["sha1"] == "B" and len(groups[0]) == 4
+
+    def test_cache_generation_drops_other_process_caches(self, tmp_db):
+        assert store.current_cache_generation() == 0
+        store._embedding_cache = {"mat": np.zeros((0, 512), dtype=np.float32), "ids": [], "photo_uids": [],
+                                  "person_ids": []}
+        store._embedding_cache_ts = time.time()
+        store._seen_generation = store.current_cache_generation()
+        # Another process bumps the generation (simulated by a direct bump
+        # without touching this process's _seen_generation).
+        with store.get_conn() as conn:
+            conn.execute("INSERT INTO cache_state (key, value) VALUES ('people_generation', 1) "
+                         "ON CONFLICT(key) DO UPDATE SET value = value + 1")
+        store._drop_caches_if_generation_changed()
+        assert store._embedding_cache is None
+        store.invalidate_embedding_cache()
+        assert store.current_cache_generation() == 2
+        assert store._seen_generation == 2
+
+    def test_compact_database_reports_sizes(self, tmp_db):
+        store.upsert_photos([_photo(f"v{i}") for i in range(50)])
+        with store.get_conn() as conn:
+            conn.execute("DELETE FROM photos")
+        store._close_local_conns()
+        res = store.compact_database()
+        assert res["after_bytes"] > 0 and res["before_bytes"] >= res["after_bytes"]

@@ -169,6 +169,9 @@ class Settings:
         # Ceiling on any non-multipart request body (JSON routes). The face
         # search upload is exempt and bounded by FACE_SEARCH_MAX_UPLOAD_BYTES.
         self.max_json_body_bytes = int(os.environ.get("MAX_JSON_BODY_BYTES", str(256 * 1024)))
+        # Threads the API runs sync routes on (anyio default 40). Each thread
+        # holds its own SQLite connection and page cache.
+        self.api_threadpool_size = max(2, int(os.environ.get("API_THREADPOOL_SIZE", "16")))
 
         # Derived paths
         self.work_dir = self.data_dir / "work"

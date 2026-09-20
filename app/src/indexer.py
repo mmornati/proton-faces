@@ -94,6 +94,8 @@ MAX_RETRY_PARK = 5
 # Thumbnails of deleted rows younger than this are kept on disk, so a photo
 # that was falsely deleted and reclaimed within the window doesn't need its
 # thumbnail re-downloaded. 7 days.
+NODES_BATCH = 500
+UPDATE_CHUNK = 5000
 DELETED_THUMB_GRACE_SEC = 7 * 24 * 3600
 
 # Set by request_full_sync() (an admin trigger) to force a full scan on the
@@ -480,9 +482,14 @@ def _sync_once() -> None:
             log.info("sync: %d confirmed deleted (grace=%ds)", confirmed, grace_seconds)
 
     if new_uids:
-        items = bridge.nodes(new_uids)
-        rows = _rows_from_items(items)
-        new = upsert_photos(rows)
+        # Fetch metadata in bounded batches (reclaim_deleted.py does the same):
+        # a first sync used to POST every uid at once and hold the whole
+        # timeline twice in memory before a single multi-minute commit.
+        new = 0
+        for start in range(0, len(new_uids), NODES_BATCH):
+            batch = new_uids[start : start + NODES_BATCH]
+            rows = _rows_from_items(bridge.nodes(batch))
+            new += upsert_photos(rows)
         log.info("sync: %d remote, %d new, %d gone", len(remote), new, len(gone))
     else:
         log.info("sync: %d remote, no new, %d gone", len(remote), len(gone))
@@ -1413,14 +1420,18 @@ def _apply_gps(sha1_to_gps: dict[str, tuple[float, float]]) -> int:
         photos = conn.execute(
             "SELECT uid, sha1 FROM photos WHERE sha1 IS NOT NULL"
         ).fetchall()
-        for row in photos:
-            gps = sha1_to_gps.get(row["sha1"])
-            if gps:
-                conn.execute(
-                    "UPDATE photos SET gps_lat=?, gps_lng=? WHERE uid=?",
-                    (gps[0], gps[1], row["uid"]),
-                )
-                matched += 1
+    updates = [
+        (gps[0], gps[1], row["uid"])
+        for row in photos
+        if (gps := sha1_to_gps.get(row["sha1"]))
+    ]
+    for start in range(0, len(updates), UPDATE_CHUNK):
+        with _db_conn() as conn:
+            conn.executemany(
+                "UPDATE photos SET gps_lat=?, gps_lng=? WHERE uid=?",
+                updates[start : start + UPDATE_CHUNK],
+            )
+    matched = len(updates)
     log.info("gps backfill matched %d photos", matched)
     return matched
 
@@ -1500,14 +1511,16 @@ def enrich_places() -> int:
     points = [(r["gps_lat"], r["gps_lng"]) for r in rows]
     by_point = reverse_geocode_many(points)
     matched = 0
-    with _db_conn() as conn:
-        for row, place in zip(rows, [by_point[(r["gps_lat"], r["gps_lng"])] for r in rows]):
-            if not place:
-                continue
-            conn.execute(
-                "UPDATE photos SET place=? WHERE uid=?", (place, row["uid"])
-            )
-            matched += 1
+    # Chunked commits: one giant transaction over every geocoded photo held
+    # the writer lock for minutes and kept the WAL from checkpointing.
+    for start in range(0, len(rows), UPDATE_CHUNK):
+        with _db_conn() as conn:
+            for row in rows[start : start + UPDATE_CHUNK]:
+                place = by_point.get((row["gps_lat"], row["gps_lng"]))
+                if not place:
+                    continue
+                conn.execute("UPDATE photos SET place=? WHERE uid=?", (place, row["uid"]))
+                matched += 1
     log.info("gps place enrichment: %d photos", matched)
     return matched
 

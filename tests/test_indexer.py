@@ -771,3 +771,45 @@ class TestDeletionGrace:
         assert indexer._deletion_grace_seconds() == 2 * 21600
         indexer.set_sync_config({"full_scan_interval": 0})
         assert indexer._deletion_grace_seconds() == 2 * 300
+
+
+
+class TestSyncBatchesNodes:
+    class _Bridge:
+        def __init__(self):
+            self.batches = []
+
+        def timeline_ids(self, limit=0):
+            return [{"uid": f"n{i:03d}", "captureTime": 1} for i in range(12)]
+
+        def nodes(self, uids, **kw):
+            self.batches.append(len(uids))
+            return [{"uid": u, "name": f"{u}.jpg", "mediaType": "image/jpeg", "captureTime": 1,
+                     "sha1": f"s-{u}", "albums": []} for u in uids]
+
+        def albums(self):
+            return {"albums": []}
+
+    def test_nodes_fetched_in_bounded_batches(self, tmp_db, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer, "NODES_BATCH", 5)
+        b = self._Bridge()
+        monkeypatch.setattr(indexer, "get_bridge", lambda: b)
+        indexer._sync_once()
+        assert b.batches == [5, 5, 2]
+        assert store.count_photos_by_status("new") == 12 if hasattr(store, "count_photos_by_status") else True
+        with store.get_conn() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM photos WHERE status='new'").fetchone()[0] == 12
+
+
+class TestEnrichPlacesChunked:
+    def test_chunks_updates(self, tmp_db, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer, "UPDATE_CHUNK", 2)
+        store.upsert_photos([{"uid": f"g{i}", "name": f"g{i}", "media_type": "image/jpeg", "capture_time": i}
+                             for i in range(5)])
+        for i in range(5):
+            store.set_photo_gps(f"g{i}", 10.0 + i, 20.0)
+        monkeypatch.setattr(indexer, "reverse_geocode_many",
+                            lambda pts: {p: (None if p[0] == 12.0 else f"Place{p[0]}") for p in pts})
+        assert indexer.enrich_places() == 4
+        assert store.get_photo("g2")["place"] is None
+        assert store.get_photo("g4")["place"] == "Place14.0"

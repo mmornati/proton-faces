@@ -184,6 +184,20 @@ def api_admin_delete_backup(name: str, _: CurrentUser = Depends(require_role("ad
         raise HTTPException(400, str(exc))
 
 
+@router.post("/api/admin/db/compact")
+def api_admin_db_compact(_: CurrentUser = Depends(require_role("admin"))):
+    """VACUUM the index to reclaim free pages. Run while the indexer is idle."""
+    if api.demo_disable_admin_area():
+        raise HTTPException(404, "not found")
+    import sqlite3
+
+    from store import compact_database
+    try:
+        return {"ok": True, **compact_database()}
+    except sqlite3.OperationalError as exc:
+        raise HTTPException(409, f"database busy, retry when the indexer is idle: {exc}")
+
+
 @router.post("/api/admin/backups/prune")
 def api_admin_prune_backups(body: dict = Body(default={}),
                              _: CurrentUser = Depends(require_role("admin"))):

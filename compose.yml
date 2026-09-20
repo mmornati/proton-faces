@@ -185,6 +185,9 @@ services:
       # threads + CLIP sessions don't oversubscribe the CPU (issue #79).
       - OMP_NUM_THREADS=1
       - ORT_INTRA_OP_THREADS=${ORT_INTRA_OP_THREADS:-1}
+      # The indexer has a handful of long-lived threads, so it can afford a
+      # big per-connection page cache (the API keeps the 8 MB default).
+      - SQLITE_CACHE_KB=${INDEXER_SQLITE_CACHE_KB:-64000}
       # Internal-only port for the live status endpoint. Not published to
       # the host; reachable from the `app` service over the compose
       # network via the `indexer` hostname.

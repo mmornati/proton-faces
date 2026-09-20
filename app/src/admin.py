@@ -256,16 +256,19 @@ def start_backup_worker() -> threading.Thread:
 
 def _db_integrity() -> dict:
     try:
-        conn = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True)
+        # quick_check only: a full integrity_check reads the entire file
+        # (1.4 GB in prod) from a request thread and evicts the page cache
+        # the grid depends on. quick_check catches corruption, skipping only
+        # index-consistency verification.
+        conn = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True, timeout=30)
         try:
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
             quick = conn.execute("PRAGMA quick_check").fetchone()[0]
         finally:
             conn.close()
-        ok = integrity == "ok" and quick == "ok"
+        ok = quick == "ok"
         return {"name": "Database integrity", "ok": ok,
                 "status": "ok" if ok else "fail",
-                "detail": "integrity_check/quick_check pass" if ok else f"integrity={integrity!r} quick={quick!r}"}
+                "detail": "quick_check pass" if ok else f"quick_check={quick!r}"}
     except Exception as exc:
         return {"name": "Database integrity", "ok": False, "status": "fail", "detail": str(exc)}
 
@@ -355,9 +358,8 @@ def _indexer_liveness() -> dict:
 
 def _bridge_reachability() -> dict:
     try:
-        from bridge_client import BridgeClient  # type: ignore
-        bc = BridgeClient(settings.bridge_url)
-        h = bc.health()
+        from bridge_client import get_bridge  # type: ignore
+        h = get_bridge().health()
         ok = bool(h and h.get("ok"))
         detail = "bridge healthy" if ok else f"bridge response: {h}"
         return {"name": "Bridge reachable", "ok": ok,
@@ -385,11 +387,10 @@ def _bridge_cache_health(recent_full_res_failures: int = 0) -> dict:
     in `detail` so the admin UI surfaces the failure rather than silently
     skipping the check.
     """
-    from bridge_client import BridgeClient  # type: ignore
+    from bridge_client import get_bridge  # type: ignore
     name = "Bridge cache"
     try:
-        bc = BridgeClient(settings.bridge_url)
-        status = bc.cache_status()
+        status = get_bridge().cache_status()
     except Exception as exc:
         return {"name": name, "ok": False, "status": "down",
                 "detail": f"cache lookup failed: {exc}"}
