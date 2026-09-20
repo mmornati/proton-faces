@@ -39,10 +39,17 @@ log = logging.getLogger("api")
 
 router = APIRouter()
 
+# Hard ceilings for the bulk people-merge and map endpoints (see
+# api_common.LIST_MAX_LIMIT for the grid-page ceiling).
+MERGE_ALL_MAX_SOURCES = 500
+MAP_MAX_LIMIT = 5000
+
 
 @router.get("/api/people")
 def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
     """List people clusters (paginated)."""
+    limit = api._clamp_limit(limit)
+    offset = api._clamp_offset(offset)
     full = api._people_all_cached(q=q)
     if q:
         ql = q.lower()
@@ -61,6 +68,8 @@ def api_people_faces(person_id: int, limit: int = 200, offset: int = 0,
     render a grid of candidate face-crops without knowing bbox math.
     """
     from store import faces_for_person
+    limit = api._clamp_limit(limit)
+    offset = api._clamp_offset(offset)
     person = get_person(person_id)
     if person is None:
         raise HTTPException(404, "person not found")
@@ -101,6 +110,8 @@ def api_set_person_cover(person_id: int, body: dict = Body(...),
 @router.get("/api/faces/unassigned")
 def api_unassigned_faces(limit: int = 200, offset: int = 0):
     """List faces that have not been assigned to a person."""
+    limit = api._clamp_limit(limit)
+    offset = api._clamp_offset(offset)
     # unassigned_faces has no offset support at the store layer; see the
     # comment in api_people_faces above for why we over-fetch instead of
     # slicing a `limit`-sized result.
@@ -122,6 +133,7 @@ def api_unassigned_faces(limit: int = 200, offset: int = 0):
 def api_face_suggest(face_id: int, limit: int = 5):
     """Rank existing people by how likely they are to be this face."""
     import numpy as np
+    limit = api._clamp_limit(limit, default=5, max_limit=50)
 
     from store import face_embedding, live_person_ids, people_by_ids, person_mean_matrix_from_cache
     emb = face_embedding(face_id)
@@ -284,9 +296,9 @@ def api_merge_people(source_id: int, body: dict = Body(...),
 @router.get("/api/people/{person_id}/similar")
 def api_people_similar(person_id: int, threshold: float = 0.40, limit: int = 50, offset: int = 0):
     """People whose mean face embedding is similar to `person_id`'s (cosine)."""
-    if limit < 1:
-        limit = 50
-    offset = max(0, offset)
+    threshold = api._clamp_threshold(threshold)
+    limit = api._clamp_limit(limit, default=50)
+    offset = api._clamp_offset(offset)
     pids, M = person_mean_matrix_from_cache()
     tgt = np.flatnonzero(pids == person_id)
     if tgt.size == 0 or pids.size < 2:
@@ -364,11 +376,21 @@ def api_merge_all(target_id: int, body: dict = Body(default={}),
 @router.post("/api/people/{target_id}/merge_all_similar")
 def api_merge_all_similar(target_id: int, body: dict = Body(default={}),
                            user: CurrentUser = Depends(require_role("write"))):
-    """Merge every person whose mean embedding is similar to the target's."""
-    threshold = float(body.get("threshold", 0.40))
-    max_sources = int(body.get("max_sources", 5000))
-    if max_sources < 1:
-        max_sources = 5000
+    """Merge every person whose mean embedding is similar to the target's.
+
+    Bounded on purpose: ``threshold`` is clamped to ``[THRESHOLD_MIN, 1.0]``
+    and ``max_sources`` to ``MERGE_ALL_MAX_SOURCES`` so a single request can
+    never fold the whole people table into one cluster (there is no undo).
+    ``dry_run: true`` returns the candidate count without merging so the UI
+    can confirm first.
+    """
+    threshold = api._clamp_threshold(body.get("threshold", 0.40))
+    try:
+        max_sources = int(body.get("max_sources", MERGE_ALL_MAX_SOURCES))
+    except (TypeError, ValueError):
+        max_sources = MERGE_ALL_MAX_SOURCES
+    max_sources = max(1, min(max_sources, MERGE_ALL_MAX_SOURCES))
+    dry_run = bool(body.get("dry_run", False))
     target = get_person(target_id)
     if target is None:
         raise HTTPException(404, "target person not found")
@@ -384,6 +406,10 @@ def api_merge_all_similar(target_id: int, body: dict = Body(default={}),
     live = set(live_person_ids([int(pids[i]) for i in order]))
     order = order[[int(pids[i]) in live for i in order]]
     source_ids = [int(pids[i]) for i in order[:max_sources]]
+    if dry_run:
+        return {"ok": True, "target_id": target_id, "dry_run": True,
+                "candidate_count": len(source_ids), "threshold": threshold,
+                "max_sources": max_sources, "truncated": len(order) > max_sources}
     if not source_ids:
         return {"ok": True, "target_id": target_id, "merged_count": 0, "assigned_similar": 0,
                 "photo_count": target["photo_count"], "face_count": target["face_count"]}
@@ -406,8 +432,8 @@ def api_merge_all_similar(target_id: int, body: dict = Body(default={}),
 @router.get("/api/people/duplicates")
 def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
     """Find people whose mean face embeddings are highly similar (likely dupes)."""
-    if limit < 1:
-        limit = 50
+    threshold = api._clamp_threshold(threshold)
+    limit = api._clamp_limit(limit, default=50)
     now = time.time()
     if api._dups_cache is not None and now - api._dups_cache[0] < api._DUP_CACHE_TTL:
         return api._dups_cache[1]
@@ -423,8 +449,9 @@ def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
 @router.get("/api/people/suggested-merges")
 def api_people_suggested_merges(threshold: float = 0.40, limit: int = 50, offset: int = 0):
     """Person-centric suggested merges: who has look-alikes? (named first)"""
-    limit = max(1, min(limit, 1000))
-    offset = max(0, offset)
+    threshold = api._clamp_threshold(threshold)
+    limit = api._clamp_limit(limit, default=50)
+    offset = api._clamp_offset(offset)
     with api._suggested_cache_lock:
         now = time.time()
         entry = api._suggested_cache.get(threshold)
@@ -448,6 +475,8 @@ def api_people_suggested_merges(threshold: float = 0.40, limit: int = 50, offset
 def api_person_photos(person_id: int, limit: int = 200, offset: int = 0,
                        user: CurrentUser = Depends(require_user)):
     """List photos that contain this person."""
+    limit = api._clamp_limit(limit)
+    offset = api._clamp_offset(offset)
     rows = photos_for_person(person_id, limit=limit, offset=offset)
     return {"photos": api._user_photos(user.id, rows), "count": count_faces_for_person(person_id)}
 
@@ -455,6 +484,7 @@ def api_person_photos(person_id: int, limit: int = 200, offset: int = 0,
 @router.get("/api/people/{person_id}/map")
 def api_person_map(person_id: int, limit: int = 500):
     """Clustered map markers for one person: places they've been photographed in."""
+    limit = api._clamp_limit(limit, default=500, max_limit=MAP_MAX_LIMIT)
     rows = person_map_markers(person_id, limit=limit)
     markers = []
     for r in rows:

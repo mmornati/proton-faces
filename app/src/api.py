@@ -63,11 +63,17 @@ import faces
 # `api._indexer_proxy_json("GET", "/sync-config")`, etc.
 from api_common import (  # noqa: F401  (re-exported for tests)
     _REFRESH_COOKIE,
+    LIST_MAX_LIMIT,
     SEARCH_MAX_LIMIT,
+    THRESHOLD_MIN,
     _anchors_payload,
+    _bearer_is_valid,
     _cached_bridge_health,
     _cached_stats,
+    _clamp_limit,
+    _clamp_offset,
     _clamp_search_limit,
+    _clamp_threshold,
     _clear_refresh_cookie,
     _crop_cache_path,
     _drop_crop_cache,

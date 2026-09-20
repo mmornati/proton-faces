@@ -2707,3 +2707,122 @@ class TestPeopleCacheLru:
         api.api_people(limit=10, offset=0, q="al")
         assert calls == ["al", "al"]
 
+
+
+
+class TestSecurityRegressions:
+    """Guards for the invariants that regressed in the api.py split (audit 2026-09)."""
+
+    def test_face_search_upload_cap_413(self, client, monkeypatch, password_hash):
+        # F-09: the cap must be enforced without buffering the whole body.
+        _seed_user(password_hash=password_hash)
+        monkeypatch.setattr(api, "FACE_SEARCH_MAX_UPLOAD_BYTES", 64)
+        monkeypatch.setattr(api, "embed_query_face", lambda bgr: _emb(1))
+        headers = _bearer(client)
+        r = client.post("/api/search/face", files={"file": ("face.jpg", b"x" * 1024, "image/jpeg")},
+                        headers=headers)
+        assert r.status_code == 413
+
+    def test_face_search_route_runs_on_threadpool(self):
+        import inspect
+
+        import api_routes_search
+        assert not inspect.iscoroutinefunction(api_routes_search.api_search_face)
+
+    def test_status_bogus_bearer_hides_config(self, client, password_hash):
+        # F-03: presence of a bearer header is not enough.
+        _seed_user(password_hash=password_hash)
+        r = client.get("/api/status", headers={"Authorization": "Bearer not-a-real-token"})
+        assert r.status_code == 200
+        assert "config" not in r.json()
+
+    def test_status_refresh_token_hides_config(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "password123"}).json()
+        r = client.get("/api/status", headers={"Authorization": f"Bearer {login['refresh_token']}"})
+        assert "config" not in r.json()
+
+    def test_status_expired_bearer_hides_config(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        token = headers["Authorization"].split()[1]
+        with store.get_conn() as conn:
+            conn.execute("UPDATE auth_tokens SET expires_at=0 WHERE token=?", (store._hash_token(token),))
+        assert "config" not in client.get("/api/status", headers=headers).json()
+
+    def test_photos_limit_clamped(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        for i in range(3):
+            _seed_done_photo(f"p{i}")
+        headers = _bearer(client)
+        assert client.get("/api/photos", params={"limit": 40000}, headers=headers).status_code == 200
+        assert client.get("/api/photos", params={"limit": 0, "offset": -5}, headers=headers).status_code == 200
+        assert client.get("/api/faces/unassigned", params={"limit": 10**7}, headers=headers).status_code == 200
+        assert client.get("/api/map", params={"limit": 10**7}, headers=headers).status_code == 200
+
+    def test_clamp_helpers(self):
+        assert api._clamp_limit(10**9) == api.LIST_MAX_LIMIT
+        assert api._clamp_limit(0) == 200
+        assert api._clamp_limit(-1, default=50) == 50
+        assert api._clamp_offset(-3) == 0
+        assert api._clamp_threshold(-1.0) == api.THRESHOLD_MIN
+        assert api._clamp_threshold(0.0) == api.THRESHOLD_MIN
+        assert api._clamp_threshold(5.0) == 1.0
+        assert api._clamp_threshold("abc") == 0.40
+        assert api._clamp_threshold(float("nan")) == 0.40
+        assert api._clamp_threshold(0.55) == 0.55
+
+    def _seed_orthogonal_people(self, n):
+        pids = []
+        for i in range(n):
+            _seed_done_photo(f"p{i}")
+            f = _seed_face(f"p{i}", emb=_emb(i))
+            pid = store.create_person(name=None, cover_uid=f"p{i}", cover_face_id=f)
+            store.assign_face_person(f, pid)
+            pids.append(pid)
+        return pids
+
+    def test_merge_all_similar_threshold_floor(self, client, password_hash):
+        # Orthogonal embeddings have cosine 0: an unclamped threshold of -1
+        # would merge everyone; the floor keeps them apart.
+        _seed_user(password_hash=password_hash)
+        pids = self._seed_orthogonal_people(4)
+        headers = _bearer(client)
+        r = client.post(f"/api/people/{pids[0]}/merge_all_similar",
+                        json={"threshold": -1, "max_sources": 999999}, headers=headers)
+        assert r.status_code == 200
+        assert r.json()["merged_count"] == 0
+        assert all(store.get_person(p) is not None for p in pids)
+        r = client.post(f"/api/people/{pids[0]}/merge_all_similar",
+                        json={"threshold": "abc"}, headers=headers)
+        assert r.status_code == 200
+
+    def test_merge_all_similar_max_sources_capped(self, client, monkeypatch, password_hash):
+        import api_routes_people
+        _seed_user(password_hash=password_hash)
+        pids = []
+        for i in range(5):
+            _seed_done_photo(f"p{i}")
+            f = _seed_face(f"p{i}", emb=_emb(10))
+            pid = store.create_person(name=None, cover_uid=f"p{i}", cover_face_id=f)
+            store.assign_face_person(f, pid)
+            pids.append(pid)
+        monkeypatch.setattr(api_routes_people, "MERGE_ALL_MAX_SOURCES", 2)
+        headers = _bearer(client)
+        dry = client.post(f"/api/people/{pids[0]}/merge_all_similar",
+                          json={"threshold": 0.4, "max_sources": 100, "dry_run": True}, headers=headers).json()
+        assert dry["dry_run"] is True and dry["candidate_count"] == 2 and dry["truncated"] is True
+        assert all(store.get_person(p) is not None for p in pids)
+        r = client.post(f"/api/people/{pids[0]}/merge_all_similar",
+                        json={"threshold": 0.4, "max_sources": 100}, headers=headers)
+        assert r.json()["merged_count"] == 2
+        assert sum(1 for p in pids if store.get_person(p) is not None) == 3
+
+    def test_suggested_merges_threshold_clamped(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        self._seed_orthogonal_people(3)
+        headers = _bearer(client)
+        r = client.get("/api/people/suggested-merges", params={"threshold": -5}, headers=headers)
+        assert r.status_code == 200
+        assert r.json()["total"] == 0
+        assert api.THRESHOLD_MIN in api._suggested_cache
