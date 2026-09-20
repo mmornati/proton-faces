@@ -61,6 +61,18 @@ def refresh_ttl() -> int:
 
 # --- password helpers ------------------------------------------------------
 
+# bcrypt truncates (pre-5.0) or rejects (5.0+, ValueError) any input beyond
+# 72 bytes — a limit of the underlying Blowfish cipher, not a tunable. We
+# reject overlong passwords at the API boundary with a clean 400 instead of
+# letting bcrypt.hashpw raise ValueError and surface as a 500.
+MAX_PASSWORD_BYTES = 72
+
+
+def password_too_long(plain: str) -> bool:
+    """True when ``plain`` exceeds bcrypt's 72-byte input limit."""
+    return len(plain.encode("utf-8")) > MAX_PASSWORD_BYTES
+
+
 def hash_password(plain: str) -> str:
     """Bcrypt cost 12 (~250 ms on a modern CPU — slow enough to deter brute force)."""
     return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("ascii")

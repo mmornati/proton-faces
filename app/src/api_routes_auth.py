@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 import api  # noqa: E402  (intentional: see api_common docstring)
 import store
 from auth import (
+    MAX_PASSWORD_BYTES,
     CurrentUser,
     decrypt_totp_secret,
     encrypt_totp_secret,
@@ -24,6 +25,7 @@ from auth import (
     hash_password,
     login,
     make_signed_token,
+    password_too_long,
     require_user,
     totp_uri,
     verify_2fa,
@@ -238,6 +240,8 @@ def api_change_password(request: Request, body: dict = Body(...),
         raise HTTPException(401, "current password is incorrect")
     if len(new) < 8:
         raise HTTPException(400, "new password must be at least 8 characters")
+    if password_too_long(new):
+        raise HTTPException(400, f"new password must be at most {MAX_PASSWORD_BYTES} bytes")
     store.update_user(user.id, password_hash=hash_password(new))
     auth_header = request.headers.get("Authorization", "")
     token = auth_header.split(None, 1)[1].strip() if auth_header.lower().startswith("bearer ") else None
@@ -248,7 +252,7 @@ def api_change_password(request: Request, body: dict = Body(...),
 @router.get("/api/auth/limits", dependencies=[])
 def api_limits():
     """Public — UI uses this to render the login screen with the right labels."""
-    return {"min_username": 2, "min_password": 8}
+    return {"min_username": 2, "min_password": 8, "max_password": MAX_PASSWORD_BYTES}
 
 
 @router.post("/api/sign")
