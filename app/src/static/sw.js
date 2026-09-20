@@ -6,13 +6,16 @@
  *    goes straight to the network, untouched, so per-user data and signed
  *    URLs are never intercepted or replayed.
  */
-const VERSION = "pf-shell-v1";
+const VERSION = "pf-shell-v2";
 const SHELL_ASSETS = [
   "./",
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./icons/apple-touch-icon.png",
+  "./css/tokens.css",
+  "./css/app.css",
+  "./css/design-system.css",
 ];
 
 const BINARY_ENDPOINTS = ["/thumb", "/full", "/cover", "/crop"];

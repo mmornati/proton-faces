@@ -1,6 +1,12 @@
 # Design System: proton·faces — "Nocturne"
 
-Impeccable design-system record, written from the shipped artifact (`app/src/static/index.html` May 2025). Tokens are normative; prose explains application.
+Impeccable design-system record, written from the shipped artifact. The system now ships as its own files rather than an inline `<style>` block:
+
+- [`app/src/static/css/tokens.css`](app/src/static/css/tokens.css) — the token layer (colors, type, radius, shadow), normative for the values below.
+- [`app/src/static/css/design-system.css`](app/src/static/css/design-system.css) — Nocturne itself: reset, shell, and every component described in this document.
+- [`app/src/static/css/app.css`](app/src/static/css/app.css) — the pre-Nocturne base layer, kept for a handful of elements the Nocturne pass never re-skinned (the merge/cover/similar-people pickers, the search-by-example modal, and the id-based login/admin/status modals). It loads *before* `design-system.css` on purpose: several selectors are shared between the two files at equal specificity, and `design-system.css` is meant to win. Don't reorder the `<link>` tags in `app/src/static/index.html`, and don't delete `app.css` without first re-skinning the components that still depend on it.
+
+Tokens are normative; prose explains application.
 
 ---
 name: proton-faces
@@ -23,8 +29,18 @@ colors:
   bad: "#f0645a"
   text-light: "#17191d"
   bg-light: "#f4f5f7"
+  bg2-light: "#eef0f3"
   panel-light: "#ffffff"
+  panel2-light: "#f0f2f5"
+  muted-light: "#6b7078"
+  faint-light: "#9aa0ab"
+  border-light: "#e3e5ea"
+  border2-light: "#d5d8df"
   accent-light: "#1f9d4d"
+  accent-strong-light: "#17803e"
+  accent-soft-light: "rgba(31,157,77,.12)"
+  on-accent-light: "#ffffff"
+  bad-light: "#d4483e"
   shadow:
     - "0 1px 2px rgba(0,0,0,.35), 0 16px 34px -18px rgba(0,0,0,.6)"
     - "0 1px 2px rgba(16,17,20,.08), 0 16px 34px -20px rgba(16,17,20,.25)"
