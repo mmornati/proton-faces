@@ -187,6 +187,28 @@ class TestDeletionLifecycle:
         store.mark_deleted(["p1"])
         assert store.get_photo("p1")["status"] == "deleted"
 
+    def test_mark_pending_removal_large_batch_chunked(self, tmp_db):
+        # 20k uids far exceeds SQLite's host-parameter limit (999/32766);
+        # the chunked UPDATE must not raise "too many SQL variables".
+        uids = [f"p{i}" for i in range(20000)]
+        store.upsert_photos([_photo(uid=u) for u in uids])
+        assert store.mark_pending_removal(uids) == 20000
+        with store.get_conn() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM photos WHERE status='pending_removal'"
+            ).fetchone()[0]
+        assert n == 20000
+
+    def test_mark_deleted_large_batch_chunked(self, tmp_db):
+        uids = [f"p{i}" for i in range(20000)]
+        store.upsert_photos([_photo(uid=u) for u in uids])
+        store.mark_deleted(uids)
+        with store.get_conn() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM photos WHERE status='deleted'"
+            ).fetchone()[0]
+        assert n == 20000
+
 
 class TestFullresRetry:
     def test_requeues_stuck_fullres(self, tmp_db):
