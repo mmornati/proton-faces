@@ -1488,6 +1488,47 @@ class TestBinaryEndpointAuth:
         assert r.json()["merged_count"] == 1
         assert store.get_person(pb) is None
 
+    def test_merge_all_skips_stale_duplicates_and_target(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        _seed_done_photo("p2")
+        _seed_done_photo("p3")
+        fa = _seed_face("p1")
+        fb = _seed_face("p2")
+        fc = _seed_face("p3")
+        pa = store.create_person(name="Alice", cover_uid="p1", cover_face_id=fa)
+        pb = store.create_person(name="Bob", cover_uid="p2", cover_face_id=fb)
+        pc = store.create_person(name="Carol", cover_uid="p3", cover_face_id=fc)
+        store.assign_face_person(fa, pa)
+        store.assign_face_person(fb, pb)
+        store.assign_face_person(fc, pc)
+        headers = _bearer(client)
+        # pb listed twice, pa (the target) listed, and 99999 is stale/unknown.
+        r = client.post(f"/api/people/{pa}/merge_all",
+                        json={"source_ids": [pb, pb, pa, 99999, "not-an-int"]},
+                        headers=headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["merged_count"] == 1
+        assert store.get_person(pb) is None
+        assert store.get_person(pc) is not None
+        assert store.get_person(pa)["face_count"] == 2
+
+    def test_merge_all_all_stale(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        fa = _seed_face("p1")
+        pa = store.create_person(name="Alice", cover_uid="p1", cover_face_id=fa)
+        store.assign_face_person(fa, pa)
+        headers = _bearer(client)
+        r = client.post(f"/api/people/{pa}/merge_all",
+                        json={"source_ids": [99999, 88888]}, headers=headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["merged_count"] == 0
+        assert body["assigned_similar"] == 0
+        assert store.get_person(pa) is not None
+
     def test_merge_all_similar(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         # target + 3 look-alikes sharing identical embeddings (cosine == 1.0),
