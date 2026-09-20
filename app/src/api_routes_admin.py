@@ -285,6 +285,34 @@ def api_admin_gc_empty_people(_: CurrentUser = Depends(require_role("admin"))):
     return {"deleted": deleted, "ok": True}
 
 
+@router.post("/api/admin/people/prune-small")
+def api_admin_prune_small_people(body: dict = Body(default={}),
+                                 _: CurrentUser = Depends(require_role("admin"))):
+    """Retroactively apply MIN_CLUSTER_SIZE: drop anonymous clusters below it.
+
+    Body: ``{"min_photos": N, "dry_run": bool}``. ``min_photos`` defaults to
+    the configured MIN_CLUSTER_SIZE. Faces go back to the unassigned pool
+    and are regrouped by the next cluster run; named people are untouched.
+    ``dry_run`` only reports how many rows would go.
+    """
+    if api.demo_disable_admin_area():
+        raise HTTPException(404, "not found")
+    from store import delete_people_bulk, small_unnamed_people_ids
+    try:
+        min_photos = int(body.get("min_photos", api.settings.min_cluster_size))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "min_photos must be an integer")
+    min_photos = max(1, min(min_photos, 1000))
+    ids = small_unnamed_people_ids(min_photos)
+    if body.get("dry_run"):
+        return {"ok": True, "dry_run": True, "min_photos": min_photos, "candidate_count": len(ids)}
+    api._drop_people_crops(ids)
+    deleted = delete_people_bulk(ids)
+    api._invalidate_dups_cache()
+    api._invalidate_people_cache()
+    return {"ok": True, "min_photos": min_photos, "deleted": deleted}
+
+
 @router.get("/api/admin/bridge/cache")
 def api_admin_bridge_cache(_: CurrentUser = Depends(require_role("admin"))):
     """Get the bridge SDK cache status."""

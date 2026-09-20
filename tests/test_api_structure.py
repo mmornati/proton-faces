@@ -94,6 +94,7 @@ EXPECTED_ROUTES = {
     ("POST", "/api/admin/checks"),
     ("POST", "/api/admin/db/compact"),
     ("POST", "/api/admin/people/gc-empty"),
+    ("POST", "/api/admin/people/prune-small"),
     ("POST", "/api/admin/sync/trigger"),
     ("POST", "/api/admin/users"),
     ("POST", "/api/admin/users/{user_id}/2fa/disable"),

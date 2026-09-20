@@ -14,6 +14,15 @@ The clustering is incremental: as new faces arrive, the indexer re-runs HDBSCAN 
 
 ## The People grid
 
+Anonymous clusters with fewer photos than `MIN_CLUSTER_SIZE` are hidden by
+default and named people always sort first: the threshold only shapes *new*
+clusters, so a library indexed under an older value carries thousands of
+one- and two-photo rows that would otherwise bury everyone worth naming.
+The **Show small clusters** toggle above the grid reveals them (the count
+of hidden rows is shown next to it), and the admin area's **Prune small
+unnamed clusters** action deletes them for good — their faces return to the
+unassigned queue and are regrouped by the next clustering run.
+
 - **Face-crop covers** — each card shows the highest-confidence face crop from the cluster's "cover face" (`cover_face_id`). It's a JPEG crop from the cached 512px WebP, served from `/api/people/{id}/cover`.
 - **Photo count + face count** — both numbers are computed in the same SQL query and updated whenever faces are added/removed/renamed.
 - **Name input** — type a name and press <kbd>Enter</kbd>. The card updates immediately. If another person already has that name, the clusters are **merged** (the faces of one move to the other).

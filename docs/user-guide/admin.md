@@ -12,6 +12,20 @@ The gear icon only appears if you're logged in as a user with the `admin` role.
 - **Disk** — disk usage of the data volume (thumbnails dir + SQLite file).
 - **Last backup** — timestamp and size of the most recent snapshot.
 
+## Maintenance
+
+Two one-shot actions live under the server overview:
+
+- **Prune small unnamed clusters** — shows how many anonymous people rows
+  fall below `MIN_CLUSTER_SIZE` photos, then deletes them on confirmation.
+  Faces are not lost: they go back to the unassigned queue and the next
+  cluster run regroups them under the current settings. Named people are
+  never touched. (`POST /api/admin/people/prune-small`, `dry_run` supported.)
+- **Compact index** — runs `VACUUM` on the SQLite index to reclaim free
+  pages (backups made with `VACUUM INTO` already skip them). It needs the
+  write lock, so run it while the indexer is idle; a busy database answers
+  `409`. (`POST /api/admin/db/compact`.)
+
 ## Health checks
 
 Seven checks, run on demand, each with an ok/bad pill and a short status:

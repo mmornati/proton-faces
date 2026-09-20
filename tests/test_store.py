@@ -1912,3 +1912,24 @@ class TestPerfPass:
         store._close_local_conns()
         res = store.compact_database()
         assert res["after_bytes"] > 0 and res["before_bytes"] >= res["after_bytes"]
+
+
+
+class TestSmallPeopleHelpers:
+    def test_ids_and_bulk_delete_release_faces(self, tmp_db):
+        store.upsert_photos([_photo("p1"), _photo("p2")])
+        f1 = store.insert_face(photo_uid="p1", person_id=None, confidence=0.9, bbox=[0, 0, 1, 1],
+                               embedding=np.ones(512, dtype=np.float32).tobytes())
+        f2 = store.insert_face(photo_uid="p2", person_id=None, confidence=0.9, bbox=[0, 0, 1, 1],
+                               embedding=np.ones(512, dtype=np.float32).tobytes())
+        anon = store.create_person(name=None, cover_uid="p1", cover_face_id=f1)
+        named = store.create_person(name="N", cover_uid="p2", cover_face_id=f2)
+        store.assign_face_person(f1, anon)
+        store.assign_face_person(f2, named)
+        assert store.small_unnamed_people_ids(3) == [anon]
+        assert store.small_unnamed_people_ids(1) == []
+        assert store.delete_people_bulk([anon]) == 1
+        assert store.get_person(anon) is None
+        with store.get_conn() as conn:
+            assert conn.execute("SELECT person_id FROM faces WHERE id=?", (f1,)).fetchone()[0] is None
+        assert store.delete_people_bulk([]) == 0

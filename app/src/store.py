@@ -1227,6 +1227,42 @@ def _gc_unnamed_person(person_id: int) -> bool:
         return cur.rowcount > 0
 
 
+def small_unnamed_people_ids(min_photos: int) -> list[int]:
+    """Anonymous clusters with fewer than `min_photos` photos.
+
+    MIN_CLUSTER_SIZE only shapes NEW clusters; rows created under an older,
+    lower setting stay forever (production: 16k of 27k people had < 3
+    photos, none of them named). Named people are never included.
+    """
+    with get_conn() as conn:
+        return [
+            int(r[0]) for r in conn.execute(
+                "SELECT id FROM people WHERE (name IS NULL OR name = '') AND photo_count < ? ORDER BY id",
+                (int(min_photos),),
+            )
+        ]
+
+
+def delete_people_bulk(person_ids: list[int]) -> int:
+    """Delete people rows, releasing their faces back to the unassigned pool.
+
+    The faces keep their embeddings, so the next cluster run can regroup
+    them under the current MIN_CLUSTER_SIZE / MIN_SAMPLES; faces that don't
+    reach the threshold simply stay unassigned (reviewable in the queue).
+    """
+    if not person_ids:
+        return 0
+    deleted = 0
+    with get_conn() as conn:
+        for start in range(0, len(person_ids), _SQL_CHUNK):
+            chunk = person_ids[start : start + _SQL_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            conn.execute(f"UPDATE faces SET person_id=NULL WHERE person_id IN ({placeholders})", chunk)
+            deleted += conn.execute(f"DELETE FROM people WHERE id IN ({placeholders})", chunk).rowcount
+    invalidate_embedding_cache()
+    return deleted
+
+
 def delete_empty_people() -> int:
     """Sweep every anonymous, face-less placeholder person row.
 
