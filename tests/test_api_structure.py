@@ -92,6 +92,7 @@ EXPECTED_ROUTES = {
     ("POST", "/api/admin/backups/prune"),
     ("POST", "/api/admin/bridge/cache/clear"),
     ("POST", "/api/admin/checks"),
+    ("POST", "/api/admin/db/compact"),
     ("POST", "/api/admin/people/gc-empty"),
     ("POST", "/api/admin/sync/trigger"),
     ("POST", "/api/admin/users"),

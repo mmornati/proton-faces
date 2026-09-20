@@ -6,6 +6,7 @@ a tmp sqlite DB, with `bridge_client._bridge` swapped for a fake bridge and
 module-level ML functions (embed_text / embed_query_face) monkeypatched.
 """
 
+import asyncio
 import threading
 import time
 from collections import OrderedDict
@@ -2917,3 +2918,39 @@ class TestMetaSignedUrls:
         r = client.get("/api/photos/p1/thumb", headers=_bearer(client))
         assert r.status_code == 200
         assert r.headers["cache-control"].startswith("private,")
+
+
+
+class TestPerfPassApi:
+    def test_admin_db_compact(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        r = client.post("/api/admin/db/compact", headers=headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["ok"] is True and r.json()["after_bytes"] > 0
+
+    def test_admin_db_compact_requires_admin(self, client, password_hash):
+        _seed_user(username="reader", role="read", password_hash=password_hash)
+        headers = _bearer(client, username="reader")
+        assert client.post("/api/admin/db/compact", headers=headers).status_code == 403
+
+    def test_threadpool_cap_applies_setting(self, monkeypatch):
+        import anyio
+        monkeypatch.setattr(config.settings, "api_threadpool_size", 7)
+
+        async def _check():
+            api._cap_threadpool()
+            return anyio.to_thread.current_default_thread_limiter().total_tokens
+
+        assert asyncio.run(_check()) == 7
+
+    def test_people_cache_bounded_by_rows(self, monkeypatch):
+        import api_common
+        api._people_cache = OrderedDict()
+        monkeypatch.setattr(api_common, "PEOPLE_CACHE_MAX_ROWS", 10)
+        with api._people_cache_lock:
+            api._people_cache_put_locked("a", time.time(), [{}] * 6)
+            api._people_cache_put_locked("b", time.time(), [{}] * 6)
+            api._people_cache_put_locked("c", time.time(), [{}] * 3)
+        assert list(api._people_cache) == ["b", "c"] or list(api._people_cache) == ["c"]
+        assert sum(len(v[1]) for v in api._people_cache.values()) <= 10 or len(api._people_cache) == 1

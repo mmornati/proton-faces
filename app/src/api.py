@@ -117,6 +117,7 @@ from api_routes_admin import (  # noqa: F401  (re-exported for tests)
     api_admin_bridge_cache_clear,
     api_admin_checks,
     api_admin_create_user,
+    api_admin_db_compact,
     api_admin_delete_backup,
     api_admin_delete_user,
     api_admin_disable_2fa,
@@ -339,8 +340,23 @@ async def _lifespan(_: FastAPI):
     don't pay a multi-second model load inside a user request.
     """
     require_signing_secret()
+    _cap_threadpool()
     warm_models()
     yield
+
+
+def _cap_threadpool() -> None:
+    """Bound the threadpool sync routes run on (anyio default: 40).
+
+    Each thread keeps its own SQLite connection + page cache; 40 of them per
+    worker was the largest single term in the app's idle RSS.
+    """
+    try:
+        import anyio
+
+        anyio.to_thread.current_default_thread_limiter().total_tokens = settings.api_threadpool_size
+    except Exception as exc:  # noqa: BLE001 - never block boot on this
+        log.warning("could not cap the threadpool: %s", exc)
 
 
 def warm_models() -> None:

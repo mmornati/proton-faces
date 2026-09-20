@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import sqlite3
 import threading
 import time
@@ -50,17 +52,25 @@ CREATE TABLE IF NOT EXISTS photos (
     retry_count  INTEGER NOT NULL DEFAULT 0,
     gps_checked_at INTEGER              -- EXIF GPS backfill inspected this row (no coords found)
 );
-CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(status);
+-- idx_photos_status (a prefix of idx_photos_status_time) and the single-
+-- column boolean indexes on favorited/archived/hidden were pure write-time
+-- cost: the planner never chose them over the composite/partial ones.
+DROP INDEX IF EXISTS idx_photos_status;
+DROP INDEX IF EXISTS idx_photos_favorited;
+DROP INDEX IF EXISTS idx_photos_archived;
+DROP INDEX IF EXISTS idx_photos_hidden;
 -- Composite for the indexer poll query WHERE status=? ORDER BY capture_time
 -- (downloader/worker/fullres loops run it every few seconds). Turns a scan +
 -- temp sort into a single ordered range walk.
 CREATE INDEX IF NOT EXISTS idx_photos_status_time ON photos(status, capture_time);
 CREATE INDEX IF NOT EXISTS idx_photos_place  ON photos(place);
 CREATE INDEX IF NOT EXISTS idx_photos_time   ON photos(capture_time);
-CREATE INDEX IF NOT EXISTS idx_photos_favorited ON photos(favorited);
-CREATE INDEX IF NOT EXISTS idx_photos_archived  ON photos(archived);
-CREATE INDEX IF NOT EXISTS idx_photos_hidden   ON photos(hidden);
 CREATE INDEX IF NOT EXISTS idx_photos_sha1     ON photos(sha1);
+-- Place aggregations (places list, map markers, place search) all filter on
+-- status='done' too; the plain (place) index forced a table probe per row.
+CREATE INDEX IF NOT EXISTS idx_photos_place_done
+  ON photos(place, capture_time DESC)
+  WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '';
 -- Partial index covering exactly the rows done_photos() returns: status='done'
 -- AND a non-empty thumb_path. SQLite walks it in DESC order with no table scan
 -- and no temp sort, dropping /api/photos cold latency from ~150 ms to a few
@@ -219,9 +229,27 @@ CREATE INDEX IF NOT EXISTS idx_user_favorites_photo ON user_favorites(photo_uid)
 CREATE INDEX IF NOT EXISTS idx_photos_gps_missing
   ON photos(capture_time)
   WHERE gps_lat IS NULL AND gps_lng IS NULL AND gps_checked_at IS NULL;
+-- Cross-process cache coherence: every uvicorn worker (and the indexer)
+-- has its own in-memory embedding / person-means caches. A merge served by
+-- worker A bumps `people_generation`; worker B compares it on its next read
+-- and drops its copy instead of serving stale person ids for the TTL.
+CREATE TABLE IF NOT EXISTS cache_state (
+    key   TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
 """
 
+log = logging.getLogger(__name__)
+
 _lock = threading.Lock()
+
+
+def _cache_kb() -> int:
+    try:
+        return max(1000, int(os.environ.get("SQLITE_CACHE_KB", "8000")))
+    except ValueError:
+        return 8000
+
 
 # Thread-local persistent connections: each thread gets one connection per db
 # path and keeps it for the lifetime of the thread.  This avoids the
@@ -267,8 +295,15 @@ def _get_persistent_conn(db_path: str, timeout: int = 30) -> sqlite3.Connection:
         # checkpoint amortizes the checkpoint across many more writes.
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA wal_autocheckpoint=16000")
+        # Truncate the WAL back to this size after a checkpoint instead of
+        # letting it sit at its high-water mark (104 MB observed in prod).
+        conn.execute("PRAGMA journal_size_limit=67108864")
         # Cache / performance pragmas — run once per connection lifetime.
-        conn.execute("PRAGMA cache_size=-64000")       # 64 MB page cache
+        # The page cache is PER CONNECTION and connections are thread-local:
+        # the API's threadpool can hold dozens, so it gets a small cache
+        # (SQLITE_CACHE_KB, default 8 MB) while the indexer, with a handful of
+        # long-lived threads, sets a large one via compose. mmap is shared.
+        conn.execute(f"PRAGMA cache_size=-{_cache_kb()}")
         conn.execute("PRAGMA mmap_size=268435456")     # 256 MB mmap
         conn.execute("PRAGMA temp_store=MEMORY")
         conns[db_path] = conn
@@ -551,6 +586,20 @@ def upsert_photos(rows: list[dict]) -> int:
     if not rows:
         return 0
     new = 0
+    # One commit per UPSERT_CHUNK rows, not one for the whole timeline: a
+    # first full scan of an 80k library used to hold the writer lock for
+    # minutes, starving the downloader/worker threads ("database is locked").
+    for start in range(0, len(rows), UPSERT_CHUNK):
+        new += _upsert_photos_chunk(rows[start : start + UPSERT_CHUNK])
+    return new
+
+
+UPSERT_CHUNK = 1000
+
+
+def _upsert_photos_chunk(rows: list[dict]) -> int:
+    new = 0
+    dirty: set[str] = set()
     with get_conn() as conn:
         for r in rows:
             existing = conn.execute("SELECT status, albums FROM photos WHERE uid=?", (r["uid"],)).fetchone()
@@ -608,7 +657,8 @@ def upsert_photos(rows: list[dict]) -> int:
             else:
                 prev = set()
             if prev != set(membership):
-                _mark_albums_dirty(conn, prev | set(membership))
+                dirty |= prev | set(membership)
+        _mark_albums_dirty(conn, dirty)
     return new
 
 
@@ -1487,6 +1537,7 @@ def _embedding_cache_data() -> dict:
     the build.
     """
     global _embedding_cache, _embedding_cache_ts, _embedding_cache_refreshing
+    _drop_caches_if_generation_changed()
     now = time.time()
     if _embedding_cache is not None and now - _embedding_cache_ts < _EMBEDDING_CACHE_TTL:
         return _embedding_cache
@@ -1552,12 +1603,13 @@ def rename_person(person_id: int, name: str) -> None:
 def find_person_by_name(name: str, exclude_id: int | None = None) -> sqlite3.Row | None:
     """Return the first person with an exact (case-insensitive) name match."""
     with get_conn() as conn:
+        # `= ? COLLATE NOCASE` uses idx_people_name; LOWER(name)= could not.
         if exclude_id is None:
             return conn.execute(
-                "SELECT * FROM people WHERE LOWER(name)=LOWER(?) LIMIT 1", (name,)
+                "SELECT * FROM people WHERE name = ? COLLATE NOCASE LIMIT 1", (name,)
             ).fetchone()
         return conn.execute(
-            "SELECT * FROM people WHERE LOWER(name)=LOWER(?) AND id<>? LIMIT 1",
+            "SELECT * FROM people WHERE name = ? COLLATE NOCASE AND id<>? LIMIT 1",
             (name, exclude_id),
         ).fetchone()
 
@@ -1854,14 +1906,62 @@ def invalidate_embedding_cache() -> None:
     filter is the hard guarantee against a still-stale on-disk file.
     """
     global _embedding_cache, _embedding_cache_ts, _person_means_cache
-    global _person_means_cache_ts, _person_means_matrix
+    global _person_means_cache_ts, _person_means_matrix, _seen_generation
     invalidate_face_cache()
     with _embedding_cache_lock:
         _embedding_cache = None
         _embedding_cache_ts = 0.0
-    _person_means_cache = None
-    _person_means_cache_ts = 0.0
-    _person_means_matrix = None
+        _person_means_cache = None
+        _person_means_cache_ts = 0.0
+        _person_means_matrix = None
+    # Tell the OTHER processes (sibling uvicorn workers, the indexer) too.
+    try:
+        _seen_generation = bump_cache_generation()
+    except Exception:  # pragma: no cover - a failed bump only delays coherence
+        log.warning("cache generation bump failed", exc_info=True)
+
+
+_GENERATION_KEY = "people_generation"
+_seen_generation: int | None = None
+
+
+def bump_cache_generation() -> int:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO cache_state (key, value) VALUES (?, 1) "
+            "ON CONFLICT(key) DO UPDATE SET value = value + 1",
+            (_GENERATION_KEY,),
+        )
+        return int(conn.execute("SELECT value FROM cache_state WHERE key=?", (_GENERATION_KEY,)).fetchone()[0])
+
+
+def current_cache_generation() -> int:
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM cache_state WHERE key=?", (_GENERATION_KEY,)).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _drop_caches_if_generation_changed() -> None:
+    """Cheap PK lookup on every cached read: drop this process's caches when
+    another process invalidated (merge, reassignment) since we last looked."""
+    global _seen_generation, _embedding_cache, _embedding_cache_ts
+    global _person_means_cache, _person_means_cache_ts, _person_means_matrix
+    try:
+        gen = current_cache_generation()
+    except Exception:  # pragma: no cover
+        return
+    if _seen_generation is None:
+        _seen_generation = gen
+        return
+    if gen != _seen_generation:
+        _seen_generation = gen
+        invalidate_face_cache()
+        with _embedding_cache_lock:
+            _embedding_cache = None
+            _embedding_cache_ts = 0.0
+            _person_means_cache = None
+            _person_means_cache_ts = 0.0
+            _person_means_matrix = None
 
 
 def _like_escape(s: str) -> str:
@@ -1967,9 +2067,10 @@ def search_photos_by_place(query: str, limit: int = 200, offset: int = 0) -> lis
     with get_conn() as conn:
         return conn.execute(
             "SELECT * FROM photos WHERE status='done' AND thumb_path IS NOT NULL "
-            "AND thumb_path != '' AND place IS NOT NULL AND place LIKE ? "
+            "AND thumb_path != '' AND hidden = 0 AND place IS NOT NULL "
+            "AND place COLLATE NOCASE LIKE ? ESCAPE '\\' "
             "ORDER BY capture_time DESC LIMIT ? OFFSET ?",
-            (f"%{query}%", limit, offset),
+            (f"%{_like_escape(query)}%", limit, offset),
         ).fetchall()
 
 
@@ -2102,17 +2203,25 @@ def done_photos(limit: int = 200, offset: int = 0, before: int | None = None,
     (used by the Favorites view). `include_archived=False` hides archived
     photos from the default grid — they remain accessible from the Archive view.
     """
-    sql = (
-        "SELECT * FROM photos INDEXED BY idx_photos_done_time "
-        "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
-        "AND hidden = 0"
-    )
     params: list = []
     if only_favorites:
         if user_id is None:
             return []
-        sql += " AND uid IN (SELECT photo_uid FROM user_favorites WHERE user_id=?)"
+        # Drive from the (small) favourites set: with the INDEXED BY hint the
+        # planner walked the whole done-photos index newest-first probing the
+        # favourites subquery per row.
+        sql = (
+            "SELECT p.* FROM user_favorites uf JOIN photos p ON p.uid = uf.photo_uid "
+            "WHERE uf.user_id=? AND p.status='done' AND p.thumb_path IS NOT NULL "
+            "AND p.thumb_path != '' AND p.hidden = 0"
+        )
         params.append(user_id)
+    else:
+        sql = (
+            "SELECT * FROM photos INDEXED BY idx_photos_done_time "
+            "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
+            "AND hidden = 0"
+        )
     if not include_archived:
         sql += " AND archived = 0"
     if before is not None:
@@ -2247,6 +2356,7 @@ def duplicate_groups(limit: int = 500) -> list[list[sqlite3.Row]]:
             "  FROM photos "
             "  WHERE status='done' AND sha1 IS NOT NULL AND sha1 != '' "
             "  GROUP BY sha1 HAVING COUNT(*) > 1 "
+            "  ORDER BY COUNT(*) DESC, sha1 "
             "  LIMIT ?"
             ") g ON g.sha1 = p.sha1 "
             "WHERE p.status='done' "
@@ -2340,8 +2450,11 @@ def _mark_albums_dirty(conn: sqlite3.Connection, album_uids: set[str]) -> None:
     """
     if not album_uids:
         return
-    for uid in album_uids:
-        conn.execute("UPDATE albums SET dirty=1 WHERE uid=? AND dirty=0", (uid,))
+    uids = list(album_uids)
+    for start in range(0, len(uids), _SQL_CHUNK):
+        chunk = uids[start : start + _SQL_CHUNK]
+        placeholders = ",".join("?" * len(chunk))
+        conn.execute(f"UPDATE albums SET dirty=1 WHERE dirty=0 AND uid IN ({placeholders})", chunk)
 
 
 def _mark_dirty_for_photos(conn: sqlite3.Connection, photo_uids: list[str]) -> None:
@@ -2724,6 +2837,26 @@ def revoke_all_tokens_except(user_id: int, keep_token: str) -> int:
             (user_id, _hash_token(keep_token)),
         )
         return cur.rowcount
+
+
+def compact_database() -> dict:
+    """VACUUM the index and return before/after sizes.
+
+    Reclaims free pages (21% of the file in production) that VACUUM INTO
+    backups already skip. Needs the writer lock for the duration — call it
+    from the admin UI when the indexer is idle; a busy database surfaces as
+    an OperationalError the route turns into a 409.
+    """
+    before = settings.db_path.stat().st_size if settings.db_path.exists() else 0
+    conn = sqlite3.connect(str(settings.db_path), timeout=5, isolation_level=None)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("VACUUM")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    after = settings.db_path.stat().st_size if settings.db_path.exists() else 0
+    return {"before_bytes": before, "after_bytes": after, "reclaimed_bytes": max(0, before - after)}
 
 
 def purge_expired_tokens() -> int:

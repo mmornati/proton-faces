@@ -266,11 +266,20 @@ def _people_cache_get_locked(q: str | None, now: float) -> list | None:
     return full
 
 
+# The LRU is bounded by entry COUNT; each entry can be the whole people
+# table (27k rows ≈ 35 MB in prod), so bound the total rows too.
+PEOPLE_CACHE_MAX_ROWS = 100_000
+
+
 def _people_cache_put_locked(q: str | None, now: float, full: list) -> None:
     api._people_cache[q] = (now, full)
     api._people_cache.move_to_end(q)
     while len(api._people_cache) > api._PEOPLE_CACHE_MAX:
         api._people_cache.popitem(last=False)
+    total = sum(len(v[1]) for v in api._people_cache.values())
+    while total > PEOPLE_CACHE_MAX_ROWS and len(api._people_cache) > 1:
+        _, (_, evicted) = api._people_cache.popitem(last=False)
+        total -= len(evicted)
 
 
 def _people_all_cached(q: str | None = None) -> list:
@@ -487,18 +496,18 @@ def _suggested_rows(threshold: float) -> list[dict]:
 # --- Merge propagation (used after merges / renames) -----------------------
 
 def _merge_propagate(person_id: int, threshold: float | None = None) -> int:
-    from store import assign_face_person, person_mean_embedding, similar_faces
+    from store import assign_faces_person_bulk, person_mean_embedding, similar_faces
 
     emb = person_mean_embedding(person_id)
     if emb is None:
         return 0
     thr = threshold if threshold is not None else settings.face_sim_threshold
-    assigned = 0
-    for sim_row in similar_faces(emb.tobytes(), thr, limit=500):
-        if sim_row[2] is None:
-            assign_face_person(sim_row[0], person_id)
-            assigned += 1
-    return assigned
+    # Collect first, assign once: the per-face path costs ~4 commits and a
+    # full cache invalidation each, i.e. ~2,000 commits for one merge click.
+    face_ids = [int(sim_row[0]) for sim_row in similar_faces(emb.tobytes(), thr, limit=500) if sim_row[2] is None]
+    if face_ids:
+        assign_faces_person_bulk(face_ids, person_id)
+    return len(face_ids)
 
 
 # --- Search helpers --------------------------------------------------------
@@ -692,7 +701,8 @@ def _face_crop_bytes(face_id: int) -> bytes | None:
     bbox = json.loads(row["bbox"])
     x, y, w, h = bbox
     try:
-        img = Image.open(thumb).convert("RGB")
+        with Image.open(thumb) as src:
+            img = src.convert("RGB")
         iw, ih = img.size
         left = int(x * iw)
         top = int(y * ih)
@@ -953,6 +963,9 @@ def start_crop_prewarm_worker() -> None:
         from store import get_conn
 
         log = logging.getLogger("crop-prewarm")
+        # Face ids whose crop was seen on disk: skip the stat() for them on
+        # later passes (was: one stat per person every 5 minutes, forever).
+        present: set[int] = set()
         while True:
             try:
                 with get_conn() as conn:
@@ -960,9 +973,15 @@ def start_crop_prewarm_worker() -> None:
                         "SELECT cover_face_id FROM people "
                         "WHERE cover_face_id IS NOT NULL ORDER BY id"
                     ).fetchall()
-                missing = [
-                    r[0] for r in rows if not _crop_cache_path(r[0]).exists()
-                ]
+                missing = []
+                for r in rows:
+                    fid = r[0]
+                    if fid in present:
+                        continue
+                    if _crop_cache_path(fid).exists():
+                        present.add(fid)
+                    else:
+                        missing.append(fid)
                 if not missing:
                     _time.sleep(300.0)
                     continue
