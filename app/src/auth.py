@@ -18,7 +18,9 @@ import hashlib
 import hmac
 import logging
 import os
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import bcrypt
@@ -140,11 +142,35 @@ def totp_uri(secret_b32: str, username: str) -> str:
     return pyotp.TOTP(secret_b32).provisioning_uri(name=username, issuer_name=_2FA_TOTP_ISSUER)
 
 
-def verify_totp_code(secret_b32: str, code: str) -> bool:
-    """Constant-time-ish check of a 6-digit TOTP code (accepts ±1 window)."""
+_TOTP_STEP_SEC = 30
+
+
+def match_totp_code(secret_b32: str, code: str, *, last_counter: int | None = None) -> int | None:
+    """Return the TOTP counter a 6-digit code matches (±1 step), else None.
+
+    RFC 6238 §5.2: a code must not be accepted twice. Callers persist the
+    returned counter and pass it back as ``last_counter``; any code whose
+    counter is at or below it is rejected even though it is still inside
+    the ±1 window. That closes the ~90 s replay window a shoulder-surfed or
+    phished code would otherwise have.
+    """
     if not code or not code.isdigit() or len(code) != 6:
-        return False
-    return pyotp.TOTP(secret_b32).verify(code, valid_window=1)
+        return None
+    totp = pyotp.TOTP(secret_b32)
+    now = int(time.time())
+    base = now // _TOTP_STEP_SEC
+    for offset in (0, -1, 1):
+        counter = base + offset
+        if totp.verify(code, for_time=counter * _TOTP_STEP_SEC, valid_window=0):
+            if last_counter is not None and counter <= last_counter:
+                return None
+            return counter
+    return None
+
+
+def verify_totp_code(secret_b32: str, code: str) -> bool:
+    """Boolean form of ``match_totp_code`` without replay tracking."""
+    return match_totp_code(secret_b32, code) is not None
 
 
 def _2fa_pending_ttl() -> int:
@@ -152,11 +178,9 @@ def _2fa_pending_ttl() -> int:
     return int(os.environ.get("AUTH_2FA_PENDING_TTL", "300"))  # 5 minutes
 
 
-# Brute-force budget for the 6-digit code. The code space is 1e6, so a
-# per-(ip, username) budget of 5 attempts with the same exponential lockout
-# as the password step keeps online guessing impractical.
-_2FA_MAX_ATTEMPTS = 5
-_2FA_LOCKOUT_SEC = 900
+# Brute-force budget for the 6-digit code: wrong codes count against the
+# same per-(ip, username) login budget as wrong passwords (see
+# check_login_rate_limit), so the 1e6 code space cannot be walked online.
 
 
 # --- FastAPI dependencies --------------------------------------------------
@@ -509,17 +533,60 @@ class _LoginAttempt:
     failures: int = 0
     lockout_count: int = 0
     locked_until: float = 0.0
+    first_failure_at: float = 0.0
 
 
-# In-memory per-worker login rate limiter (issue #33). Keyed by (ip, username)
-# so a distributed brute force across many usernames from one IP still trips
-# the per-username budget, and one username from many IPs trips the per-IP
-# budget. Per-worker state is acceptable: with 4 workers an attacker gets 4x
-# the budget, which is still bounded. Redis is out of scope.
+@dataclass
+class _IpBudget:
+    failures: int = 0
+    window_start: float = 0.0
+
+
+# In-memory per-worker login rate limiter (issue #33). Two layers:
+#
+#   1. (ip, username) — 5 failures lock that pair with exponential backoff.
+#      Stops online guessing of one account's password.
+#   2. ip alone — _IP_MAX_FAILURES failures inside _IP_WINDOW_SEC 429 every
+#      login from that source regardless of username. Layer 1 alone let an
+#      attacker rotate usernames for an unlimited number of free bcrypt-12
+#      evaluations (~250 ms CPU each) — a no-credential CPU exhaustion.
+#
+# Per-worker state is acceptable: with 4 workers an attacker gets 4x the
+# budget, which is still bounded. Redis is out of scope. Note that behind a
+# reverse proxy the ip is the proxy's unless TRUSTED_PROXY_IPS is set (see
+# main.py) — layer 2 then throttles everyone behind that proxy together, so
+# its budget is deliberately generous.
 _LOGIN_MAX_FAILURES = 5
 _LOGIN_LOCKOUT_SEC = 900
+_LOGIN_FAILURE_WINDOW_SEC = 900
 _LOGIN_MAX_ENTRIES = 10_000
+_IP_MAX_FAILURES = 30
+_IP_WINDOW_SEC = 900
 _login_attempts: dict[tuple[str, str], _LoginAttempt] = {}
+_ip_attempts: dict[str, _IpBudget] = {}
+
+# Bound how many bcrypt verifications run at once per worker. Sync routes
+# run on Starlette's threadpool (40 threads by default), so without a gate a
+# burst of logins pins every core for the duration of the burst and starves
+# every other request. Excess callers wait briefly, then get a 503 with
+# Retry-After instead of queueing indefinitely.
+_BCRYPT_MAX_CONCURRENT = max(1, int(os.environ.get("AUTH_MAX_CONCURRENT_LOGINS", "4")))
+_BCRYPT_WAIT_SEC = 10.0
+_bcrypt_gate = threading.BoundedSemaphore(_BCRYPT_MAX_CONCURRENT)
+
+
+@contextmanager
+def _password_check_gate():
+    if not _bcrypt_gate.acquire(timeout=_BCRYPT_WAIT_SEC):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="login temporarily unavailable, retry shortly",
+            headers={"Retry-After": "5"},
+        )
+    try:
+        yield
+    finally:
+        _bcrypt_gate.release()
 
 
 def _login_key(ip: str | None, username: str) -> tuple[str, str]:
@@ -527,47 +594,86 @@ def _login_key(ip: str | None, username: str) -> tuple[str, str]:
 
 
 def _prune_login_attempts() -> None:
-    """Drop expired entries so spoofed IPs can't grow the map unboundedly."""
-    if len(_login_attempts) <= _LOGIN_MAX_ENTRIES:
-        return
+    """Bound the maps without erasing live failure counters.
+
+    Only entries that are neither locked nor inside their failure window are
+    dropped. Evicting every not-yet-locked entry (the previous behaviour)
+    let an attacker reset a target's 4-of-5 counter by flooding the map
+    with junk usernames. If the map is still oversized after that (every
+    entry is live), the oldest entries go — a bounded map beats an
+    unbounded one even at the cost of a few reset counters.
+    """
     now = time.time()
-    for key in [k for k, v in _login_attempts.items() if v.locked_until <= now]:
-        _login_attempts.pop(key, None)
+    if len(_login_attempts) > _LOGIN_MAX_ENTRIES:
+        for key in [
+            k for k, v in _login_attempts.items()
+            if v.locked_until <= now and v.first_failure_at + _LOGIN_FAILURE_WINDOW_SEC <= now
+        ]:
+            _login_attempts.pop(key, None)
+        if len(_login_attempts) > _LOGIN_MAX_ENTRIES:
+            # Evict the least-progressed entries first (fewest failures,
+            # then oldest): a junk-username flood consists of 1-failure
+            # entries, so a real target's 4-of-5 counter survives it.
+            for key, _ in sorted(
+                _login_attempts.items(), key=lambda kv: (kv[1].failures, kv[1].first_failure_at)
+            )[: len(_login_attempts) - _LOGIN_MAX_ENTRIES]:
+                _login_attempts.pop(key, None)
+    if len(_ip_attempts) > _LOGIN_MAX_ENTRIES:
+        for key in [k for k, v in _ip_attempts.items() if v.window_start + _IP_WINDOW_SEC <= now]:
+            _ip_attempts.pop(key, None)
+
+
+def _too_many_attempts(retry_after: int) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="too many failed login attempts",
+        headers={"Retry-After": str(max(1, retry_after))},
+    )
 
 
 def check_login_rate_limit(ip: str | None, username: str) -> None:
-    """Raise 429 if (ip, username) is currently locked out.
+    """Raise 429 if (ip, username) is locked out or the ip's budget is spent.
 
     The response body is deliberately neutral — it must not reveal whether
     the IP or the username triggered the lockout.
     """
     _prune_login_attempts()
+    now = time.time()
     attempt = _login_attempts.get(_login_key(ip, username))
-    if attempt is not None and attempt.locked_until > time.time():
-        retry_after = int(attempt.locked_until - time.time()) + 1
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="too many failed login attempts",
-            headers={"Retry-After": str(retry_after)},
-        )
+    if attempt is not None and attempt.locked_until > now:
+        raise _too_many_attempts(int(attempt.locked_until - now) + 1)
+    budget = _ip_attempts.get(ip or "unknown")
+    if budget is not None:
+        if budget.window_start + _IP_WINDOW_SEC <= now:
+            _ip_attempts.pop(ip or "unknown", None)
+        elif budget.failures >= _IP_MAX_FAILURES:
+            raise _too_many_attempts(int(budget.window_start + _IP_WINDOW_SEC - now) + 1)
 
 
 def record_login_failure(ip: str | None, username: str) -> None:
-    """Increment the failure counter; lock out once the budget is exhausted."""
+    """Increment the failure counters; lock out once a budget is exhausted."""
+    now = time.time()
     key = _login_key(ip, username)
     attempt = _login_attempts.get(key)
     if attempt is None:
         if len(_login_attempts) >= _LOGIN_MAX_ENTRIES:
             _prune_login_attempts()
         attempt = _login_attempts.setdefault(key, _LoginAttempt())
+    if attempt.failures == 0:
+        attempt.first_failure_at = now
     attempt.failures += 1
     if attempt.failures >= _LOGIN_MAX_FAILURES:
         backoff = _LOGIN_LOCKOUT_SEC * (2 ** attempt.lockout_count)
-        attempt.locked_until = time.time() + backoff
+        attempt.locked_until = now + backoff
         attempt.lockout_count += 1
         attempt.failures = 0
         if demo_login_logs():
             log.warning("login lockout for user=%r ip=%r for %ds", username, ip, backoff)
+    budget = _ip_attempts.get(ip or "unknown")
+    if budget is None or budget.window_start + _IP_WINDOW_SEC <= now:
+        budget = _IpBudget(window_start=now)
+        _ip_attempts[ip or "unknown"] = budget
+    budget.failures += 1
 
 
 def record_login_success(ip: str | None, username: str) -> None:
@@ -588,11 +694,13 @@ def login(username: str, password: str, *, user_agent: str | None = None,
     """
     check_login_rate_limit(ip, username)
     row = store.get_user_by_username(username)
-    if row is None or row["disabled"] or not verify_password(password, row["password_hash"]):
+    with _password_check_gate():
+        ok = row is not None and not row["disabled"] and verify_password(password, row["password_hash"])
         # Same cost-12 bcrypt work as a real failed attempt, so unknown-username
         # logins can't be told apart from wrong-password logins by wall-time.
         if row is None:
             verify_password("probe", _DUMMY_PASSWORD_HASH)
+    if not ok:
         record_login_failure(ip, username)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
     if row["totp_enabled"]:
@@ -646,9 +754,11 @@ def verify_2fa(pending_token: str, code: str, *, user_agent: str | None = None,
         # Tampered ciphertext (e.g. SIGNING_SECRET changed) — fail closed.
         log.error("failed to decrypt TOTP secret for user_id=%r", user_row["id"])
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid or expired 2FA session")
-    if not verify_totp_code(secret_b32, code):
+    counter = match_totp_code(secret_b32, code, last_counter=store.get_totp_last_counter(user_row["id"]))
+    if counter is None:
         record_login_failure(ip, username)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid 2FA code")
+    store.set_totp_last_counter(user_row["id"], counter)
     record_login_success(ip, username)
     access = store.issue_token(user_row["id"], "access", access_ttl(),
                                 user_agent=user_agent, ip=ip)

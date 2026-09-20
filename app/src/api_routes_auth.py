@@ -25,12 +25,12 @@ from auth import (
     hash_password,
     login,
     make_signed_token,
+    match_totp_code,
     password_too_long,
     require_user,
     totp_uri,
     verify_2fa,
     verify_password,
-    verify_totp_code,
 )
 from auth import access_ttl as auth_access_ttl
 from auth import refresh as refresh_tokens
@@ -38,6 +38,10 @@ from auth import refresh as refresh_tokens
 log = logging.getLogger("api")
 
 router = APIRouter()
+
+# One HMAC per path; a grid page signs at most a few hundred URLs. The cap
+# keeps /api/sign from being a CPU amplifier for an authenticated caller.
+SIGN_MAX_PATHS = 1000
 
 
 @router.post("/api/auth/login", dependencies=[])
@@ -134,8 +138,10 @@ def api_2fa_confirm(request: Request, body: dict = Body(...),
         secret_b32 = decrypt_totp_secret(secret_enc)
     except Exception:
         raise HTTPException(400, "invalid 2FA setup state")
-    if not verify_totp_code(secret_b32, code):
+    counter = match_totp_code(secret_b32, code, last_counter=store.get_totp_last_counter(user.id))
+    if counter is None:
         raise HTTPException(400, "invalid code — check the time on your device and try again")
+    store.set_totp_last_counter(user.id, counter)
     store.set_totp_enabled(user.id, True)
     return {"ok": True, "totp_enabled": True}
 
@@ -156,7 +162,8 @@ def api_2fa_disable(request: Request, body: dict = Body(default={}),
             secret_b32 = decrypt_totp_secret(secret_enc)
         except Exception:
             raise HTTPException(400, "invalid 2FA state")
-        if not verify_totp_code(secret_b32, code):
+        counter = match_totp_code(secret_b32, code, last_counter=store.get_totp_last_counter(user.id))
+        if counter is None:
             raise HTTPException(400, "invalid code")
     elif password:
         row = store.get_user_by_username(user.username)
@@ -263,6 +270,8 @@ def api_sign(request: Request,
     paths = body.get("paths")
     if not isinstance(paths, list) or not paths:
         raise HTTPException(400, "paths must be a non-empty list")
+    if len(paths) > SIGN_MAX_PATHS:
+        raise HTTPException(400, f"too many paths (max {SIGN_MAX_PATHS})")
     ttl = 300
     if isinstance(body.get("ttl"), int):
         ttl = max(30, min(3600, body["ttl"]))
