@@ -10,7 +10,7 @@ python-multipart>=0.0.9
 bcrypt>=4.1,<5            # local multi-user auth (family accounts + bearer tokens)
 pyotp>=2.9,<3             # TOTP (RFC 6238) for optional app-based 2FA
 cryptography>=50,<51      # AES-GCM at-rest encryption of TOTP secrets
-numpy>=1.23,<1.24
+numpy>=1.26,<3
 Pillow>=12.3,<13
 scikit-learn>=1.4,<1.6
 reverse_geocoder==1.5.1
