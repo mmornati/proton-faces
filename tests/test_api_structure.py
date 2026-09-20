@@ -170,7 +170,8 @@ def _spa_sources():
 def test_spa_refresh_shares_parsed_body_not_response():
     """Concurrent 401s must share one parsed refresh result (audit B-10)."""
     html, _ = _spa_sources()
-    assert "}).then(async (r) => {\n      if (!r.ok) throw new Error(\"refresh failed\");\n      return r.json();" in html
+    expected = "}).then(async (r) => {\n      if (!r.ok) throw new Error(\"refresh failed\");\n      return r.json();"
+    assert expected in html
     assert "const r = await _refreshInflight;" not in html
 
 
