@@ -118,6 +118,33 @@ class FailingFullBridge(FakeBridge):
         raise self._exc
 
 
+class SlowFullBridge(FakeBridge):
+    """Sleeps past the (monkeypatched, tiny) fullres timeout on every call."""
+
+    def __init__(self, delay: float):
+        super().__init__()
+        self._delay = delay
+
+    async def full_photo_async(self, uid, range_header=None, timeout_ms=None):
+        import asyncio
+        await asyncio.sleep(self._delay)
+        return FakeResp(self._full_data)
+
+
+class CustomFullBridge(FakeBridge):
+    """Returns a caller-supplied FakeResp instead of the default fixture."""
+
+    def __init__(self, resp):
+        super().__init__()
+        self._resp = resp
+
+    def full_photo(self, uid, range_header=None, timeout_ms=None):
+        return self._resp
+
+    async def full_photo_async(self, uid, range_header=None, timeout_ms=None):
+        return self._resp
+
+
 @pytest.fixture(scope="session")
 def password_hash():
     return auth.hash_password("password123")
@@ -1074,6 +1101,39 @@ class TestPhotos:
         r = client.get("/api/photos/p1/full", headers=_bearer(client))
         assert r.status_code == 429
         assert r.headers.get("Retry-After") == "5"
+
+    def test_full_photo_timeout(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        monkeypatch.setattr(api, "_FULL_TIMEOUT_SEC", 0.05)
+        monkeypatch.setattr(bridge_client, "_bridge", SlowFullBridge(0.2))
+        r = client.get("/api/photos/p1/full", headers=_bearer(client))
+        assert r.status_code == 504
+
+    def test_full_photo_generic_bridge_error(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        monkeypatch.setattr(bridge_client, "_bridge", FailingFullBridge(RuntimeError("boom")))
+        r = client.get("/api/photos/p1/full", headers=_bearer(client))
+        assert r.status_code == 502
+
+    def test_full_photo_bad_status_code_is_passed_through(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        resp = FakeResp(b"")
+        resp.status_code = 500
+        monkeypatch.setattr(bridge_client, "_bridge", CustomFullBridge(resp))
+        r = client.get("/api/photos/p1/full", headers=_bearer(client))
+        assert r.status_code == 500
+
+    def test_full_photo_octet_stream_is_sniffed(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        resp = FakeResp(b"\xff\xd8\xff" + b"fake-jpeg-bytes", content_type="application/octet-stream")
+        monkeypatch.setattr(bridge_client, "_bridge", CustomFullBridge(resp))
+        r = client.get("/api/photos/p1/full", headers=_bearer(client))
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/jpeg"
 
     def test_full_photo_404(self, client, password_hash):
         _seed_user(password_hash=password_hash)
@@ -2466,22 +2526,9 @@ class TestTTLCacheSingleFlight:
         assert calls == 1
         assert api._dups_cache[1] == {"duplicates": []}
 
-    def test_invalidate_dups_cache_clears_api_namespace(self):
-        # Regression: _invalidate_dups_cache lives in api_state.py but every
-        # reader/writer of _dups_cache goes through api.<name>. A bare
-        # `global _dups_cache; _dups_cache = None` inside api_state rebinds
-        # api_state's own attribute, not api's, so the cache the route
-        # actually reads never gets cleared (issue #108 code review).
-        api._dups_cache = (time.time(), {"duplicates": ["stale"]})
-        api._suggested_cache[0.4] = (time.time(), ["stale"])
-        api._invalidate_dups_cache()
-        assert api._dups_cache is None
-        assert api._suggested_cache == {}
-
-    def test_invalidate_photo_dups_cache_clears_api_namespace(self):
-        api._photo_dups_cache = (time.time(), {200: []})
-        api._invalidate_photo_dups_cache()
-        assert api._photo_dups_cache is None
+    # Regression coverage for the #108-split cache-invalidation bug lives in
+    # tests/test_api_state.py::TestInvalidateCachesMutateApiNamespace,
+    # parametrized over every cache instead of ad hoc per-cache tests here.
 
     def test_photo_duplicates_single_flight(self, monkeypatch):
         api._photo_dups_cache = None

@@ -169,6 +169,7 @@ from api_routes_people import (  # noqa: F401  (re-exported for tests)
     api_people_suggested_merges,
     api_person_map,
     api_person_photos,
+    api_photo_faces,
     api_rename_person,
     api_set_person_cover,
     api_unassign_face,
