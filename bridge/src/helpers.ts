@@ -8,8 +8,15 @@
  * @module helpers
  */
 
-/** Glob pattern matching stale work files (e.g. `<uid>-<uuid>.full`). */
-export const STALE_WORK_FILE_GLOB = /^[A-Za-z0-9_-]+-[A-Fa-f0-9-]+\.full$/;
+/**
+ * Glob pattern matching stale work files (`<uid>-<uuid>.full`).
+ *
+ * The uid charset MUST match `isValidUid` below: real Proton uids look like
+ * `PNR_…==~…==` (base64 padding + a `~` separator). An earlier version
+ * omitted `=` and `~`, so the startup sweep never matched a real file and
+ * orphaned multi-GB video temps accumulated on the shared data volume.
+ */
+export const STALE_WORK_FILE_GLOB = /^[A-Za-z0-9_=~-]+-[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\.full$/;
 
 /** Tags Proton attaches to photos; map the numeric tag id to a human name. */
 export const PHOTO_TAGS = ['Favorites', 'Screenshots', 'Videos', 'LivePhotos', 'MotionPhotos', 'Selfies', 'Portraits', 'Bursts', 'Panoramas', 'Raw'];

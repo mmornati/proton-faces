@@ -68,7 +68,10 @@ services:
       - PROTON_DRIVE_CACHE_DIR=/data
       # Shared secret for bridge HTTP auth. All services on the internal
       # network must use the same token. Generate one with: openssl rand -hex 32
-      - BRIDGE_TOKEN=${BRIDGE_TOKEN:-}
+      # REQUIRED (`:?` fails loudly): every route but /health streams the
+      # photo library, and the bridge itself refuses to start without a token
+      # unless BRIDGE_AUTH_DISABLED=1 is set explicitly.
+      - BRIDGE_TOKEN=${BRIDGE_TOKEN:?set BRIDGE_TOKEN in .env (openssl rand -hex 32)}
       # E2E manifest/address-key verification is DISABLED by default: the patched
       # addresses.ts imports the armored public key without verifying its key token,
       # and fileDownloader.ts skips verifyManifest(). Deliberate workaround for a
@@ -102,11 +105,21 @@ services:
       - PROTON_BRIDGE_NODES_TIMEOUT_MS=${PROTON_BRIDGE_NODES_TIMEOUT_MS:-300000}
       - PROTON_BRIDGE_ALBUMS_TIMEOUT_MS=${PROTON_BRIDGE_ALBUMS_TIMEOUT_MS:-300000}
       - PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS=${PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS:-300000}
-      # Optional cap (bytes) on the temp file a video full-res request may
-      # materialize to disk (issue #62). Empty/0 = no cap. When set and the
-      # node's claimed size exceeds it, the bridge refuses with 507 before any
-      # download starts — protects a shared volume from multi-GB video churn.
-      - PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES=${PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES:-}
+      # Cap (bytes) on the temp file a video full-res request may materialize
+      # to disk (issue #62). Default 2 GiB; set 0 for no cap. When the node's
+      # claimed size exceeds it, the bridge refuses with 507 before any
+      # download starts — the temp lands on the SAME volume as the SQLite
+      # index, so an uncapped multi-GB video can starve every service.
+      - PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES=${PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES:-2147483648}
+    healthcheck:
+      # /health is the one unauthenticated route; a booted bridge answers 200
+      # once its Proton session is loaded. Lets `depends_on` wait for a real
+      # bridge instead of a container that merely started.
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     networks:
       - internal
 
@@ -126,7 +139,8 @@ services:
     pids_limit: 512
     cpus: "2.0"
     depends_on:
-      - proton-bridge
+      proton-bridge:
+        condition: service_healthy
     command: ["python", "indexer_main.py"]
     volumes:
       - ${DATA_MOUNT:-data}:/data
@@ -141,7 +155,7 @@ services:
       - DATA_DIR=/data
       - MODELS_DIR=/models
       - BRIDGE_URL=http://proton-bridge:8090
-      - BRIDGE_TOKEN=${BRIDGE_TOKEN:-}
+      - BRIDGE_TOKEN=${BRIDGE_TOKEN:?set BRIDGE_TOKEN in .env (openssl rand -hex 32)}
       # Bumped 300s → 600s while Proton Drive recovers from the Sep 1 partial
       # outage. Revert to 300 once stable if you want faster sync.
       - SYNC_INTERVAL=${SYNC_INTERVAL:-600}
@@ -206,8 +220,10 @@ services:
       retries: 3
       start_period: 90s
     depends_on:
-      - proton-bridge
-      - indexer
+      proton-bridge:
+        condition: service_healthy
+      indexer:
+        condition: service_started
     ports:
       - "${PORT:-8080}:8080"
     volumes:
@@ -219,7 +235,7 @@ services:
       - DATA_DIR=/data
       - MODELS_DIR=/models
       - BRIDGE_URL=http://proton-bridge:8090
-      - BRIDGE_TOKEN=${BRIDGE_TOKEN:-}
+      - BRIDGE_TOKEN=${BRIDGE_TOKEN:?set BRIDGE_TOKEN in .env (openssl rand -hex 32)}
       - PORT=8080
       # RUN_INDEXER=0 -> serve API only; the `indexer` container handles
       # the pipeline. Flip to 1 to fall back to the legacy in-process layout.

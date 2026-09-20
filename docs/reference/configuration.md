@@ -96,6 +96,8 @@ The `proton-bridge` container reads these (set in `compose.yml`):
 |----------|---------|-------------|
 | `PORT` | `8090` | Bridge container port (internal only). |
 | `BRIDGE_HOST` | `0.0.0.0` | Bridge bind address. Set to `127.0.0.1` when running outside Docker to avoid LAN exposure (issue #43). |
+| `BRIDGE_TOKEN` | _(required)_ | Shared secret the `app` and `indexer` containers send as `Authorization: Bearer` to the bridge. `docker compose up` fails loudly when unset, and the bridge process exits at boot with an empty token unless `BRIDGE_HOST` is loopback or `BRIDGE_AUTH_DISABLED=1`. Generate with `openssl rand -hex 32`. |
+| `BRIDGE_AUTH_DISABLED` | `0` | Explicit opt-out of bridge authentication for loopback-only dev setups. Never set it on a bridge reachable from other containers or the LAN. |
 | `DATA_DIR` | `/data` | Where the bridge caches the session + work files. |
 | `PROTON_DRIVE_CREDENTIALS_STORE` | `unsafe_file` | Session storage backend. `unsafe_file` (default) keeps the plaintext session at `/data/auth-session.json` (the `AUTH_SESSION_MOUNT` bind mount). `pass` selects the SDK's encrypted store: the bridge image ships `pass` + `gnupg`, and its entrypoint generates a container-local GPG key (in the `bridge-gnupg` volume), initializes the store (in the `bridge-pass-store` volume), and migrates an existing plaintext session on first start. See [Session file → Encrypted store](../getting-started/session-export.md#encrypted-store-pass). Live only since PR #129 — earlier compose files hardcoded `unsafe_file`. |
 | `PROTON_DRIVE_CACHE_DIR` | `/data` | Where the SDK caches encrypted blobs. |
@@ -108,7 +110,7 @@ The `proton-bridge` container reads these (set in `compose.yml`):
 | `PROTON_BRIDGE_NODES_TIMEOUT_MS` | `300000` | Deadline for the `/nodes` metadata lookup (issue #55). |
 | `PROTON_BRIDGE_ALBUMS_TIMEOUT_MS` | `300000` | Deadline for the `/albums` listing (issue #55). |
 | `PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS` | `300000` | Deadline for a `/thumbnails` batch download (issue #55). |
-| `PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES` | unset (no cap) | Optional cap (bytes) on the temp file a video full-res request may materialize to disk (issue #62). When set and the node's claimed size exceeds it, the bridge refuses with **507 Insufficient Storage** before any download starts — protects a shared volume from multi-GB video churn. HEAD requests are answered from node metadata and never write a temp file. |
+| `PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES` | `2147483648` (2 GiB) | Cap (bytes) on the temp file a video full-res request may materialize to disk (issue #62). `0` disables the cap. When the node's claimed size exceeds it, the bridge refuses with **507 Insufficient Storage** before any download starts — the temp file lives on the same volume as the SQLite index, so an uncapped multi-GB video can starve every service. HEAD requests are answered from node metadata and never write a temp file. |
 | `BRIDGE_SDK_LOGS` | `0` (off) | Full Proton SDK console logging: per-block download detail and upstream debug statements (issue #70). Default OFF — the SDK's unaudited log statements are noisy and widen the blast radius for accidental secret logging. Set to `1` only when troubleshooting a bridge issue. `warn`/`error` logs are always emitted regardless. |
 
 ## Local dev (single-process)

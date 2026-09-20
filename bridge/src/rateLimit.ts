@@ -110,9 +110,13 @@ export class TokenBucket {
 
     async acquire(): Promise<void> {
         if (!this.isEnabled()) return;
+        if (this.closed) throw new Error('rate limiter closed');
         const now = Date.now();
         this.refill(now);
-        if (now >= this.resumeAt && this.tokens >= 1) {
+        // FIFO fairness: a newcomer never takes a token while callers are
+        // already parked, otherwise a refill that lands between two wake
+        // ticks is stolen by whoever calls next and the queue head starves.
+        if (this.waiters.length === 0 && now >= this.resumeAt && this.tokens >= 1) {
             this.tokens -= 1;
             return;
         }
@@ -123,6 +127,23 @@ export class TokenBucket {
             this.waiters.push({ resolve, reject });
             this.scheduleWake();
         });
+    }
+
+    private closed = false;
+
+    /**
+     * Reject every parked waiter and refuse new acquires. Called on shutdown
+     * so handlers parked behind the bucket fail fast instead of hanging until
+     * the drain deadline forces the process out.
+     */
+    close(reason = 'rate limiter closed'): void {
+        this.closed = true;
+        if (this.timer !== null) {
+            clearTimeout(this.timer);
+            this.timer = null;
+        }
+        const parked = this.waiters.splice(0, this.waiters.length);
+        for (const w of parked) w.reject(new Error(reason));
     }
 
     noteRetryAfter(retryAfterSeconds: number): void {
