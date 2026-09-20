@@ -16,7 +16,9 @@ from sidecar import invalidate_face_cache, read_face_sidecar
 # Bumped whenever `migrate()` adds one-time data backfills or creates new
 # schema objects that old DBs must also gain. init_db() records this in
 # `PRAGMA user_version` once migrations have run, so each backfill runs at
-# most once per database.
+# most once per database. migrate() gates its data backfills (the correlated
+# UPDATEs over all people) behind this version: once a DB is at
+# _SCHEMA_VERSION, only the cheap idempotent DDL still runs on startup.
 _SCHEMA_VERSION = 3
 
 _SCHEMA = """
@@ -384,6 +386,10 @@ def migrate(conn: sqlite3.Connection) -> None:
     )}
     if "photos" not in tables:
         return
+    # Data backfills below are gated on this: once a DB has reached
+    # _SCHEMA_VERSION they have already run, so re-running the correlated
+    # UPDATEs over all people on every startup is pure waste (issue #104).
+    user_version = conn.execute("PRAGMA user_version").fetchone()[0]
     pcols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
     if "size_bytes" not in pcols:
         conn.execute("ALTER TABLE photos ADD COLUMN size_bytes INTEGER")
@@ -440,16 +446,19 @@ def migrate(conn: sqlite3.Connection) -> None:
     if "cover_face_id" not in cols:
         conn.execute("ALTER TABLE people ADD COLUMN cover_face_id INTEGER")
     # Backfill a cover face for people clustered before cover_face_id existed.
-    conn.execute(
-        """UPDATE people
-           SET cover_face_id = (
-               SELECT f.id FROM faces f
-               WHERE f.person_id = people.id
-               ORDER BY f.id LIMIT 1
-           )
-           WHERE cover_face_id IS NULL
-             AND EXISTS (SELECT 1 FROM faces f WHERE f.person_id = people.id)"""
-    )
+    # One-time data backfill: gated on user_version so it doesn't re-scan every
+    # person on every startup (issue #104).
+    if user_version < _SCHEMA_VERSION:
+        conn.execute(
+            """UPDATE people
+               SET cover_face_id = (
+                   SELECT f.id FROM faces f
+                   WHERE f.person_id = people.id
+                   ORDER BY f.id LIMIT 1
+               )
+               WHERE cover_face_id IS NULL
+                 AND EXISTS (SELECT 1 FROM faces f WHERE f.person_id = people.id)"""
+        )
     # Denormalized face/photo counts (issue #81). One-time backfill; idempotent
     # because we only recount people whose cached counts are 0 while they still
     # own faces, plus people who own faces but have a 0 count. The columns
@@ -464,14 +473,17 @@ def migrate(conn: sqlite3.Connection) -> None:
     # it, but existing DBs pre-date that change.
     if "idx_people_name" not in {r["name"] for r in conn.execute("PRAGMA index_list(people)")}:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_people_name ON people(name COLLATE NOCASE)")
-    conn.execute(
-        """UPDATE people
-           SET face_count = (SELECT COUNT(*) FROM faces f WHERE f.person_id = people.id),
-               photo_count = (SELECT COUNT(DISTINCT f.photo_uid) FROM faces f
-                              WHERE f.person_id = people.id AND f.photo_uid IS NOT NULL)
-           WHERE face_count = 0
-              OR photo_count = 0"""
-    )
+    # One-time data backfill: gated on user_version so the correlated subqueries
+    # over all people don't re-run on every startup (issue #104).
+    if user_version < _SCHEMA_VERSION:
+        conn.execute(
+            """UPDATE people
+               SET face_count = (SELECT COUNT(*) FROM faces f WHERE f.person_id = people.id),
+                   photo_count = (SELECT COUNT(DISTINCT f.photo_uid) FROM faces f
+                                  WHERE f.person_id = people.id AND f.photo_uid IS NOT NULL)
+               WHERE face_count = 0
+                  OR photo_count = 0"""
+        )
     acols = {r["name"] for r in conn.execute("PRAGMA table_info(albums)")}
     if "start_ts" not in acols:
         conn.execute("ALTER TABLE albums ADD COLUMN start_ts INTEGER")
@@ -484,8 +496,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if "dirty" not in acols:
         conn.execute("ALTER TABLE albums ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0")
     # Migration for issue #34: clear all plaintext auth_tokens so they are
-    # re-issued as SHA-256 hashes on next login. Safe to run repeatedly.
-    if "auth_tokens" in tables:
+    # re-issued as SHA-256 hashes on next login. One-time data migration: gated
+    # on user_version so it doesn't log everyone out on every startup.
+    if user_version < _SCHEMA_VERSION and "auth_tokens" in tables:
         conn.execute("DELETE FROM auth_tokens")
     # Optional TOTP 2FA columns (additive). Existing users get totp_enabled=0
     # and a NULL secret — no 2FA until they enroll.
