@@ -216,10 +216,13 @@ describe('clearCacheFiles', () => {
 
 describe('STALE_WORK_FILE_GLOB', () => {
     const cases: Array<[string, boolean]> = [
-        ['abc123-def456.full', true],
         ['photo_uid-550e8400-e29b-41d4-a716-446655440000.full', true],
-        ['a-b.full', true],
-        ['0-1.full', true],
+        // Real Proton uid shape: `{shareId}==~{linkId}==` (base64 padding + `~`).
+        // The glob missed these for months and 1.2 GB of orphans piled up.
+        ['PNR_VlVhfS8wTtid1KTK_dj8wXY0USLCUCyp_hi7ZoIa7aZYuJiWP8TVOK1xQDL1O3CB7OVpPOkxyPuXJvfi1w==~05TI0ffNLgfyaRzhb1Wpbl9p-buUH0xhOlP22ksGZzrFzWIv_3WRmzdPN8KQVBJsMT3Yq6W5UgKMF0A8rszltg==-a3a2e066-2d49-4f95-9cd6-4eda949f332d.full', true],
+        ['abc123-def456.full', false], // uuid part is not a UUID
+        ['a-b.full', false],
+        ['0-1.full', false],
         ['abc123.full', false], // missing uuid part
         ['abc123-def456.tmp', false], // wrong extension
         ['abc123-def456.full.bak', false], // extra suffix
@@ -264,21 +267,21 @@ describe('sweepStaleWorkFiles', () => {
 
     test('removes all stale work files when all are old', () => {
         const entries = [
-            { name: 'a-1111.full', mtimeMs: 0 },
-            { name: 'b-2222.full', mtimeMs: 1000 },
-            { name: 'c-3333.full', mtimeMs: cutoff - 100 },
+            { name: 'a-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.full', mtimeMs: 0 },
+            { name: 'b-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.full', mtimeMs: 1000 },
+            { name: 'c-cccccccc-cccc-cccc-cccc-cccccccccccc.full', mtimeMs: cutoff - 100 },
         ];
         const removed = sweepStaleWorkFiles(entries, now, maxAge);
-        expect(removed).toEqual(['a-1111.full', 'b-2222.full', 'c-3333.full']);
+        expect(removed).toEqual(['a-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.full', 'b-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.full', 'c-cccccccc-cccc-cccc-cccc-cccccccccccc.full']);
     });
 
     test('exact cutoff boundary: equal to cutoff is NOT removed', () => {
         const entries = [
-            { name: 'a-1111.full', mtimeMs: cutoff }, // exactly at cutoff — not stale
-            { name: 'b-2222.full', mtimeMs: cutoff - 1 }, // just below — stale
+            { name: 'a-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.full', mtimeMs: cutoff }, // exactly at cutoff — not stale
+            { name: 'b-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.full', mtimeMs: cutoff - 1 }, // just below — stale
         ];
         const removed = sweepStaleWorkFiles(entries, now, maxAge);
-        expect(removed).toEqual(['b-2222.full']);
+        expect(removed).toEqual(['b-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.full']);
     });
 });
 

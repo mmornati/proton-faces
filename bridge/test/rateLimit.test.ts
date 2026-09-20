@@ -324,3 +324,26 @@ describe('noteRetryAfterIfPresent', () => {
         expect(Date.now() - t0).toBeLessThan(100);
     });
 });
+
+describe('TokenBucket fairness and close', () => {
+    test('a newcomer never jumps parked waiters', async () => {
+        const b = new TokenBucket(20, 1); // 1 token, refills 1 per 50ms
+        await b.acquire(); // drain
+        const order: string[] = [];
+        const first = b.acquire().then(() => order.push('parked'));
+        // Let a token refill while `first` is parked, then race a newcomer.
+        await new Promise((r) => setTimeout(r, 70));
+        const second = b.acquire().then(() => order.push('newcomer'));
+        await Promise.all([first, second]);
+        expect(order).toEqual(['parked', 'newcomer']);
+    });
+
+    test('close rejects parked waiters and refuses new acquires', async () => {
+        const b = new TokenBucket(1, 1);
+        await b.acquire();
+        const parked = b.acquire();
+        b.close('shutting down');
+        await expect(parked).rejects.toThrow('shutting down');
+        await expect(b.acquire()).rejects.toThrow('rate limiter closed');
+    });
+});
