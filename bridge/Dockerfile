@@ -157,7 +157,7 @@ ENV PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS=300000
 # disk (issue #62). Empty/0 = no cap (historical behavior). When set and the
 # node's claimed size exceeds it, the bridge refuses with 507 before any
 # download starts. Set per-deployment in compose.yml.
-ENV PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES=
+ENV PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES=2147483648
 # Full Proton SDK console logging (per-block download detail). Empty = OFF
 # (default). Set to 1 per-deployment in compose.yml only when troubleshooting
 # a bridge issue (issue #70).

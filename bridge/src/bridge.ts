@@ -37,7 +37,7 @@ import { ThumbnailType } from '@protontech/drive-sdk';
 import { mkdir, open, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { createRateLimiter, noteRetryAfterIfPresent, RateLimitQueueFullError, type TokenBucket } from './rateLimit';
+import { createRateLimiter, extractRetryAfter, noteRetryAfterIfPresent, RateLimitQueueFullError, type TokenBucket } from './rateLimit';
 import { CACHE_FILE_GLOB, classifyMediaType, clearCacheFiles, exceedsVideoTempCap, headResponseHeaders, isValidUid, MAX_UID_BATCH, nodeToJson, parseJsonBody, parseRange, sanitizedErrorBody, STALE_WORK_FILE_GLOB, sweepStaleWorkFiles, withTimeoutSignal } from './helpers';
 
 const PORT = Number(process.env.PORT ?? 8090);
@@ -54,6 +54,15 @@ const THUMBNAILS_TIMEOUT_MS = Number(process.env.PROTON_BRIDGE_THUMBNAILS_TIMEOU
 // download starts, so a multi-GB video can never exhaust a shared volume.
 const MAX_VIDEO_TEMP_BYTES = Number(process.env.PROTON_BRIDGE_MAX_VIDEO_TEMP_BYTES ?? 0);
 const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN ?? '';
+// Explicit opt-out of bridge auth for loopback-only dev setups. Without it an
+// empty BRIDGE_TOKEN refuses to start (fail closed) unless the bridge binds a
+// loopback address — every route but /health streams the whole photo library.
+const BRIDGE_AUTH_DISABLED = process.env.BRIDGE_AUTH_DISABLED === '1';
+// Age past which a work/*.full temp file is considered orphaned by the
+// periodic sweep. Must exceed the full-res handler deadline so a slow but
+// live download is never unlinked out from under its writer.
+const WORK_SWEEP_MAX_AGE_MS = Math.max(15 * 60_000, 2 * FULL_RES_TIMEOUT_MS);
+const WORK_SWEEP_INTERVAL_MS = 30 * 60_000;
 // Full Proton SDK console logging (per-block download detail, upstream debug
 // statements). Default OFF — the SDK's unaudited log statements are noisy and
 // widen the blast radius for accidental secret logging. Set to '1' only when
@@ -64,6 +73,7 @@ const BRIDGE_SDK_LOGS = process.env.BRIDGE_SDK_LOGS === '1';
 const SHUTDOWN_GRACE_MS = 10_000;
 
 let server: ReturnType<typeof Bun.serve> | null = null;
+let activeLimiter: TokenBucket | null = null;
 
 // Constant-time comparison to prevent timing attacks on the bridge token.
 // Returns true when both strings are equal, false otherwise.
@@ -76,13 +86,18 @@ function timingSafeEqual(a: string, b: string): boolean {
     return result === 0;
 }
 
+function isLoopback(host: string): boolean {
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
 // Validate the BRIDGE_TOKEN on every request except GET /health (needed for
 // compose healthchecks). Returns true when the request is authorized.
 function isAuthorized(request: Request, url: URL): boolean {
     // /health is always open for compose healthchecks
     if (url.pathname === '/health') return true;
-    // No token configured = auth disabled (backward compat for dev setups)
-    if (!BRIDGE_TOKEN) return true;
+    // Empty token: only allowed when the operator opted out explicitly or
+    // the bridge is loopback-only (main() refuses to start otherwise).
+    if (!BRIDGE_TOKEN) return BRIDGE_AUTH_DISABLED || isLoopback(BRIDGE_HOST);
     const header = request.headers.get('authorization') ?? '';
     return timingSafeEqual(header, `Bearer ${BRIDGE_TOKEN}`);
 }
@@ -171,6 +186,10 @@ async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: Tok
     // timeline deadline passes, so a stalled SDK pagination/decrypt loop can't
     // hold this handler (and its rate-limiter slot) open forever.
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(TIMELINE_TIMEOUT_MS)]);
+    // Acquire BEFORE the Response is constructed: once the 200 + stream is
+    // returned, a RateLimitQueueFullError inside start() can only truncate the
+    // body — the top-level 503 + Retry-After handler is unreachable there.
+    await limiter.acquire();
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
@@ -179,7 +198,6 @@ async function fetchTimeline(ctx: Awaited<ReturnType<typeof init>>, limiter: Tok
                 const uids: string[] = [];
                 let collected = 0;
                 let lastPing = Date.now();
-                await limiter.acquire();
                 for await (const item of ctx.photosSdk.iterateTimeline(signal)) {
                     if (limit > 0 && collected >= limit) {
                         break;
@@ -245,13 +263,15 @@ async function fetchNodes(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenB
 
     // Abort when the client disconnects or the node-lookup deadline passes.
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(NODES_TIMEOUT_MS)]);
+    // See fetchTimeline: acquire before the Response exists so queue-full
+    // backpressure surfaces as a 503, not a truncated 200.
+    await limiter.acquire();
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
             const send = (line: string) => controller.enqueue(encoder.encode(`${line}\n`));
             try {
                 let count = 0;
-                await limiter.acquire();
                 for await (const node of ctx.photosSdk.iterateNodes(uids, signal)) {
                     if ('missingUid' in node) {
                         send(JSON.stringify({ uid: node.missingUid, missing: true }));
@@ -271,11 +291,12 @@ async function fetchNodes(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenB
     return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson' } });
 }
 
-async function fetchAlbums(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket): Promise<Response> {
+async function fetchAlbums(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket, request: Request): Promise<Response> {
     const albums: { uid: string; name: string }[] = [];
     await limiter.acquire();
-    // Bound album iteration so a stalled SDK pagination can't hang this handler.
-    const signal = AbortSignal.timeout(ALBUMS_TIMEOUT_MS);
+    // Bound album iteration so a stalled SDK pagination can't hang this
+    // handler, and stop when the client goes away.
+    const signal = AbortSignal.any([request.signal, AbortSignal.timeout(ALBUMS_TIMEOUT_MS)]);
     try {
         for await (const node of ctx.photosSdk.iterateAlbums(signal)) {
             if ('missingUid' in node) continue;
@@ -289,7 +310,7 @@ async function fetchAlbums(ctx: Awaited<ReturnType<typeof init>>, limiter: Token
     return Response.json({ ok: true, albums });
 }
 
-async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket, body: unknown): Promise<Response> {
+async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, limiter: TokenBucket, body: unknown, request: Request): Promise<Response> {
     const { uids } = (body ?? {}) as { uids?: unknown };
     if (!Array.isArray(uids) || uids.length === 0) {
         return Response.json({ ok: false, error: 'Expected {"uids": [...]}' }, { status: 400 });
@@ -325,8 +346,9 @@ async function fetchThumbnails(ctx: Awaited<ReturnType<typeof init>>, limiter: T
 
     await limiter.acquire();
     // Bound thumbnail iteration so a stalled SDK download queue can't hold this
-    // handler (and its rate-limiter slot) open indefinitely.
-    const signal = AbortSignal.timeout(THUMBNAILS_TIMEOUT_MS);
+    // handler (and its rate-limiter slot) open indefinitely, and stop when the
+    // client goes away.
+    const signal = AbortSignal.any([request.signal, AbortSignal.timeout(THUMBNAILS_TIMEOUT_MS)]);
     try {
         for await (const result of ctx.photosSdk.iterateThumbnails(pending, ThumbnailType.Type1, signal)) {
             if (result.ok) {
@@ -628,6 +650,37 @@ async function streamFullPhoto(ctx: Awaited<ReturnType<typeof init>>, limiter: T
     }
 }
 
+// Remove work/*.full temps older than `maxAgeMs`. Safe to call while
+// downloads are in flight as long as maxAgeMs exceeds the full-res deadline.
+async function sweepAgedWorkFiles(maxAgeMs: number): Promise<number> {
+    const workDir = path.join(DATA_DIR, 'work');
+    const entries: Array<{ name: string; mtimeMs: number }> = [];
+    try {
+        for (const name of await readdir(workDir)) {
+            if (!STALE_WORK_FILE_GLOB.test(name)) continue;
+            try {
+                const st = await stat(path.join(workDir, name));
+                entries.push({ name, mtimeMs: st.mtimeMs });
+            } catch {
+                // vanished between readdir and stat — skip
+            }
+        }
+    } catch {
+        return 0;
+    }
+    let removed = 0;
+    for (const name of sweepStaleWorkFiles(entries, Date.now(), maxAgeMs)) {
+        try {
+            await Bun.file(path.join(workDir, name)).unlink();
+            removed++;
+            console.log(`[bridge] removed aged work file: ${name}`);
+        } catch {
+            // best-effort
+        }
+    }
+    return removed;
+}
+
 // Best-effort removal of every work/*.full temp file. Only call when no
 // download is in-flight (startup sweep, /cache/clear, or after the server has
 // drained); a *.full file mid-write would otherwise be deleted out from under
@@ -676,6 +729,7 @@ async function shutdown(signal: string): Promise<void> {
         console.error(`[bridge] drain deadline (${SHUTDOWN_GRACE_MS}ms) exceeded; forcing exit`);
         process.exit(0);
     }, SHUTDOWN_GRACE_MS);
+    activeLimiter?.close('bridge shutting down');
     try {
         await server?.stop();
     } catch (error) {
@@ -723,7 +777,7 @@ async function main(): Promise<void> {
         const stale = sweepStaleWorkFiles(entries, Date.now(), 5 * 60 * 1000);
         for (const name of stale) {
             try {
-                Bun.file(path.join(workDir, name)).unlink();
+                await Bun.file(path.join(workDir, name)).unlink();
                 console.log(`[bridge] removed stale work file: ${name}`);
             } catch {
                 // best-effort
@@ -736,6 +790,17 @@ async function main(): Promise<void> {
         // workDir doesn't exist yet (first run) — nothing to sweep
     }
 
+    // Periodic sweep for temps orphaned while running (a client abort that
+    // raced the unlink, a crashed stream). Age-gated well past the full-res
+    // deadline so an in-flight download is never touched. unref() keeps the
+    // timer from holding the process open during shutdown.
+    const periodic = setInterval(() => {
+        sweepAgedWorkFiles(WORK_SWEEP_MAX_AGE_MS).catch((error) => {
+            console.error('[bridge] periodic work sweep failed:', error);
+        });
+    }, WORK_SWEEP_INTERVAL_MS);
+    periodic.unref?.();
+
     if (process.env.PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION === '1') {
         console.warn(
             '[bridge] WARNING: PROTON_DRIVE_SKIP_MANIFEST_VERIFICATION=1 — E2E manifest verification DISABLED; ' +
@@ -745,12 +810,20 @@ async function main(): Promise<void> {
         );
     }
 
-    const limiter = createRateLimiter();
+    if (!BRIDGE_TOKEN && !BRIDGE_AUTH_DISABLED && !isLoopback(BRIDGE_HOST)) {
+        console.error(
+            '[bridge] BRIDGE_TOKEN is not set and BRIDGE_HOST is not loopback. Refusing to start: ' +
+                'every route but /health streams the photo library. Set BRIDGE_TOKEN (openssl rand -hex 32), ' +
+                'bind BRIDGE_HOST=127.0.0.1, or set BRIDGE_AUTH_DISABLED=1 to opt out explicitly.',
+        );
+        process.exit(1);
+    }
+    if (!BRIDGE_TOKEN) {
+        console.warn('[bridge] WARNING: bridge auth disabled (no BRIDGE_TOKEN)');
+    }
 
-    const bindAddr = BRIDGE_HOST === '0.0.0.0' ? '0.0.0.0' : BRIDGE_HOST;
-    console.log(
-        `[bridge] listening on ${bindAddr}:${PORT} — set BRIDGE_HOST=127.0.0.1 for non-containerized use`,
-    );
+    const limiter = createRateLimiter();
+    activeLimiter = limiter;
 
     server = Bun.serve({
         hostname: BRIDGE_HOST,
@@ -774,11 +847,9 @@ async function main(): Promise<void> {
                     return await ensureLoggedIn(ctx);
                 }
                 if (url.pathname === '/cache' && request.method === 'GET') {
-                    // No auth required — same trust model as /health: the
-                    // bridge is reachable only from the compose `internal`
-                    // network, and exposing cache file sizes/mtimes to the
-                    // app container is necessary for the admin "stale
-                    // cache" check to work.
+                    // Authenticated like every route but /health. Reports
+                    // cache file sizes/mtimes so the app's admin "stale
+                    // cache" check works without scraping logs.
                     return Response.json({ ok: true, ...(await reportCache()) });
                 }
                 if (url.pathname === '/cache/clear' && request.method === 'POST') {
@@ -794,14 +865,16 @@ async function main(): Promise<void> {
                     // Sweep stale work/*.full files before exiting so a
                     // crash-restart loop doesn't accumulate orphans.
                     await sweepWorkDir();
-                    // Drain in-flight requests before exiting so the
-                    // response is fully flushed and no downloads are
-                    // aborted mid-stream. Exit 0 (expected restart)
-                    // instead of 1 (crash) so monitoring stays green.
-                    const body = Response.json({ ok: true, ...res });
-                    server?.stop();
-                    process.exit(0);
-                    return body;
+                    // Return the response FIRST, then drain + exit on the
+                    // next tick. A synchronous process.exit() here killed
+                    // the process before the body was flushed, so the admin
+                    // UI reported "cache clear failed" on every success.
+                    // Exit 0 (expected restart) instead of 1 (crash) so
+                    // monitoring stays green.
+                    setTimeout(() => {
+                        shutdown('cache-clear').catch(() => process.exit(0));
+                    }, 50);
+                    return Response.json({ ok: true, ...res });
                 }
                 if (url.pathname === '/timeline') {
                     if (request.method !== 'GET') {
@@ -826,14 +899,14 @@ async function main(): Promise<void> {
                     if (request.method !== 'GET') {
                         return new Response(null, { status: 405, headers: { Allow: 'GET' } });
                     }
-                    return await fetchAlbums(ctx, limiter);
+                    return await fetchAlbums(ctx, limiter, request);
                 }
                 if (url.pathname === '/thumbnails' && request.method === 'POST') {
                     const body = await parseJsonBody(request);
                     if (body === null) {
                         return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
                     }
-                    return await fetchThumbnails(ctx, limiter, body);
+                    return await fetchThumbnails(ctx, limiter, body, request);
                 }
                 const fullPhotoMatch = url.pathname.match(/^\/photo\/([^/]+)\/full$/);
                 if (fullPhotoMatch) {
@@ -855,6 +928,22 @@ async function main(): Promise<void> {
                         { status: 503, headers: { 'Retry-After': '1' } },
                     );
                 }
+                const retryAfter = extractRetryAfter(error);
+                if (retryAfter !== null) {
+                    // Upstream 429/503: surface it as a transient 503 with the
+                    // upstream Retry-After instead of an opaque 500, so the
+                    // Python side retries instead of flagging photos as errors.
+                    return Response.json(
+                        { ok: false, error: 'upstream rate limited — retry later', ref },
+                        {
+                            status: 503,
+                            headers: {
+                                'Retry-After': String(Math.max(1, Math.ceil(retryAfter))),
+                                'X-Error-Message': 'upstream rate limited',
+                            },
+                        },
+                    );
+                }
                 return Response.json(sanitizedErrorBody(ref), { status: 500 });
             }
         },
@@ -863,7 +952,9 @@ async function main(): Promise<void> {
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
 
-    console.log(`[bridge] listening on :${PORT}`);
+    console.log(
+        `[bridge] listening on ${BRIDGE_HOST}:${PORT} — set BRIDGE_HOST=127.0.0.1 for non-containerized use`,
+    );
 }
 
 main().catch((error) => {
