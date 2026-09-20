@@ -122,6 +122,8 @@ Authentication is via `Authorization: Bearer <token>`. Get a token from `POST /a
 | PUT | `/api/admin/schedule` | admin | Update the schedule (`{enabled, hour, minute, keep}`); `400` with the rejected field names on invalid values |
 | POST | `/api/admin/checks` | admin | Run the seven health checks on demand |
 | POST | `/api/admin/people/gc-empty` | admin | Delete anonymous, face-less placeholder `people` rows (`{deleted: N, ok: true}`); idempotent sweep, never touches named people |
+| POST | `/api/admin/people/prune-small` | admin | Retroactively apply `MIN_CLUSTER_SIZE`: body `{min_photos?, dry_run?}`; deletes anonymous clusters with fewer photos than the threshold, releasing their faces to the unassigned queue. `dry_run: true` returns `candidate_count` only. Named people are never touched. |
+| POST | `/api/admin/db/compact` | admin | `VACUUM` the SQLite index and truncate the WAL; returns `before_bytes`, `after_bytes`, `reclaimed_bytes`. `409` while the indexer holds the write lock. |
 
 ## Static
 

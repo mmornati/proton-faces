@@ -1418,12 +1418,22 @@ function jumpToDate(ym, firstTs) {
     .catch((e) => toast("Error: " + e.message));
 }
 
+// "Show small clusters" toggle: anonymous clusters below MIN_CLUSTER_SIZE
+// are hidden by default (they were 59% of the People page in a real
+// library). Persisted per browser.
+function _peopleIncludeSmall() {
+  try { return localStorage.getItem("pf.people.small") === "1"; } catch (e) { return false; }
+}
+let peopleHiddenSmall = 0;
+
 async function loadPeople(q = null) {
   if (q !== null) peopleQ = q;
   // Reset paging on every fresh load (search change or first open).
   peopleOffset = 0;
-  const data = await api(`/api/people?limit=${peoplePage}&offset=0${peopleQ ? `&q=${encodeURIComponent(peopleQ)}` : ""}`);
+  const small = _peopleIncludeSmall() ? "&include_small=1" : "";
+  const data = await api(`/api/people?limit=${peoplePage}&offset=0${peopleQ ? `&q=${encodeURIComponent(peopleQ)}` : ""}${small}`);
   peopleTotal = data.total || 0;
+  peopleHiddenSmall = data.hidden_small || 0;
   renderPeopleGrid(data.people || []);
   peopleOffset = (data.people || []).length;
   peopleGridCache = { q: peopleQ, total: peopleTotal };
@@ -1453,7 +1463,8 @@ async function loadMorePeople() {
   if (peopleTotal && peopleOffset >= peopleTotal) return;
   peopleLoading = true;
   try {
-    const data = await api(`/api/people?limit=${peoplePage}&offset=${peopleOffset}`);
+    const small = _peopleIncludeSmall() ? "&include_small=1" : "";
+    const data = await api(`/api/people?limit=${peoplePage}&offset=${peopleOffset}${small}`);
     const more = data.people || [];
     if (more.length) {
       const grid = document.querySelector(".people-grid");
@@ -1499,6 +1510,10 @@ function renderPeopleGrid(people) {
   el.innerHTML = `
     <div id="peopleheader" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
       <span id="peopletotal" style="color:var(--muted);font-size:13px"></span>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;cursor:pointer">
+        <input type="checkbox" id="peoplesmall" ${_peopleIncludeSmall() ? "checked" : ""}>
+        Show small clusters${peopleHiddenSmall ? ` (${peopleHiddenSmall.toLocaleString()} hidden)` : ""}
+      </label>
     </div>
     <div class="dups" id="dups">
       <button class="duphead" id="duphead">Suggested merges<span class="dupcount" id="dupcount" style="display:none"></span><span class="dupchev">&#9656;</span></button>
@@ -1518,6 +1533,10 @@ function renderPeopleGrid(people) {
   } else {
     total.textContent = `${peopleTotal.toLocaleString()} people`;
   }
+  $("#peoplesmall").addEventListener("change", (e) => {
+    try { localStorage.setItem("pf.people.small", e.target.checked ? "1" : "0"); } catch (err) {}
+    loadPeople();
+  });
   $("#duphead").addEventListener("click", toggleDups);
   const savedDupThr = localStorage.getItem("dup_threshold");
   if (savedDupThr != null) $("#dupthreshold").value = savedDupThr;
@@ -2644,7 +2663,12 @@ function renderAdminOverviewSection() {
       <tr><td class="k">Data size</td><td class="v">${esc(fmtBytes(d.data_bytes || 0))}</td></tr>
       <tr><td class="k">Last backup</td><td class="v">${b.last_name ? `${esc(b.last_name)} · ${esc(fmtAbs(b.last_ts))}` : "<span class='pill bad'>none</span>"}</td></tr>
       <tr><td class="k">Backup count</td><td class="v">${(adminBackups || []).length} / keep ${(adminSchedule || {}).keep}</td></tr>
-    </table>`;
+    </table>
+    <h4>Maintenance</h4>
+    <div class="admin-actions" style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="secondary admin-prune-small" type="button" title="Drop anonymous clusters below MIN_CLUSTER_SIZE; their faces return to the unassigned queue">Prune small unnamed clusters…</button>
+      <button class="secondary admin-compact-db" type="button" title="VACUUM the SQLite index to reclaim free pages (run while the indexer is idle)">Compact index…</button>
+    </div>`;
 }
 
 function renderAdminChecksSection() {
@@ -2830,6 +2854,38 @@ function renderAdminUsersSection() {
 
 function wireAdminHandlers() {
   const $ = (s, r = document) => r.querySelector(s);
+
+  const pruneBtn = $(".admin-prune-small");
+  if (pruneBtn) {
+    pruneBtn.addEventListener("click", async () => {
+      if (adminBusy) return;
+      adminBusy = true;
+      try {
+        const dry = await api("/api/admin/people/prune-small", { method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({ dry_run: true }) });
+        if (!dry.candidate_count) { toast(`No anonymous clusters below ${dry.min_photos} photos.`); return; }
+        if (!confirm(`Delete ${dry.candidate_count.toLocaleString()} anonymous clusters with fewer than ${dry.min_photos} photos?\n\nTheir faces go back to the unassigned queue and are regrouped by the next clustering run. Named people are not touched.`)) return;
+        const r = await api("/api/admin/people/prune-small", { method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({}) });
+        toast(`Pruned ${r.deleted.toLocaleString()} clusters.`);
+        peopleGridCache = null;
+      } catch (e) { toast("Prune failed: " + (e.message || e)); }
+      finally { adminBusy = false; }
+    });
+  }
+  const compactBtn = $(".admin-compact-db");
+  if (compactBtn) {
+    compactBtn.addEventListener("click", async () => {
+      if (adminBusy) return;
+      if (!confirm("Compact the SQLite index now? This takes the write lock for the duration — run it while the indexer is idle.")) return;
+      adminBusy = true;
+      compactBtn.disabled = true;
+      toast("Compacting index…");
+      try {
+        const r = await api("/api/admin/db/compact", { method: "POST" });
+        toast(`Index compacted: ${fmtBytes(r.before_bytes)} → ${fmtBytes(r.after_bytes)}`);
+      } catch (e) { toast("Compact failed: " + (e.message || e)); }
+      finally { adminBusy = false; compactBtn.disabled = false; }
+    });
+  }
 
   $("#admin-run-checks").addEventListener("click", async () => {
     if (adminBusy) return;

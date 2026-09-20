@@ -2954,3 +2954,63 @@ class TestPerfPassApi:
             api._people_cache_put_locked("c", time.time(), [{}] * 3)
         assert list(api._people_cache) == ["b", "c"] or list(api._people_cache) == ["c"]
         assert sum(len(v[1]) for v in api._people_cache.values()) <= 10 or len(api._people_cache) == 1
+
+
+
+class TestPeopleNoise:
+    def _seed_people(self):
+        # Two named (1 photo each), three anonymous with 1 photo, one anonymous with 3 photos.
+        pids = {}
+        i = 0
+
+        def person(name, n_photos):
+            nonlocal i
+            face_ids = []
+            for _ in range(n_photos):
+                _seed_done_photo(f"q{i}")
+                face_ids.append(_seed_face(f"q{i}", emb=_emb(i % 500)))
+                i += 1
+            pid = store.create_person(name=name, cover_uid=f"q{i-1}", cover_face_id=face_ids[0])
+            store.assign_faces_person_bulk(face_ids, pid)
+            return pid
+
+        pids["alice"] = person("Alice", 1)
+        pids["bob"] = person("Bob", 1)
+        pids["small"] = [person(None, 1) for _ in range(3)]
+        pids["big"] = person(None, 3)
+        return pids
+
+    def test_default_hides_small_unnamed_and_sorts_named_first(self, client, password_hash, monkeypatch):
+        _seed_user(password_hash=password_hash)
+        monkeypatch.setattr(config.settings, "min_cluster_size", 3)
+        pids = self._seed_people()
+        headers = _bearer(client)
+        r = client.get("/api/people", headers=headers).json()
+        ids = [p["id"] for p in r["people"]]
+        assert r["total"] == 3 and r["hidden_small"] == 3
+        assert set(ids[:2]) == {pids["alice"], pids["bob"]} and ids[2] == pids["big"]
+        r = client.get("/api/people", params={"include_small": 1}, headers=headers).json()
+        assert r["total"] == 6 and r["hidden_small"] == 0
+        assert [p["id"] for p in r["people"]][:2] == sorted([pids["alice"], pids["bob"]], key=lambda x: ids.index(x))
+
+    def test_admin_prune_small(self, client, password_hash, monkeypatch):
+        _seed_user(password_hash=password_hash)
+        monkeypatch.setattr(config.settings, "min_cluster_size", 3)
+        pids = self._seed_people()
+        headers = _bearer(client)
+        dry = client.post("/api/admin/people/prune-small", json={"dry_run": True}, headers=headers).json()
+        assert dry["dry_run"] is True and dry["candidate_count"] == 3 and dry["min_photos"] == 3
+        assert all(store.get_person(p) is not None for p in pids["small"])
+        r = client.post("/api/admin/people/prune-small", json={}, headers=headers).json()
+        assert r["deleted"] == 3
+        assert all(store.get_person(p) is None for p in pids["small"])
+        assert store.get_person(pids["big"]) is not None and store.get_person(pids["alice"]) is not None
+        # Faces were released, not deleted.
+        assert len(client.get("/api/faces/unassigned", headers=headers).json()["faces"]) == 3
+        r = client.post("/api/admin/people/prune-small", json={"min_photos": "abc"}, headers=headers)
+        assert r.status_code == 400
+
+    def test_prune_small_requires_admin(self, client, password_hash):
+        _seed_user(username="writer", role="write", password_hash=password_hash)
+        headers = _bearer(client, username="writer")
+        assert client.post("/api/admin/people/prune-small", json={}, headers=headers).status_code == 403

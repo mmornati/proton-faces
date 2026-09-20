@@ -46,17 +46,34 @@ MAP_MAX_LIMIT = 5000
 
 
 @router.get("/api/people")
-def api_people(limit: int = 200, offset: int = 0, q: str | None = None):
-    """List people clusters (paginated)."""
+def api_people(limit: int = 200, offset: int = 0, q: str | None = None,
+               include_small: bool = False):
+    """List people clusters (paginated), named people first.
+
+    Anonymous clusters below MIN_CLUSTER_SIZE photos are hidden unless
+    ``include_small=1``: the setting only shapes new clusters, so a library
+    indexed under an older value carries thousands of 1–2 photo rows that
+    bury the people worth naming. Named people always show. ``hidden_small``
+    in the response tells the UI how many were filtered out.
+    """
     limit = api._clamp_limit(limit)
     offset = api._clamp_offset(offset)
     full = api._people_all_cached(q=q)
     if q:
         ql = q.lower()
         full = [p for p in full if (p.get("name") or "").lower().find(ql) >= 0]
+    hidden_small = 0
+    if not include_small:
+        min_photos = api.settings.min_cluster_size
+        kept = [p for p in full if p.get("name") or (p.get("photo_count") or 0) >= min_photos]
+        hidden_small = len(full) - len(kept)
+        full = kept
+    # Stable sort: named people first, each group keeps its photo_count order.
+    full = sorted(full, key=lambda p: 0 if p.get("name") else 1)
     total = len(full)
     page = full[offset : offset + limit]
-    return {"people": page, "total": total, "limit": limit, "offset": offset}
+    return {"people": page, "total": total, "limit": limit, "offset": offset,
+            "hidden_small": hidden_small}
 
 
 @router.get("/api/people/{person_id}/faces")

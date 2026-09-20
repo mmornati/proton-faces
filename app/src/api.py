@@ -128,6 +128,7 @@ from api_routes_admin import (  # noqa: F401  (re-exported for tests)
     api_admin_overview,
     api_admin_patch_user,
     api_admin_prune_backups,
+    api_admin_prune_small_people,
     api_admin_set_schedule,
     api_admin_set_sync,
     api_admin_sync_trigger,
