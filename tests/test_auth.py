@@ -402,7 +402,7 @@ class TestLogin2FA:
         self._enroll()
         state = {"now": 1_000_000.0}
         monkeypatch.setattr(auth.time, "time", lambda: state["now"])
-        for _ in range(auth._2FA_MAX_ATTEMPTS):
+        for _ in range(auth._LOGIN_MAX_FAILURES):
             _, _, _, _, pending = auth.login("bob", "s3cret!")
             with pytest.raises(HTTPException):
                 auth.verify_2fa(pending, "000000", ip="1.2.3.4")
@@ -675,3 +675,121 @@ class TestDemoLoginLogs:
         monkeypatch.setenv("DEMO_LOGIN_LOGS", "1")
         assert auth.demo_login_logs() is True
 
+
+
+
+class TestLoginAbuseBudgets:
+    """Per-IP budget, bcrypt gate and prune semantics (audit 2026-09)."""
+
+    def _clock(self, monkeypatch):
+        state = {"now": 1_000_000.0}
+        monkeypatch.setattr(auth.time, "time", lambda: state["now"])
+        return state
+
+    def test_rotating_usernames_trips_per_ip_budget(self, tmp_db, monkeypatch):
+        self._clock(monkeypatch)
+        for i in range(auth._IP_MAX_FAILURES):
+            with pytest.raises(HTTPException) as exc:
+                auth.login(f"ghost{i}", "x", ip="9.9.9.9")
+            assert exc.value.status_code == 401
+        with pytest.raises(HTTPException) as exc:
+            auth.login("ghost-final", "x", ip="9.9.9.9")
+        assert exc.value.status_code == 429
+        assert "Retry-After" in exc.value.headers
+        # Another source is unaffected.
+        with pytest.raises(HTTPException) as exc:
+            auth.login("ghost-final", "x", ip="8.8.8.8")
+        assert exc.value.status_code == 401
+
+    def test_per_ip_budget_expires(self, tmp_db, monkeypatch):
+        state = self._clock(monkeypatch)
+        store.create_user("bob", auth.hash_password("s3cret!"))
+        for i in range(auth._IP_MAX_FAILURES):
+            with pytest.raises(HTTPException):
+                auth.login(f"ghost{i}", "x", ip="9.9.9.9")
+        state["now"] += auth._IP_WINDOW_SEC + 1
+        access, _, _, _, _ = auth.login("bob", "s3cret!", ip="9.9.9.9")
+        assert store.lookup_token(access)["kind"] == "access"
+
+    def test_prune_keeps_live_failure_counters(self, tmp_db, monkeypatch):
+        self._clock(monkeypatch)
+        monkeypatch.setattr(auth, "_LOGIN_MAX_ENTRIES", 5)
+        store.create_user("bob", auth.hash_password("s3cret!"))
+        for _ in range(auth._LOGIN_MAX_FAILURES - 1):
+            with pytest.raises(HTTPException):
+                auth.login("bob", "wrong", ip="1.2.3.4")
+        # Flood the map with junk from other IPs (each under the per-IP cap).
+        for i in range(20):
+            with pytest.raises(HTTPException):
+                auth.login(f"junk{i}", "x", ip=f"10.0.0.{i}")
+        # bob's counter survived: the next failure locks the pair.
+        with pytest.raises(HTTPException) as exc:
+            auth.login("bob", "wrong", ip="1.2.3.4")
+        assert exc.value.status_code in (401, 429)
+        with pytest.raises(HTTPException) as exc:
+            auth.login("bob", "s3cret!", ip="1.2.3.4")
+        assert exc.value.status_code == 429
+
+    def test_prune_hard_caps_map_size(self, tmp_db, monkeypatch):
+        self._clock(monkeypatch)
+        monkeypatch.setattr(auth, "_LOGIN_MAX_ENTRIES", 10)
+        for i in range(40):
+            with pytest.raises(HTTPException):
+                auth.login(f"junk{i}", "x", ip=f"10.0.{i}.1")
+        assert len(auth._login_attempts) <= 11
+
+    def test_bcrypt_gate_503_when_saturated(self, tmp_db, monkeypatch):
+        store.create_user("bob", auth.hash_password("s3cret!"))
+        import threading
+        gate = threading.BoundedSemaphore(1)
+        gate.acquire()
+        monkeypatch.setattr(auth, "_bcrypt_gate", gate)
+        monkeypatch.setattr(auth, "_BCRYPT_WAIT_SEC", 0.01)
+        with pytest.raises(HTTPException) as exc:
+            auth.login("bob", "s3cret!")
+        assert exc.value.status_code == 503
+        assert exc.value.headers["Retry-After"] == "5"
+        gate.release()
+        access, _, _, _, _ = auth.login("bob", "s3cret!")
+        assert store.lookup_token(access)["kind"] == "access"
+
+    def test_dead_2fa_constants_removed(self):
+        assert not hasattr(auth, "_2FA_MAX_ATTEMPTS")
+        assert not hasattr(auth, "_2FA_LOCKOUT_SEC")
+
+
+class TestTotpReplay:
+    def _enroll(self):
+        uid = store.create_user("bob", auth.hash_password("s3cret!"))
+        secret = auth.generate_totp_secret()
+        store.set_totp_secret(uid, auth.encrypt_totp_secret(secret))
+        store.set_totp_enabled(uid, True)
+        return uid, secret
+
+    def test_match_returns_counter_and_rejects_replay(self):
+        secret = auth.generate_totp_secret()
+        code = pyotp.TOTP(secret).now()
+        counter = auth.match_totp_code(secret, code)
+        assert counter == int(auth.time.time()) // 30
+        assert auth.match_totp_code(secret, code, last_counter=counter) is None
+        assert auth.match_totp_code(secret, code, last_counter=counter - 1) == counter
+        assert auth.match_totp_code(secret, "000000") is None
+
+    def test_same_code_cannot_login_twice(self, tmp_db):
+        uid, secret = self._enroll()
+        code = pyotp.TOTP(secret).now()
+        _, _, _, _, pending = auth.login("bob", "s3cret!")
+        access, _, _ = auth.verify_2fa(pending, code)
+        assert store.lookup_token(access)["kind"] == "access"
+        assert store.get_totp_last_counter(uid) == int(auth.time.time()) // 30
+        _, _, _, _, pending2 = auth.login("bob", "s3cret!")
+        with pytest.raises(HTTPException) as exc:
+            auth.verify_2fa(pending2, code)
+        assert exc.value.status_code == 401
+        assert exc.value.detail == "invalid 2FA code"
+
+    def test_clearing_secret_resets_counter(self, tmp_db):
+        uid, _ = self._enroll()
+        store.set_totp_last_counter(uid, 42)
+        store.set_totp_secret(uid, None)
+        assert store.get_totp_last_counter(uid) is None

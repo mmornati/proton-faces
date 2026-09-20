@@ -253,7 +253,22 @@ def main() -> None:
         port=settings.port,
         log_level="info",
         workers=_uvicorn_workers(),
+        # Never advertise the server software; nothing depends on it.
+        server_header=False,
+        **_proxy_kwargs(settings.trusted_proxy_ips),
     )
+
+
+def _proxy_kwargs(trusted: str) -> dict:
+    """uvicorn proxy-header settings derived from TRUSTED_PROXY_IPS.
+
+    Unset → uvicorn's default (trust loopback only). Set → trust the listed
+    IPs/CIDRs so `request.client.host` is the real client behind the proxy
+    and the login rate limiter keys on it instead of on the proxy.
+    """
+    if not trusted:
+        return {}
+    return {"proxy_headers": True, "forwarded_allow_ips": trusted}
 
 
 def _start_token_janitor() -> None:

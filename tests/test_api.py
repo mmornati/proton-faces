@@ -216,6 +216,20 @@ def _bearer(client, username="admin", password="password123"):
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
+def _fresh_code(secret, username="admin"):
+    """A TOTP code the replay guard will accept.
+
+    Tests enroll, log in and disable with one secret inside a single 30 s
+    step; RFC 6238 replay protection (auth.match_totp_code) rejects the
+    second use of a code, so clear the user's last-accepted counter first.
+    The guard itself is covered in tests/test_auth.py::TestTotpReplay.
+    """
+    row = store.get_user_by_username(username)
+    if row is not None:
+        store.set_totp_last_counter(row["id"], None)
+    return pyotp.TOTP(secret).now()
+
+
 def _bearer_2fa(client, secret, username="admin", password="password123"):
     """Login as a 2FA-enabled user and complete the second step."""
     r = client.post("/api/auth/login", json={"username": username, "password": password})
@@ -223,7 +237,7 @@ def _bearer_2fa(client, secret, username="admin", password="password123"):
     pending = r.json()["pending_token"]
     r = client.post(
         "/api/auth/2fa/verify",
-        json={"pending_token": pending, "code": pyotp.TOTP(secret).now()},
+        json={"pending_token": pending, "code": _fresh_code(secret, username)},
     )
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
@@ -479,7 +493,7 @@ class Test2FAEndpoints:
         assert r.status_code == 200, r.text
         secret = r.json()["secret"]
         assert r.json()["otpauth_uri"].startswith("otpauth://totp/")
-        code = pyotp.TOTP(secret).now()
+        code = _fresh_code(secret)
         r = client.post("/api/auth/2fa/confirm", json={"code": code}, headers=headers)
         assert r.status_code == 200, r.text
         return secret
@@ -497,7 +511,7 @@ class Test2FAEndpoints:
         secret = self._enroll_via_api(client, password_hash)
         r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
         pending = r.json()["pending_token"]
-        r = client.post("/api/auth/2fa/verify", json={"pending_token": pending, "code": pyotp.TOTP(secret).now()})
+        r = client.post("/api/auth/2fa/verify", json={"pending_token": pending, "code": _fresh_code(secret)})
         assert r.status_code == 200
         body = r.json()
         assert body["access_token"]
@@ -535,7 +549,7 @@ class Test2FAEndpoints:
         r = client.post("/api/auth/login", json={"username": "admin", "password": "password123"})
         assert r.json().get("2fa_required") is not True
         # And the right code still works (setup state is preserved).
-        r = client.post("/api/auth/2fa/confirm", json={"code": pyotp.TOTP(secret).now()}, headers=headers)
+        r = client.post("/api/auth/2fa/confirm", json={"code": _fresh_code(secret)}, headers=headers)
         assert r.status_code == 200
 
     def test_confirm_without_setup(self, client, password_hash):
@@ -549,7 +563,7 @@ class Test2FAEndpoints:
         headers = _bearer_2fa(client, secret)
         r = client.post("/api/auth/2fa/disable", json={"code": "000000"}, headers=headers)
         assert r.status_code == 400  # wrong code rejected
-        code = pyotp.TOTP(secret).now()
+        code = _fresh_code(secret)
         r = client.post("/api/auth/2fa/disable", json={"code": code}, headers=headers)
         assert r.status_code == 200
         assert r.json()["totp_enabled"] is False
@@ -2826,3 +2840,56 @@ class TestSecurityRegressions:
         assert r.status_code == 200
         assert r.json()["total"] == 0
         assert api.THRESHOLD_MIN in api._suggested_cache
+
+
+
+class TestBodyLimitAndSignCap:
+    def test_oversized_json_body_413_before_auth(self, client, monkeypatch):
+        big = "x" * (config.settings.max_json_body_bytes + 1)
+        r = client.post("/api/auth/login", json={"username": "a", "password": big})
+        assert r.status_code == 413
+
+    def test_oversized_chunked_body_413(self, client):
+        # No Content-Length: the counting receive wrapper must still trip.
+        def gen():
+            yield b'{"username":"a","password":"'
+            yield b"x" * (config.settings.max_json_body_bytes + 1)
+            yield b'"}'
+        r = client.post("/api/auth/login", content=gen(), headers={"content-type": "application/json"})
+        assert r.status_code == 413
+
+    def test_bad_content_length_400(self, client):
+        r = client.post("/api/auth/login", content=b"{}",
+                        headers={"content-type": "application/json", "content-length": "abc"})
+        assert r.status_code == 400
+
+    def test_face_search_exempt_from_json_limit(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        monkeypatch.setattr(api, "embed_query_face", lambda bgr: None)
+        headers = _bearer(client)
+        payload = _jpeg_bytes() + b"\0" * (config.settings.max_json_body_bytes + 10)
+        r = client.post("/api/search/face", files={"file": ("face.jpg", payload, "image/jpeg")},
+                        headers=headers)
+        assert r.status_code in (400, 404)  # parsed, not 413 from the JSON limit
+
+    def test_sign_paths_capped(self, client, password_hash):
+        import api_routes_auth
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        paths = ["/api/photos/p/thumb"] * (api_routes_auth.SIGN_MAX_PATHS + 1)
+        r = client.post("/api/sign", json={"paths": paths}, headers=headers)
+        assert r.status_code == 400
+        r = client.post("/api/sign", json={"paths": paths[:3]}, headers=headers)
+        assert r.status_code == 200 and len(r.json()["urls"]) == 3
+
+
+class TestProxyKwargs:
+    def test_unset_keeps_uvicorn_default(self):
+        import main
+        assert main._proxy_kwargs("") == {}
+
+    def test_set_trusts_listed_proxies(self):
+        import main
+        assert main._proxy_kwargs("172.18.0.0/16,10.0.0.1") == {
+            "proxy_headers": True, "forwarded_allow_ips": "172.18.0.0/16,10.0.0.1",
+        }

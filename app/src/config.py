@@ -158,6 +158,18 @@ class Settings:
         # break refresh.
         self.auth_cookie_secure = _env_bool("AUTH_COOKIE_SECURE", False)
 
+        # Reverse-proxy addresses whose X-Forwarded-For / X-Forwarded-Proto
+        # headers uvicorn may trust (comma-separated IPs/CIDRs, or "*").
+        # Empty (default) keeps uvicorn's loopback-only default, so
+        # request.client.host is the socket peer — behind Traefik that is
+        # the proxy container, which collapses the login rate limiter's
+        # per-IP key onto one address. Set it to the proxy's network (e.g.
+        # 172.18.0.0/16) so the real client IP reaches the limiter.
+        self.trusted_proxy_ips = os.environ.get("TRUSTED_PROXY_IPS", "").strip()
+        # Ceiling on any non-multipart request body (JSON routes). The face
+        # search upload is exempt and bounded by FACE_SEARCH_MAX_UPLOAD_BYTES.
+        self.max_json_body_bytes = int(os.environ.get("MAX_JSON_BODY_BYTES", str(256 * 1024)))
+
         # Derived paths
         self.work_dir = self.data_dir / "work"
         self.thumb_dir = self.data_dir / "thumbs"

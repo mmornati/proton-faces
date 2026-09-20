@@ -74,6 +74,7 @@ def _reset_module_state():
     store._close_local_conns()
     auth._signing_secret.__dict__.pop("_ephemeral", None)
     auth._login_attempts = {}
+    auth._ip_attempts = {}
     cluster._person_means = None
     cluster._person_means_pids = None
     cluster._person_means_mat = None
