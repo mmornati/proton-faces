@@ -2096,25 +2096,31 @@ def api_people_merge_all(target_id: int, body: dict,
     target = get_person(target_id)
     if target is None:
         raise HTTPException(404, "target person not found")
-    merged_ids: list[int] = []
+    # Dedupe, drop non-ints and the target itself, then filter to live rows so
+    # stale ids (already merged away, lingering in a cache) are silently
+    # skipped instead of erroring — the frontend relies on merged_count == 0
+    # to refresh its candidate list.
     seen: set[int] = set()
+    ids: list[int] = []
     for sid in source_ids:
         if not isinstance(sid, int) or sid == target_id or sid in seen:
             continue
         seen.add(sid)
-        if get_person(sid) is None:
-            continue
-        _drop_person_crops(sid)
-        merge_person(sid, target_id)
-        merged_ids.append(sid)
-    assigned = _merge_propagate(target_id) if merged_ids else 0
+        ids.append(sid)
+    live = live_person_ids(ids)
+    if live:
+        _drop_people_crops(live)
+        merged_count = merge_people_bulk(live, target_id)
+    else:
+        merged_count = 0
+    assigned = _merge_propagate(target_id) if merged_count else 0
     _invalidate_dups_cache()
     _invalidate_people_cache()
     tgt = get_person(target_id)
     return {
         "ok": True,
         "target_id": target_id,
-        "merged_count": len(merged_ids),
+        "merged_count": merged_count,
         "assigned_similar": assigned,
         "photo_count": tgt["photo_count"] if tgt else None,
         "face_count": tgt["face_count"] if tgt else None,
