@@ -3,6 +3,13 @@
 Uses the `reverse_geocoder` package (bundled GeoNames cities1000 dataset, no
 network required after install). Wraps it defensively: if the package or its
 dataset is unavailable, returns None instead of crashing.
+
+`reverse_geocoder` has had no release since 2016 (pinned `==1.5.1` in
+requirements-core.txt). It's kept deliberately rather than replaced or
+vendored: this module is its only call site, every lookup already degrades
+to None on failure, the feature isn't on any request or hot path (see the
+GPS backfill loop in indexer.py), and results are cached permanently per
+photo once geocoded. See issue #198 for the full evaluation.
 """
 from __future__ import annotations
 

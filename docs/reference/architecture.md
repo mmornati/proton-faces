@@ -148,6 +148,8 @@ Every `GPS_INTERVAL` seconds, a child process is spawned (`python main.py --back
 
 New uploads get their GPS extracted inline in the fullres loop, so the backfill only drains the pre-EXIF backlog. It runs in a subprocess because `reverse_geocoder` forks a multiprocessing pool on first use, which deadlocks when called from a thread inside the long-lived app process.
 
+`reverse_geocoder` itself has been unreleased since 2016. It's kept as-is rather than replaced or vendored — it has a single, defensively-wrapped call site (`geocode.py`), runs off the request path on a 6h timer, and its results are cached permanently in `photos.place`. See issue #198.
+
 ## Data model
 
 ```mermaid
