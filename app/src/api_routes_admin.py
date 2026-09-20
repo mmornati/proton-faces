@@ -92,6 +92,14 @@ def api_admin_patch_user(user_id: int, body: dict = Body(...),
     if password is not None and password_too_long(password):
         raise HTTPException(400, f"password must be at most {MAX_PASSWORD_BYTES} bytes")
     password_hash = hash_password(password) if password else None
+    # Never demote or disable the last active admin: there would be no
+    # in-app way back (only the --create-admin shell path).
+    if (role is not None and role != "admin") or disabled:
+        target = get_user_by_id(user_id)
+        if target["role"] == "admin" and not target["disabled"]:
+            others = [u for u in list_users() if u["role"] == "admin" and not u["disabled"] and u["id"] != user_id]
+            if not others:
+                raise HTTPException(400, "cannot demote or disable the last admin")
     try:
         update_user(user_id, display_name=display_name, role=role,
                     disabled=disabled, password_hash=password_hash)

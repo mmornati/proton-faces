@@ -118,6 +118,11 @@ These come from `SECURITY_HARDENING.md` (the F-01…F-14 fix matrix). Each is al
 | **F-08** | Logout revokes **both** the access and the refresh token. | `app/src/auth.py`, `app/src/store.py::revoke_all_tokens` |
 | **F-09** | `/api/search/face` is bounded by `FACE_SEARCH_MAX_UPLOAD_BYTES` (default 8 MB) and `FACE_SEARCH_MAX_IMAGE_PIXELS` (default 50 M). Decompression-bomb guard. | `app/src/api.py::search_face` |
 | **F-11** | `/api/auth/refresh` **rotates** the refresh token — the old one is revoked before a new pair is minted. | `app/src/auth.py::refresh` |
+| **A-01** | `/api/search/face` reads at most `FACE_SEARCH_MAX_UPLOAD_BYTES + 1` bytes (`file.file.read(MAX + 1)`) and is a plain `def` (threadpool). `tests/test_api.py::TestSecurityRegressions` pins both. | `app/src/api_routes_search.py` |
+| **A-02** | `/api/status` `config` needs a **valid** access token (`_bearer_is_valid`), not just a bearer header. | `app/src/api_common.py::_bearer_is_valid` |
+| **A-03** | Metadata panel values are escaped unless explicitly marked as pre-built pill HTML. `test_metadata_panel_escapes_values` is the guard. | `app/src/static/index.html` (`loadPhotoMeta`) |
+| **A-04** | Bridge auth fails closed: `BRIDGE_TOKEN` is `:?`-required in compose and the bridge exits on an empty token unless loopback or `BRIDGE_AUTH_DISABLED=1`. | `bridge/src/bridge.ts::isAuthorized`, `compose.yml` |
+| **A-05** | Every list route clamps `limit`/`offset` (`_clamp_limit`), every similarity threshold goes through `_clamp_threshold`, bulk merges are capped (`MERGE_ALL_MAX_SOURCES`). | `app/src/api_common.py` |
 
 Additional invariants not on the F-list but enforced by code:
 

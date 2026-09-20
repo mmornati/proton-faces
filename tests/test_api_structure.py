@@ -192,4 +192,4 @@ def test_spa_grid_listeners_are_delegated():
 def test_service_worker_never_caches_failed_shell():
     _, sw = _spa_sources()
     assert 'if (resp.ok && resp.type === "basic")' in sw
-    assert 'const VERSION = "pf-shell-v3"' in sw
+    assert 'const VERSION = "pf-shell-v4"' in sw

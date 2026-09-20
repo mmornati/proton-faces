@@ -2,13 +2,14 @@
 
 Defense-in-depth for the single-file UI: XSS containment (CSP), clickjacking
 protection (X-Frame-Options + frame-ancestors), MIME-sniffing prevention
-(X-Content-Type-Options) and referrer-leakage control (Referrer-Policy).
+(X-Content-Type-Options), referrer-leakage control (Referrer-Policy), a
+restrictive Permissions-Policy, and HSTS when the deployment declares TLS.
 
 The CSP is deliberately pragmatic: the SPA ships as one index.html with
 inline <script>/<style> blocks, so script-src/style-src need 'unsafe-inline'.
 Tightening script-src to a nonce or an external file is a follow-up (issue #47).
-Leaflet is loaded from jsDelivr and map tiles from OpenStreetMap, so those
-origins are allow-listed; everything else falls back to default-src 'self'.
+Leaflet is vendored (static/vendor), so no CDN origin is allow-listed; map
+tiles come from OpenStreetMap and are the only external origin.
 """
 from __future__ import annotations
 
@@ -19,8 +20,12 @@ _CSP = (
     "default-src 'self'; "
     "img-src 'self' data: blob: https://*.tile.openstreetmap.org; "
     "media-src 'self' blob:; "
-    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
     "frame-ancestors 'none'"
 )
 
@@ -28,8 +33,20 @@ _HEADERS = {
     "content-security-policy": _CSP,
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY",
-    "referrer-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
 }
+
+# One year, subdomains included. Only emitted when AUTH_COOKIE_SECURE=1 —
+# the operator's declaration that the app is served over TLS — so a plain
+# http:// dev or demo install never pins browsers to https.
+_HSTS = "max-age=31536000; includeSubDomains"
+
+
+def _hsts_enabled() -> bool:
+    from config import settings
+
+    return bool(settings.auth_cookie_secure)
 
 
 class SecurityHeadersMiddleware:
@@ -49,6 +66,8 @@ class SecurityHeadersMiddleware:
                 for name, value in _HEADERS.items():
                     if name not in headers:
                         headers[name] = value
+                if _hsts_enabled() and "strict-transport-security" not in headers:
+                    headers["strict-transport-security"] = _HSTS
                 message["headers"] = headers.raw
             await send(message)
 

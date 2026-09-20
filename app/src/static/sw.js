@@ -6,7 +6,7 @@
  *    goes straight to the network, untouched, so per-user data and signed
  *    URLs are never intercepted or replayed.
  */
-const VERSION = "pf-shell-v3";
+const VERSION = "pf-shell-v4";
 const SHELL_ASSETS = [
   "./",
   "./manifest.json",
@@ -16,6 +16,11 @@ const SHELL_ASSETS = [
   "./css/tokens.css",
   "./css/app.css",
   "./css/design-system.css",
+  "./vendor/leaflet/leaflet.js",
+  "./vendor/leaflet/leaflet.css",
+  "./vendor/markercluster/leaflet.markercluster.js",
+  "./vendor/markercluster/MarkerCluster.css",
+  "./vendor/markercluster/MarkerCluster.Default.css",
 ];
 
 const BINARY_ENDPOINTS = ["/thumb", "/full", "/cover", "/crop"];

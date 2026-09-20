@@ -103,15 +103,40 @@ The app ships a `SecurityHeadersMiddleware` (`app/src/security_headers.py`) that
 defense-in-depth headers to **every** response (HTML, JSON and binary alike):
 
 - `Content-Security-Policy` — `default-src 'self'`, with `img-src` allowing `data:`/`blob:`
-  and OSM tiles, `media-src` allowing `blob:`, and `script-src`/`style-src` allowing
-  `'unsafe-inline'` plus the jsDelivr CDN (Leaflet). `frame-ancestors 'none'` blocks
-  embedding. Tightening `script-src` to a nonce or external file is a follow-up.
+  and OSM tiles, `media-src` allowing `blob:`, `script-src`/`style-src` allowing
+  `'unsafe-inline'` (the SPA is one inline-script file), `connect-src 'self'`,
+  `object-src 'none'`, `base-uri 'self'`, `form-action 'self'` and
+  `frame-ancestors 'none'`. Leaflet is vendored under `static/vendor`, so no CDN
+  origin is allow-listed. Tightening `script-src` to a nonce or external file is a
+  follow-up.
 - `X-Content-Type-Options: nosniff` — no MIME sniffing.
 - `X-Frame-Options: DENY` — clickjacking protection (belt-and-braces with `frame-ancestors`).
-- `Referrer-Policy: same-origin` — no referrer leakage to third parties.
+- `Referrer-Policy: no-referrer` — no referrer leakage anywhere.
+- `Permissions-Policy` — camera, microphone, geolocation, payment and USB are off.
+- `Strict-Transport-Security` (1 year, subdomains) — emitted only when
+  `AUTH_COOKIE_SECURE=1`, i.e. when the operator declares the app is served over TLS.
 
 If you run a reverse proxy in front, its own security headers (see
 `SECURITY_HARDENING.md` §9) are additive; the app-level headers are harmless duplicates.
+
+### Reverse-proxy checklist
+
+The app never terminates TLS itself, so the proxy decides most of the transport
+posture. For a production install:
+
+- Route the app on the proxy's **HTTPS** entrypoint and redirect plain HTTP to it.
+  Leaving the router on the `:80` entrypoint (for example because ACME challenges
+  use it) serves the login form and the refresh cookie in clear text to anyone who
+  reaches port 80 with the right `Host` header.
+- Set `AUTH_COOKIE_SECURE=1` so the refresh cookie is only ever sent over HTTPS and
+  the app emits HSTS.
+- Set `TRUSTED_PROXY_IPS` to the proxy's network (e.g. the compose subnet) so
+  `X-Forwarded-For` is honoured and the login limiter keys on the real client, not on
+  the proxy. Without it every request looks like it comes from one address and the
+  per-IP layer throttles everyone behind the proxy together.
+- The login limiter runs in-app (5 failures per user+IP, a per-IP budget, and a
+  concurrency gate on bcrypt), so a proxy rate-limit middleware is optional
+  defence-in-depth rather than a requirement.
 
 ## Threat model — what you should worry about
 

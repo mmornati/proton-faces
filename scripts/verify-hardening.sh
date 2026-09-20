@@ -149,10 +149,14 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   if [[ "$S" == "429" ]]; then N429=$((N429 + 1)); fi
 done
 if [[ "$N429" -gt 0 ]]; then
-  echo "  PASS  Traefik rate-limit triggers                    = $N429 (>0)"
+  echo "  PASS  login rate-limit triggers                      = $N429 (>0)"
   PASSES=$((PASSES + 1))
 else
-  printf "  INFO  no 429s observed in burst of 12 — Traefik middleware not attached to this route\n"
+  # The app's own limiter (5 failures per user+ip, plus a per-ip budget)
+  # must trip inside a burst of 12 even without a proxy middleware; no
+  # 429 at all means brute-force protection is missing.
+  echo "  FAIL  no 429s observed in burst of 12 — login is not rate-limited"
+  FAILS=$((FAILS + 1))
 fi
 
 # Wait for the rate-limit bucket to refill (5 rpm) before the next

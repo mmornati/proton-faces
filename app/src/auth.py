@@ -105,8 +105,23 @@ _2FA_NONCE_BYTES = 12
 _2FA_TOTP_ISSUER = "proton-faces"
 
 
+def _totp_root_secret() -> bytes:
+    """Root material for the TOTP-secret key.
+
+    ``TOTP_ENCRYPTION_KEY`` when set, else ``SIGNING_SECRET`` for backward
+    compatibility. Keep them separate in new deployments: the signing secret
+    is a URL-signing key an operator may rotate freely, but rotating the
+    TOTP root makes every stored 2FA secret undecryptable — every enrolled
+    user, admins included, is locked out until ``--disable-2fa``.
+    """
+    s = os.environ.get("TOTP_ENCRYPTION_KEY", "").strip()
+    if s:
+        return s.encode("utf-8")
+    return _signing_secret()
+
+
 def _2fa_secret_key() -> bytes:
-    """AES-256 key for TOTP secrets, derived from SIGNING_SECRET via HKDF."""
+    """AES-256 key for TOTP secrets, derived via HKDF from the TOTP root."""
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     hkdf = HKDF(
@@ -115,7 +130,7 @@ def _2fa_secret_key() -> bytes:
         salt=None,
         info=_2FA_KEY_INFO,
     )
-    return hkdf.derive(_signing_secret())
+    return hkdf.derive(_totp_root_secret())
 
 
 def encrypt_totp_secret(secret_b32: str) -> str:

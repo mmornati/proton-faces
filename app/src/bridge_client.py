@@ -32,7 +32,8 @@ _UID_RE = re.compile(r"^[A-Za-z0-9_=~-]{1,512}$")
 
 def is_valid_uid(uid: str) -> bool:
     """Validate a uid matches the expected charset and length."""
-    return bool(_UID_RE.match(uid))
+    # fullmatch: `$` + match() would accept a trailing newline.
+    return isinstance(uid, str) and bool(_UID_RE.fullmatch(uid))
 
 
 def uid_invalid_reason(uid: str) -> str | None:
