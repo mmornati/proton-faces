@@ -118,6 +118,33 @@ class FailingFullBridge(FakeBridge):
         raise self._exc
 
 
+class SlowFullBridge(FakeBridge):
+    """Sleeps past the (monkeypatched, tiny) fullres timeout on every call."""
+
+    def __init__(self, delay: float):
+        super().__init__()
+        self._delay = delay
+
+    async def full_photo_async(self, uid, range_header=None, timeout_ms=None):
+        import asyncio
+        await asyncio.sleep(self._delay)
+        return FakeResp(self._full_data)
+
+
+class CustomFullBridge(FakeBridge):
+    """Returns a caller-supplied FakeResp instead of the default fixture."""
+
+    def __init__(self, resp):
+        super().__init__()
+        self._resp = resp
+
+    def full_photo(self, uid, range_header=None, timeout_ms=None):
+        return self._resp
+
+    async def full_photo_async(self, uid, range_header=None, timeout_ms=None):
+        return self._resp
+
+
 @pytest.fixture(scope="session")
 def password_hash():
     return auth.hash_password("password123")
@@ -1075,6 +1102,39 @@ class TestPhotos:
         assert r.status_code == 429
         assert r.headers.get("Retry-After") == "5"
 
+    def test_full_photo_timeout(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        monkeypatch.setattr(api, "_FULL_TIMEOUT_SEC", 0.05)
+        monkeypatch.setattr(bridge_client, "_bridge", SlowFullBridge(0.2))
+        r = client.get("/api/photos/p1/full", headers=_bearer(client))
+        assert r.status_code == 504
+
+    def test_full_photo_generic_bridge_error(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        monkeypatch.setattr(bridge_client, "_bridge", FailingFullBridge(RuntimeError("boom")))
+        r = client.get("/api/photos/p1/full", headers=_bearer(client))
+        assert r.status_code == 502
+
+    def test_full_photo_bad_status_code_is_passed_through(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        resp = FakeResp(b"")
+        resp.status_code = 500
+        monkeypatch.setattr(bridge_client, "_bridge", CustomFullBridge(resp))
+        r = client.get("/api/photos/p1/full", headers=_bearer(client))
+        assert r.status_code == 500
+
+    def test_full_photo_octet_stream_is_sniffed(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        resp = FakeResp(b"\xff\xd8\xff" + b"fake-jpeg-bytes", content_type="application/octet-stream")
+        monkeypatch.setattr(bridge_client, "_bridge", CustomFullBridge(resp))
+        r = client.get("/api/photos/p1/full", headers=_bearer(client))
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/jpeg"
+
     def test_full_photo_404(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         assert client.get("/api/photos/missing/full", headers=_bearer(client)).status_code == 404
@@ -1261,6 +1321,26 @@ class TestFacesAndPeople:
         assert r.status_code == 200
         assert r.json()["faces"][0]["id"] == face_id
 
+    def test_person_faces_pagination(self, client, password_hash):
+        # Regression: faces_for_person has no store-level offset, so the
+        # route must over-fetch and slice locally rather than slicing an
+        # already-`limit`-sized page (issue #108 code review).
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        _seed_done_photo("p2")
+        fa = _seed_face("p1")
+        fb = _seed_face("p2")
+        pid = store.create_person(name="Alice", cover_uid="p1", cover_face_id=fa)
+        store.assign_face_person(fa, pid)
+        store.assign_face_person(fb, pid)
+        headers = _bearer(client)
+        full = client.get(f"/api/people/{pid}/faces", params={"limit": 10},
+                           headers=headers).json()["faces"]
+        assert len(full) == 2
+        page2 = client.get(f"/api/people/{pid}/faces", params={"limit": 1, "offset": 1},
+                            headers=headers).json()["faces"]
+        assert page2 == full[1:2]
+
     def test_person_set_cover(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         _seed_done_photo("p1")
@@ -1298,6 +1378,23 @@ class TestFacesAndPeople:
         headers = _bearer(client)
         r = client.get("/api/faces/unassigned", headers=headers)
         assert r.json()["faces"][0]["id"] == face_id
+
+    def test_unassigned_faces_pagination(self, client, password_hash):
+        # Regression: unassigned_faces has no store-level offset, so the
+        # route must over-fetch and slice locally rather than slicing an
+        # already-`limit`-sized page (issue #108 code review).
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        _seed_done_photo("p2")
+        _seed_face("p1")
+        _seed_face("p2")
+        headers = _bearer(client)
+        full = client.get("/api/faces/unassigned", params={"limit": 10},
+                           headers=headers).json()["faces"]
+        assert len(full) == 2
+        page2 = client.get("/api/faces/unassigned", params={"limit": 1, "offset": 1},
+                            headers=headers).json()["faces"]
+        assert page2 == full[1:2]
 
     def test_photo_faces(self, client, password_hash):
         _seed_user(password_hash=password_hash)
@@ -2428,6 +2525,10 @@ class TestTTLCacheSingleFlight:
         self._run_concurrent(api.api_people_duplicates)
         assert calls == 1
         assert api._dups_cache[1] == {"duplicates": []}
+
+    # Regression coverage for the #108-split cache-invalidation bug lives in
+    # tests/test_api_state.py::TestInvalidateCachesMutateApiNamespace,
+    # parametrized over every cache instead of ad hoc per-cache tests here.
 
     def test_photo_duplicates_single_flight(self, monkeypatch):
         api._photo_dups_cache = None

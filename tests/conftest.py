@@ -2,7 +2,6 @@ import asyncio
 import os
 import sys
 import tempfile
-from collections import OrderedDict
 from pathlib import Path
 
 import pytest
@@ -94,12 +93,14 @@ def _reset_module_state():
         pass
     try:
         import api
+        import api_state
 
         api._dups_cache = None
-        api._suggested_cache = {}
+        api._suggested_cache.clear()
         api._photo_dups_cache = None
         api._anchors_cache = None
-        api._people_cache = OrderedDict()
+        api._people_cache.clear()
+        api_state._people_cache.clear()
         api._stats_cache = None
         api._clip_cache = None
         api._bridge_health_cache = None
