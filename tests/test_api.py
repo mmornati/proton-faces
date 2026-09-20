@@ -806,6 +806,60 @@ class TestStatusProxy:
         # not the pre-fix 1 direct + 1 cached).
         assert len(calls) == 1
 
+    def test_proxy_disk_block_used_without_local_walk(self, app_settings, client, monkeypatch):
+        """Issue #103: a fresh proxy payload carries `disk`, so the app must
+        not run its own dir-size walk (the whole point of the fix)."""
+        import disk_usage
+
+        api._indexer_proxy_cache = None
+        walks: list[None] = []
+        real_cached = disk_usage.cached_dir_size
+
+        def spy_cached(path):
+            walks.append(None)
+            return real_cached(path)
+
+        monkeypatch.setattr(disk_usage, "cached_dir_size", spy_cached)
+        monkeypatch.setattr(
+            api, "_get_indexer_proxy_client",
+            lambda: self._proxy_client(
+                lambda req: httpx.Response(
+                    200,
+                    json=self._stub_payload(disk={
+                        "thumb_dir_bytes": 111,
+                        "db_bytes": 222,
+                        "data_dir_bytes": 333,
+                    }),
+                )
+            ),
+        )
+
+        r = client.get("/api/status")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["disk"]["thumb_dir_bytes"] == 111
+        assert body["disk"]["db_bytes"] == 222
+        # the indexer supplied the values — no local walk happened
+        assert walks == []
+
+    def test_proxy_without_disk_falls_back_to_local_cache(self, app_settings, client, monkeypatch):
+        """Issue #103: an older indexer payload (no `disk` key) falls back to
+        the shared 1 h cache instead of failing."""
+        import disk_usage
+
+        api._indexer_proxy_cache = None
+        disk_usage._dirsize_cache = {}
+        monkeypatch.setattr(
+            api, "_get_indexer_proxy_client",
+            lambda: self._proxy_client(lambda req: httpx.Response(200, json=self._stub_payload())),
+        )
+
+        r = client.get("/api/status")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["disk"]["thumb_dir_bytes"] >= 0
+        assert body["disk"]["db_bytes"] >= 0
+
     def test_indexer_proxy_json_pooled_client(self, app_settings, monkeypatch):
         """Admin sync-control proxy uses the pooled client and 502s on failure."""
         monkeypatch.setattr(

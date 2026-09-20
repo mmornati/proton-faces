@@ -32,6 +32,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi import status as http_status
 
 import indexer
+from config import settings
+from disk_usage import cached_dir_size
 from store import stats
 
 log = logging.getLogger("indexer_status")
@@ -132,6 +134,15 @@ def status() -> dict:
         log.warning("stats() failed inside indexer status: %s", exc)
         pending_db = 0
     rt["pending_db"] = int(pending_db)
+    # Disk usage is computed once here (single indexer process) and shipped
+    # to the app container in the proxied payload, so N uvicorn workers
+    # don't each re-walk the thumb dir. The shared 1 h TTL cache keeps the
+    # walk from repeating on every status poll.
+    rt["disk"] = {
+        "thumb_dir_bytes": cached_dir_size(settings.thumb_dir),
+        "db_bytes": settings.db_path.stat().st_size if settings.db_path.exists() else 0,
+        "data_dir_bytes": cached_dir_size(settings.data_dir),
+    }
     return rt
 
 

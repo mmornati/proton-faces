@@ -62,6 +62,7 @@ from bridge_client import (
 from clip import embed_text
 from compression import CompressionMiddleware
 from config import settings
+from disk_usage import cached_dir_size
 from faces import embed_query_face
 from indexer import get_indexer_state
 from security_headers import SecurityHeadersMiddleware
@@ -286,8 +287,6 @@ _CLIP_CACHE_TTL = 60.0
 _STATS_CACHE_TTL = 5.0
 _stats_cache: tuple[float, dict] | None = None
 _stats_cache_lock = threading.Lock()
-_DIRSIZE_CACHE_TTL = 300.0
-_dirsize_cache: dict[str, tuple[float, int]] = {}
 _clip_cache: tuple[float, int, list[str], np.ndarray] | None = None
 _clip_cache_lock = threading.Lock()
 
@@ -818,38 +817,6 @@ def api_stats() -> dict:
     return stats()
 
 
-def _dir_size_bytes(path: Path) -> int:
-    """Cheap directory size in bytes (sum of immediate children). Best-effort."""
-    if not path.exists():
-        return 0
-    total = 0
-    try:
-        for entry in path.iterdir():
-            try:
-                if entry.is_file():
-                    total += entry.stat().st_size
-                elif entry.is_dir():
-                    total += _dir_size_bytes(entry)
-            except OSError:
-                continue
-    except OSError:
-        return total
-    return total
-
-
-def _cached_dir_size(path: Path) -> int:
-    """Disk-walk with a 30 s TTL — the thumb dir has tens of thousands of
-    files and a full `stat()` walk is expensive when polled every 15 s."""
-    key = str(path)
-    now = time.time()
-    hit = _dirsize_cache.get(key)
-    if hit is not None and now - hit[0] < _DIRSIZE_CACHE_TTL:
-        return hit[1]
-    n = _dir_size_bytes(path)
-    _dirsize_cache[key] = (now, n)
-    return n
-
-
 def _cached_stats() -> dict:
     """Cached `stats()` so the periodic `/api/status` poll doesn't pay for
     4 COUNT(*) + 1 GROUP BY on every request. 5 s TTL is well under the
@@ -1060,8 +1027,19 @@ def api_status(request: Request) -> dict:
         bridge_logged_in = False
     s = _cached_stats()
     rt = _merged_indexer_state()
-    thumbs_bytes = _cached_dir_size(settings.thumb_dir)
-    db_bytes = settings.db_path.stat().st_size if settings.db_path.exists() else 0
+    # Prefer the indexer-computed disk block (one walk per hour in the
+    # single indexer process, shared by all app workers). Fall back to the
+    # local shared 1 h cache when the indexer is unreachable or the payload
+    # predates the `disk` key.
+    disk = rt.get("disk") or {}
+    if "thumb_dir_bytes" in disk:
+        thumbs_bytes = disk["thumb_dir_bytes"]
+    else:
+        thumbs_bytes = cached_dir_size(settings.thumb_dir)
+    if "db_bytes" in disk:
+        db_bytes = disk["db_bytes"]
+    else:
+        db_bytes = settings.db_path.stat().st_size if settings.db_path.exists() else 0
     out = {
         "now": time.time(),
         "bridge": {"reachable": bridge_ok, "loggedIn": bridge_logged_in},

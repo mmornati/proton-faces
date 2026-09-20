@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import settings
+from disk_usage import cached_dir_size
 
 log = logging.getLogger("admin")
 
@@ -432,11 +433,11 @@ def overview() -> dict:
                 "used": used,
                 "free": free,
                 "free_frac": free / total if total else 0,
-                "data_bytes": _dir_size_bytes(settings.data_dir),
+                "data_bytes": cached_dir_size(settings.data_dir),
             }
         else:
             disk = {"path": None, "free_frac": free / total if total else 0,
-                    "data_bytes": _dir_size_bytes(settings.data_dir)}
+                    "data_bytes": cached_dir_size(settings.data_dir)}
     except OSError:
         disk = {"path": None, "free_frac": 0, "data_bytes": 0}
     # P-05: redact hostname + full platform string when not in
@@ -478,22 +479,3 @@ _BOOT_TIME = time.time()
 
 def _uptime_seconds() -> float:
     return max(0.0, time.time() - _BOOT_TIME)
-
-
-def _dir_size_bytes(path: Path) -> int:
-    """Best-effort recursive directory size in bytes."""
-    if not path.exists():
-        return 0
-    total = 0
-    try:
-        for entry in path.iterdir():
-            try:
-                if entry.is_file():
-                    total += entry.stat().st_size
-                elif entry.is_dir():
-                    total += _dir_size_bytes(entry)
-            except OSError:
-                continue
-    except OSError:
-        return total
-    return total
