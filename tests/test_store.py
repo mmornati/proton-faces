@@ -1282,6 +1282,22 @@ class TestSargableQueries:
         )
         assert any("USING INDEX idx_photos_ym" in p for p in plans)
 
+    def test_done_photos_uses_partial_index(self, tmp_db):
+        """Issue #9: on the live DB the planner picked idx_photos_status over
+        the partial idx_photos_done_time, forcing a temp B-tree sort.
+        done_photos() now hints INDEXED BY so the walk is always used."""
+        store.upsert_photos([_photo("p1", capture_time=1609459200)])
+        store.set_photo_done("p1", "t.webp", None, None)
+        plans = self._plans(
+            "SELECT * FROM photos INDEXED BY idx_photos_done_time "
+            "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
+            "AND hidden = 0 "
+            "ORDER BY capture_time DESC LIMIT ? OFFSET ?",
+            (200, 0),
+        )
+        assert any("USING INDEX idx_photos_done_time" in p for p in plans)
+        assert not any("USE TEMP B-TREE" in p for p in plans)
+
 
 class TestPlacesAndMap:
     def test_search_photos_by_place(self, tmp_db):

@@ -1960,7 +1960,7 @@ def done_photos(limit: int = 200, offset: int = 0, before: int | None = None,
     photos from the default grid — they remain accessible from the Archive view.
     """
     sql = (
-        "SELECT * FROM photos "
+        "SELECT * FROM photos INDEXED BY idx_photos_done_time "
         "WHERE status='done' AND thumb_path IS NOT NULL AND thumb_path != '' "
         "AND hidden = 0"
     )
