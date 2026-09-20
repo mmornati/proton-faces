@@ -78,7 +78,7 @@ def snapshot_backup() -> dict:
     except (OSError, json.JSONDecodeError):
         sched = {}
     sched["last_backup_at"] = time.time()
-    _schedule_path().write_text(json.dumps(sched, indent=2))
+    _write_json_atomic(_schedule_path(), sched)
     return {"name": dest.name, "size": sz, "ts": dest.stat().st_mtime}
 
 
@@ -187,8 +187,16 @@ def set_schedule(body: dict) -> dict:
     sched["keep"] = keep
     # Preserve the last_backup_at field when re-saving.
     out = {k: sched[k] for k in _DEFAULT_SCHEDULE}
-    _schedule_path().write_text(json.dumps(out, indent=2))
+    _write_json_atomic(_schedule_path(), out)
     return out
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    """tmp + os.replace: the backup worker and the admin PUT both rewrite
+    this file; a crash mid-write must never leave truncated JSON behind."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    os.replace(tmp, path)
 
 
 def _backup_due(sched: dict, now: datetime | None = None) -> bool:

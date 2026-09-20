@@ -296,6 +296,10 @@ class TestProcessOne:
                 holder["conn"] = CountingConn(orig_get_conn(db_path, timeout))
             return holder["conn"]
 
+        # The person-means warm-up runs before the transaction (its own
+        # connection use); prime it so only the per-photo sequence is counted.
+        import cluster
+        cluster._person_means_cached()
         monkeypatch.setattr(store, "_get_persistent_conn", counting_conn)
         indexer._process_one(uid)
         assert holder["conn"]._n_commits == 1
@@ -506,7 +510,7 @@ class TestSyncOnceDeletionSweep:
         self._seed_photo("p2")
         self._seed_photo("p3")
         self._seed_photo("p4")
-        grace = max(1, indexer.settings.grace_cycles) * max(1, indexer.settings.sync_interval)
+        grace = indexer._deletion_grace_seconds()
         self._set_pending_removal("p3", int(time.time()) - grace - 60)
         self._set_pending_removal("p4", int(time.time()))
 
@@ -528,7 +532,7 @@ class TestSyncOnceDeletionSweep:
         self._seed_photo("p1")
         self._seed_photo("p2")
         self._seed_photo("p3")
-        grace = max(1, indexer.settings.grace_cycles) * max(1, indexer.settings.sync_interval)
+        grace = indexer._deletion_grace_seconds()
         self._set_pending_removal("p2", int(time.time()) - grace - 60)
 
         monkeypatch.setattr(indexer.settings, "sync_deletion_threshold", 0.9)
@@ -617,3 +621,153 @@ class TestTipCheck:
     def test_empty_listing_returns_false(self, tmp_db, app_settings, monkeypatch):
         monkeypatch.setattr(indexer, "get_bridge", lambda: self._FakeBridge([]))
         assert indexer._tip_check({"tip_size": 10}) is False
+
+
+
+class TestExifOrientation:
+    def _rotated_jpeg(self, path):
+        img = Image.fromarray(np.full((40, 100, 3), 128, dtype=np.uint8))  # 100 wide, 40 tall
+        exif = Image.Exif()
+        exif[0x0112] = 6  # Orientation: rotate 90° CW on display
+        img.save(path, "JPEG", exif=exif.tobytes())
+
+    def test_resize_applies_orientation(self, tmp_path):
+        src = tmp_path / "in.jpg"
+        self._rotated_jpeg(src)
+        dest = tmp_path / "out.webp"
+        indexer._resize_to_thumb(src, dest)
+        with Image.open(dest) as img:
+            assert img.size == (40, 100)  # portrait after transpose
+
+    def test_oriented_noop_without_tag(self, tmp_path):
+        img = Image.fromarray(np.full((10, 20, 3), 128, dtype=np.uint8))
+        assert indexer._oriented(img).size == (20, 10)
+
+
+class _FakeBridge:
+    def __init__(self, behaviour):
+        self.behaviour = behaviour
+        self.calls = []
+
+    def thumbnails(self, uids):
+        self.calls.append(list(uids))
+        b = self.behaviour
+        if isinstance(b, Exception):
+            raise b
+        return {"results": [{"uid": u, "ok": True} for u in uids]}
+
+
+class TestDownloaderTick:
+    def _seed(self, n=3):
+        store.upsert_photos([
+            {"uid": f"n{i}", "name": f"n{i}", "media_type": "image/jpeg", "capture_time": i} for i in range(n)
+        ])
+
+    def test_transient_releases_claims_and_pauses(self, tmp_db, app_settings, monkeypatch):
+        from bridge_client import BridgeTransientError
+        self._seed()
+        bridge = _FakeBridge(BridgeTransientError(503, "busy", 42.0))
+        pause = indexer._downloader_tick(bridge)
+        assert pause == 42.0
+        assert all(store.get_photo(f"n{i}")["status"] == "new" for i in range(3))
+
+    def test_generic_failure_batches_errors_and_paces(self, tmp_db, app_settings, monkeypatch):
+        self._seed()
+        pause = indexer._downloader_tick(_FakeBridge(RuntimeError("boom")))
+        assert pause == indexer._DOWNLOAD_ERROR_PAUSE_SEC
+        assert all(store.get_photo(f"n{i}")["status"] == "error" for i in range(3))
+
+    def test_success_queues_work(self, tmp_db, app_settings, monkeypatch):
+        self._seed()
+        q = queue.Queue()
+        monkeypatch.setattr(indexer, "_pending", q)
+        assert indexer._downloader_tick(_FakeBridge(None)) == 0.0
+        assert q.qsize() == 3
+
+    def test_idle(self, tmp_db, app_settings):
+        assert indexer._downloader_tick(_FakeBridge(None)) == 5.0
+
+
+class TestFullresPickNext:
+    def test_skips_backed_off_head(self, tmp_db, app_settings, monkeypatch):
+        n = indexer._FULLRES_PICK_PAGE + 5
+        with store.get_conn() as conn:
+            conn.executemany(
+                "INSERT INTO photos (uid, name, media_type, capture_time, status) "
+                "VALUES (?, ?, 'video/mp4', ?, 'full')",
+                [(f"f{i:03d}", f"f{i:03d}", i) for i in range(n)],
+            )
+        now = time.time()
+        monkeypatch.setattr(indexer, "_fullres_backoff",
+                            {f"f{i:03d}": now + 900 for i in range(indexer._FULLRES_PICK_PAGE)})
+        assert indexer._fullres_pick_next(now) == f"f{indexer._FULLRES_PICK_PAGE:03d}"
+        monkeypatch.setattr(indexer, "_fullres_backoff", {f"f{i:03d}": now + 900 for i in range(n)})
+        assert indexer._fullres_pick_next(now) is None
+
+
+class TestCleanupDeletedPurge:
+    def test_purges_thumb_faces_clips_once(self, tmp_db, app_settings, monkeypatch):
+        thumb = app_settings.thumb_dir / "del.webp"
+        thumb.write_bytes(b"x")
+        with store.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO photos (uid, name, media_type, capture_time, status, thumb_path, was_deleted_at) "
+                "VALUES ('del', 'del', 'image/jpeg', 1, 'deleted', 'del.webp', 1)",
+            )
+            conn.execute("INSERT INTO clips (photo_uid, embedding) VALUES ('del', ?)",
+                         (np.ones(512, dtype=np.float32).tobytes(),))
+        calls = []
+        monkeypatch.setattr(indexer, "purge_deleted_photo_media",
+                            lambda uids: calls.append(uids) or store.purge_deleted_photo_media(uids))
+        indexer.cleanup_deleted()
+        assert not thumb.exists()
+        assert calls == [["del"]]
+        assert store.clip_exists("del") is False
+        indexer.cleanup_deleted()
+        assert calls == [["del"]]  # already purged rows are not touched again
+
+
+class TestSidecarFlush:
+    def test_flush_retries_after_failure(self, monkeypatch):
+        monkeypatch.setattr(indexer, "_sidcar_dirty", True)
+        monkeypatch.setattr(indexer, "_sidcar_last_write", 0.0)
+        monkeypatch.setattr(indexer, "_sidcar_write_face", lambda: (_ for _ in ()).throw(OSError("disk")))
+        assert indexer._sidcar_flush() is False
+        assert indexer._sidcar_dirty is True
+        monkeypatch.setattr(indexer, "_sidcar_write_face", lambda: None)
+        monkeypatch.setattr(indexer, "_sidcar_write_clip", lambda: None)
+        assert indexer._sidcar_flush() is True
+        assert indexer._sidcar_dirty is False
+
+    def test_sidecar_thread_is_started(self, monkeypatch):
+        import threading
+        started = []
+        monkeypatch.setattr(threading.Thread, "start", lambda self: started.append(self.name))
+        monkeypatch.setattr(indexer, "init_db", lambda: None)
+        monkeypatch.setattr(indexer, "_db_conn", lambda: __import__("contextlib").nullcontext(
+            type("C", (), {"execute": lambda *a, **k: None})()))
+        monkeypatch.setattr(indexer, "backfill_fullres_images", lambda: 0)
+        monkeypatch.setattr(indexer, "reset_stuck_fullres", lambda retry_after_sec: (0, 0))
+        monkeypatch.setattr(indexer, "_rebuild_pending", lambda: None)
+        monkeypatch.setattr(indexer, "_sync_albums_once", lambda: None)
+        monkeypatch.setattr(indexer, "_record_threads", lambda threads: None)
+        indexer.start()
+        assert "sidecar" in started
+
+
+class TestAtomicConfigWrite:
+    def test_no_tmp_left_and_content(self, tmp_path):
+        target = tmp_path / "cfg.json"
+        indexer._write_json_atomic(target, {"a": 1})
+        assert json.loads(target.read_text()) == {"a": 1}
+        assert list(tmp_path.iterdir()) == [target]
+
+
+class TestDeletionGrace:
+    def test_grace_follows_full_scan_cadence(self, tmp_db, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer.settings, "sync_interval", 300)
+        monkeypatch.setattr(indexer.settings, "grace_cycles", 2)
+        indexer.set_sync_config({"full_scan_interval": 21600})
+        assert indexer._deletion_grace_seconds() == 2 * 21600
+        indexer.set_sync_config({"full_scan_interval": 0})
+        assert indexer._deletion_grace_seconds() == 2 * 300

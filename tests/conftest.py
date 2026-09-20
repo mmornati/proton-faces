@@ -76,8 +76,7 @@ def _reset_module_state():
     auth._login_attempts = {}
     auth._ip_attempts = {}
     cluster._person_means = None
-    cluster._person_means_pids = None
-    cluster._person_means_mat = None
+    cluster._person_means_stack = None
     cluster._person_means_refreshing = False
     cluster._person_means_ts = 0.0
     bridge_client._bridge = None

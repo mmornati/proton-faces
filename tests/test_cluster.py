@@ -223,3 +223,21 @@ class TestClusterOnce:
 
         monkeypatch.setattr(cluster, "HDBSCAN", boom)
         assert cluster.cluster_once() == 0
+
+
+
+class TestPersonMeansPublish:
+    def test_stack_and_dict_come_from_one_generation(self, tmp_db):
+        store.upsert_photos([{"uid": "p", "name": "p", "media_type": "image/jpeg", "capture_time": 1}])
+        for i in range(3):
+            emb = np.zeros(512, dtype=np.float32)
+            emb[i] = 1.0
+            fid = store.insert_face(photo_uid="p", person_id=None, confidence=0.9, bbox=[0, 0, 1, 1],
+                                    embedding=emb.tobytes())
+            pid = store.create_person(name=None, cover_uid="p", cover_face_id=fid)
+            store.assign_face_person(fid, pid)
+        means = cluster._person_means_cached()
+        pids, mat = cluster._person_means_stack
+        assert len(means) == 3 and len(pids) == mat.shape[0] == 3
+        assert set(pids.tolist()) == set(means.keys())
+        assert not hasattr(cluster, "_person_means_mat")

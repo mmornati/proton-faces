@@ -339,3 +339,34 @@ class TestBridgeAuthHeaders:
         bc._auth_headers = {}
         bc.health()
         assert captured["auth"] is None
+
+
+
+class TestTransientOnBatchRoutes:
+    def test_thumbnails_503_raises_transient(self, client_factory):
+        bc = client_factory(lambda req: httpx.Response(503, headers={"Retry-After": "7"}, json={"ok": False}))
+        with pytest.raises(bridge_client.BridgeTransientError) as exc:
+            bc.thumbnails(["a"])
+        assert exc.value.retry_after_sec == 7.0
+
+    def test_albums_429_raises_transient(self, client_factory):
+        bc = client_factory(lambda req: httpx.Response(429, json={"ok": False}))
+        with pytest.raises(bridge_client.BridgeTransientError):
+            bc.albums()
+
+    def test_nodes_502_raises_transient_and_honours_timeout(self, client_factory):
+        seen = {}
+
+        def handler(req):
+            seen["timeout"] = req.extensions.get("timeout")
+            return httpx.Response(502, text="bad gateway")
+
+        bc = client_factory(handler)
+        with pytest.raises(bridge_client.BridgeTransientError):
+            bc.nodes(["a"], timeout_sec=5.0)
+        assert seen["timeout"]["read"] == 5.0
+
+    def test_permanent_error_still_http_status_error(self, client_factory):
+        bc = client_factory(lambda req: httpx.Response(500, text="boom"))
+        with pytest.raises(httpx.HTTPStatusError):
+            bc.thumbnails(["a"])
