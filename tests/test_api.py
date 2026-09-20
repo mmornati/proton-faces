@@ -2893,3 +2893,27 @@ class TestProxyKwargs:
         assert main._proxy_kwargs("172.18.0.0/16,10.0.0.1") == {
             "proxy_headers": True, "forwarded_allow_ips": "172.18.0.0/16,10.0.0.1",
         }
+
+
+
+class TestMetaSignedUrls:
+    def test_meta_carries_signed_media_urls(self, client, password_hash, monkeypatch):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        monkeypatch.delenv("DEMO_ALLOW_PUBLIC_THUMBS", raising=False)
+        headers = _bearer(client)
+        m = client.get("/api/photos/p1/meta", headers=headers).json()
+        assert m["thumb_url"].startswith("/api/photos/p1/thumb?sig=")
+        assert m["full_url"].startswith("/api/photos/p1/full?sig=")
+        # The signed thumb URL is accepted without a bearer token.
+        assert client.get(m["thumb_url"]).status_code == 200
+        # And the /full signature lives for at least an hour.
+        exp = int(m["full_url"].rsplit("exp=", 1)[1])
+        assert exp - time.time() >= 3600 - 5
+
+    def test_binary_cache_control_is_private(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        r = client.get("/api/photos/p1/thumb", headers=_bearer(client))
+        assert r.status_code == 200
+        assert r.headers["cache-control"].startswith("private,")

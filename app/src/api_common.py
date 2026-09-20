@@ -121,10 +121,10 @@ def _clamp_threshold(value, default: float = 0.40) -> float:
 
 # --- Signed URL helper -----------------------------------------------------
 
-def _sign_if_needed(url: str | None) -> str | None:
+def _sign_if_needed(url: str | None, ttl_seconds: int = 300) -> str | None:
     if not url or allow_public_thumbs():
         return url
-    sig, exp = make_signed_token(url, ttl_seconds=300)
+    sig, exp = make_signed_token(url, ttl_seconds=ttl_seconds)
     sep = "&" if "?" in url else "?"
     return f"{url}{sep}sig={sig}&exp={exp}"
 

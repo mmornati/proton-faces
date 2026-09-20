@@ -157,3 +157,37 @@ def test_metadata_panel_escapes_values():
     src = html.read_text()
     assert '<td class="v">${v}</td>' not in src
     assert '<td class="v">${html ? v : escv(v)}</td>' in src
+
+
+
+def _spa_sources():
+    from pathlib import Path
+
+    static = Path(__file__).resolve().parent.parent / "app" / "src" / "static"
+    return (static / "index.html").read_text(), (static / "sw.js").read_text()
+
+
+def test_spa_refresh_shares_parsed_body_not_response():
+    """Concurrent 401s must share one parsed refresh result (audit B-10)."""
+    html, _ = _spa_sources()
+    expected = "}).then(async (r) => {\n      if (!r.ok) throw new Error(\"refresh failed\");\n      return r.json();"
+    assert expected in html
+    assert "const r = await _refreshInflight;" not in html
+
+
+def test_spa_face_search_is_authenticated():
+    html, _ = _spa_sources()
+    assert 'fetch("/api/search/face"' not in html
+    assert 'api("/api/search/face", { method: "POST", body: fd })' in html
+
+
+def test_spa_grid_listeners_are_delegated():
+    html, _ = _spa_sources()
+    assert "_bindGridDelegation(el)" in html
+    assert 'el.querySelectorAll(".starbtn").forEach' not in html
+
+
+def test_service_worker_never_caches_failed_shell():
+    _, sw = _spa_sources()
+    assert 'if (resp.ok && resp.type === "basic")' in sw
+    assert 'const VERSION = "pf-shell-v3"' in sw
