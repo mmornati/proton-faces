@@ -43,6 +43,7 @@ from store import (
     count_faces_for_photo,
     delete_empty_people,
     get_photos,
+    get_photos_keyset,
     get_photos_without_gps,
     init_db,
     insert_clip,
@@ -295,7 +296,7 @@ def get_indexer_state() -> dict:
     }
 
 
-def _rebuild_pending() -> None:
+def _rebuild_pending(batch: int = 2000) -> None:
     """Re-queue photos that were mid-pipeline when the process last stopped.
 
     `_pending` is in-memory only, so after a restart every photo whose
@@ -306,10 +307,9 @@ def _rebuild_pending() -> None:
     resume immediately.
     """
     reenqueued = 0
-    offset = 0
-    batch = 2000
+    last_rowid = 0
     while True:
-        rows = get_photos("downloading", limit=batch, offset=offset)
+        rows = get_photos_keyset("downloading", limit=batch, after_rowid=last_rowid)
         if not rows:
             break
         for row in rows:
@@ -317,7 +317,7 @@ def _rebuild_pending() -> None:
             if _work_path(uid).exists():
                 _pending.put(uid)
                 reenqueued += 1
-        offset += len(rows)
+        last_rowid = rows[-1]["rowid"]
     if reenqueued:
         log.info("rebuild_pending: re-queued %d downloaded photos", reenqueued)
 
@@ -1165,20 +1165,12 @@ def _sync_loop() -> None:
         # This NEVER touches deletion logic — only a full scan reconciles
         # removals, so a truncated tip listing can't cause false deletions.
         try:
-            ids = get_bridge().timeline_ids(limit=cfg["tip_size"])
+            new_uploads = _tip_check(cfg)
         except Exception as exc:  # pragma: no cover
             log.exception("tip check failed: %s", exc)
             _runtime["last_sync_error"] = f"{type(exc).__name__}: {exc}"
             continue
-        if not ids:
-            log.warning("tip listing empty; suspicious, skipping")
-            continue
-        tip_uids = {i["uid"] for i in ids}
-        with _db_conn() as conn:
-            local = {r["uid"] for r in conn.execute(
-                "SELECT uid FROM photos WHERE status NOT IN ('pending_removal','deleted')"
-            )}
-        if any(u not in local for u in tip_uids):
+        if new_uploads:
             log.info("tip check: new uploads detected; running full scan")
             try:
                 _run_full_scan_and_cleanup()
@@ -1191,6 +1183,31 @@ def _sync_loop() -> None:
 
         # Flush sidecar if dirty (debounced)
         _sidcar_flush()
+
+
+def _tip_check(cfg: dict) -> bool:
+    """Return True when the remote tip contains uids unknown to the local index.
+
+    Only the ``tip_size`` most recent remote uids are fetched, and they are
+    checked against a single bounded ``IN`` query — never a full local uid
+    scan — so the common no-change tick is O(tip_size) instead of O(n).
+    """
+    ids = get_bridge().timeline_ids(limit=cfg["tip_size"])
+    if not ids:
+        log.warning("tip listing empty; suspicious, skipping")
+        return False
+    tip_uids = {i["uid"] for i in ids}
+    with _db_conn() as conn:
+        placeholders = ",".join("?" * len(tip_uids))
+        known = {
+            r["uid"]
+            for r in conn.execute(
+                "SELECT uid FROM photos WHERE uid IN (" + placeholders + ") "
+                "AND status NOT IN ('pending_removal','deleted')",
+                tuple(tip_uids),
+            )
+        }
+    return len(known) < len(tip_uids)
 
 
 # --- GPS enrichment (local Takeout sidecars) ------------------------------

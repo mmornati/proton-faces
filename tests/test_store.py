@@ -372,6 +372,34 @@ class TestPhotoClaims:
         rows = store.get_photos("new", limit=1)
         assert [r["uid"] for r in rows] == ["p2"]
 
+    def test_get_photos_keyset_pages_all_rows(self, tmp_db):
+        store.upsert_photos([_photo(f"p{i}") for i in range(5)])
+        seen = []
+        last_rowid = 0
+        while True:
+            rows = store.get_photos_keyset("new", limit=2, after_rowid=last_rowid)
+            if not rows:
+                break
+            seen.extend(r["uid"] for r in rows)
+            last_rowid = rows[-1]["rowid"]
+        assert seen == [f"p{i}" for i in range(5)]
+
+    def test_get_photos_keyset_resumes_after_rowid(self, tmp_db):
+        store.upsert_photos([_photo(f"p{i}") for i in range(4)])
+        first = store.get_photos_keyset("new", limit=2)
+        assert [r["uid"] for r in first] == ["p0", "p1"]
+        second = store.get_photos_keyset("new", limit=2, after_rowid=first[-1]["rowid"])
+        assert [r["uid"] for r in second] == ["p2", "p3"]
+        assert store.get_photos_keyset("new", limit=2, after_rowid=second[-1]["rowid"]) == []
+
+    def test_get_photos_keyset_filters_by_status(self, tmp_db):
+        store.upsert_photos([_photo("p1"), _photo("p2")])
+        _set_status("p2", "done")
+        rows = store.get_photos_keyset("done")
+        assert [r["uid"] for r in rows] == ["p2"]
+        rows = store.get_photos_keyset("new")
+        assert [r["uid"] for r in rows] == ["p1"]
+
     def test_claim_photos_for_download_batch(self, tmp_db):
         store.upsert_photos([_photo("p1"), _photo("p2"), _photo("p3")])
         _set_status("p2", "done")
