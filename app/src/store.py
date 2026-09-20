@@ -583,20 +583,26 @@ def mark_pending_removal(uids: list[str]) -> int:
     if not uids:
         return 0
     now = int(time.time())
-    placeholders = ",".join("?" * len(uids))
+    staged = 0
     with get_conn() as conn:
         # Issue #95: photos leaving the counted set must drop their albums'
         # aggregates before the incremental sync allows the next cycle.
         _mark_dirty_for_photos(conn, uids)
-        cur = conn.execute(
-            f"""UPDATE photos
-                   SET status='pending_removal',
-                       processed_at=CASE WHEN status='pending_removal' THEN processed_at ELSE ? END
-                 WHERE uid IN ({placeholders})
-                   AND status NOT IN ('deleted','pending_removal')""",
-            (now, *uids),
-        )
-        return cur.rowcount
+        # Chunked so a mass deletion (thousands of uids) never trips SQLite's
+        # host-parameter limit; all chunks share one transaction.
+        for start in range(0, len(uids), _SQL_CHUNK):
+            chunk = uids[start : start + _SQL_CHUNK]
+            qmarks = ",".join("?" * len(chunk))
+            cur = conn.execute(
+                f"""UPDATE photos
+                       SET status='pending_removal',
+                           processed_at=CASE WHEN status='pending_removal' THEN processed_at ELSE ? END
+                     WHERE uid IN ({qmarks})
+                       AND status NOT IN ('deleted','pending_removal')""",
+                (now, *chunk),
+            )
+            staged += cur.rowcount
+        return staged
 
 
 def confirm_deletions(grace_seconds: int, now: int | None = None) -> int:
@@ -678,14 +684,17 @@ def mark_deleted(uids: list[str]) -> None:
     now = int(time.time())
     with get_conn() as conn:
         _mark_dirty_for_photos(conn, uids)
-        conn.execute(
-            f"""UPDATE photos
-                   SET status='deleted',
-                       was_deleted_at=COALESCE(was_deleted_at, ?)
-                 WHERE uid IN ({",".join("?" * len(uids))})
-                   AND status!='deleted'""",
-            (now, *uids),
-        )
+        for start in range(0, len(uids), _SQL_CHUNK):
+            chunk = uids[start : start + _SQL_CHUNK]
+            qmarks = ",".join("?" * len(chunk))
+            conn.execute(
+                f"""UPDATE photos
+                       SET status='deleted',
+                           was_deleted_at=COALESCE(was_deleted_at, ?)
+                     WHERE uid IN ({qmarks})
+                       AND status!='deleted'""",
+                (now, *chunk),
+            )
 
 
 def get_photos(status: str, limit: int = 500, offset: int = 0) -> list[sqlite3.Row]:
@@ -2170,17 +2179,19 @@ def _mark_dirty_for_photos(conn: sqlite3.Connection, photo_uids: list[str]) -> N
     """
     if not photo_uids:
         return
-    marks = ",".join("?" * len(photo_uids))
     album_uids: set[str] = set()
-    for row in conn.execute(
-        f"SELECT albums FROM photos WHERE uid IN ({marks})", photo_uids
-    ):
-        if not row["albums"]:
-            continue
-        try:
-            album_uids.update(json.loads(row["albums"]))
-        except ValueError:
-            continue
+    for start in range(0, len(photo_uids), _SQL_CHUNK):
+        chunk = photo_uids[start : start + _SQL_CHUNK]
+        qmarks = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            f"SELECT albums FROM photos WHERE uid IN ({qmarks})", chunk
+        ):
+            if not row["albums"]:
+                continue
+            try:
+                album_uids.update(json.loads(row["albums"]))
+            except ValueError:
+                continue
     _mark_albums_dirty(conn, album_uids)
 
 
