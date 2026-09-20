@@ -13,4 +13,4 @@ cryptography>=50,<51      # AES-GCM at-rest encryption of TOTP secrets
 numpy>=1.26,<3
 Pillow>=12.3,<13
 scikit-learn>=1.4,<1.10
-reverse_geocoder==1.5.1
+reverse_geocoder==1.5.1   # unmaintained since 2016; kept deliberately, see geocode.py + issue #198
