@@ -12,5 +12,5 @@ pyotp>=2.9,<3             # TOTP (RFC 6238) for optional app-based 2FA
 cryptography>=50.0.1,<51      # AES-GCM at-rest encryption of TOTP secrets
 numpy>=2.5.3,<3
 Pillow>=12.3,<13
-scikit-learn>=1.4,<1.10
+scikit-learn>=1.9.1,<1.10
 reverse_geocoder==1.5.1   # unmaintained since 2016; kept deliberately, see geocode.py + issue #198
