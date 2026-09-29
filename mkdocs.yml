@@ -3,7 +3,7 @@
 site_name: Proton Faces
 site_description: "Private, self-hosted face · object · location search for your Proton Drive Photos."
 site_author: "Marco Mornati"
-site_url: https://mmornati.github.io/proton-faces
+site_url: https://mmornati.github.io/proton-faces/docs/
 
 # Repository
 repo_name: mmornati/proton-faces
@@ -16,23 +16,21 @@ theme:
   name: material
   language: en
   palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: green
-      accent: green
-      toggle:
-        icon: material/weather-night
-        name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: green
-      accent: green
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
-  font:
-    text: Inter
-    code: JetBrains Mono
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  font: false
   icon:
     repo: fontawesome/brands/github
     logo: material/camera-iris
@@ -55,6 +53,7 @@ theme:
   logo: assets/logo.svg
 
 extra:
+  homepage: https://mmornati.github.io/proton-faces/
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/mmornati/proton-faces
@@ -136,3 +135,4 @@ nav:
       - FAQ: reference/faq.md
       - Troubleshooting: reference/troubleshooting.md
   - Changelog: changelog.md
+  - Film: https://mmornati.github.io/proton-faces/video/

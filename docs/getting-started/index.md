@@ -7,22 +7,22 @@ Proton Faces runs as three Docker containers: a Proton bridge that talks to your
 <div class="pf-cards" markdown>
 
 <div class="pf-card" markdown>
-### 🚀 [Quickstart](quickstart.md)
+### [Quickstart](quickstart.md)
 Install the CLI, sign in once, and reach your first real search in ~10 minutes. Read this first.
 </div>
 
 <div class="pf-card" markdown>
-### 🔧 [Installation](installation.md)
+### [Installation](installation.md)
 All the knobs: `.env`, volumes, single-process mode, local dev, GPU-free hardware requirements.
 </div>
 
 <div class="pf-card" markdown>
-### 🎬 [Demo mode](demo-mode.md)
+### [Demo mode](demo-mode.md)
 Run the full app with **zero Proton credentials**. Bundled CC0 photos, auto-created admin user, no session file needed.
 </div>
 
 <div class="pf-card" markdown>
-### 🔐 [Session file](session-export.md)
+### [Session file](session-export.md)
 How to get the Proton Drive SDK auth session and keep it safe. Required for the real install.
 </div>
 

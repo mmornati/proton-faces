@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Out of frame · Proton Faces</title>
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#050505">
+<script>
+  // The docs moved from the site root to /docs/. Send old links to their new home.
+  (function () {
+    var base = "/proton-faces/";
+    var p = location.pathname;
+    if (p.indexOf(base) !== 0) base = "/";
+    var rest = p.slice(base.length);
+    var known = /^(getting-started|user-guide|reference|changelog|assets\/screenshots|assets\/screencasts|search)(\/|$)/;
+    if (known.test(rest)) location.replace(base + "docs/" + rest + location.search + location.hash);
+  })();
+</script>
+<style>
+  @font-face { font-family: "Archivo"; src: url("/proton-faces/assets/fonts/archivo-latin.woff2") format("woff2"); font-weight: 100 900; font-stretch: 62% 125%; }
+  html, body { margin: 0; height: 100%; background: #050505; color: #f4f4f2; font: 17px/1.6 Archivo, system-ui, sans-serif; }
+  main { min-height: 100%; display: grid; place-items: center; text-align: center; padding: 24px; box-sizing: border-box; }
+  .vf { position: relative; padding: 56px 48px; }
+  .vf::before { content: ""; position: absolute; inset: 0; background:
+    linear-gradient(#52d273,#52d273) top left/26px 2px no-repeat, linear-gradient(#52d273,#52d273) top left/2px 26px no-repeat,
+    linear-gradient(#52d273,#52d273) top right/26px 2px no-repeat, linear-gradient(#52d273,#52d273) top right/2px 26px no-repeat,
+    linear-gradient(#52d273,#52d273) bottom left/26px 2px no-repeat, linear-gradient(#52d273,#52d273) bottom left/2px 26px no-repeat,
+    linear-gradient(#52d273,#52d273) bottom right/26px 2px no-repeat, linear-gradient(#52d273,#52d273) bottom right/2px 26px no-repeat; }
+  h1 { margin: 0 0 12px; font-weight: 800; font-stretch: 125%; text-transform: uppercase; font-size: clamp(2rem, 6vw, 3.6rem); line-height: .95; letter-spacing: -.02em; }
+  p { margin: 0 0 24px; color: #b1b2ae; }
+  a { color: #52d273; margin: 0 10px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="vf">
+    <h1>Out of frame.</h1>
+    <p>Nothing was captured at this address.</p>
+    <a href="/proton-faces/">Home</a><a href="/proton-faces/docs/">Documentation</a>
+  </div>
+</main>
+</body>
+</html>

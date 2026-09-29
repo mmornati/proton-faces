@@ -4,7 +4,7 @@ Three lightweight flags per photo let you organize your library without leaving 
 
 ![Favorites tab](../assets/screenshots/favorites.png){ loading=lazy }
 
-## ★ Favorites (per-user)
+## Favorites (per-user)
 
 - **★ Favorite button** in the top-right of every photo card, or in the detail panel.
 - **Per-user.** Every family member has their own `user_favorites` table — your stars don't show up in your kid's view.

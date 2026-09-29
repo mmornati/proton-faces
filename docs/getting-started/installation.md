@@ -7,22 +7,22 @@ Proton Faces ships as a Docker Compose stack of three services: `proton-bridge`,
 <div class="pf-cards" markdown>
 
 <div class="pf-card" markdown>
-### 🐳 Docker Compose (recommended)
+### Docker Compose (recommended)
 Three containers, isolated processes, ML on dedicated cores, single `docker compose up` to start.
 </div>
 
 <div class="pf-card" markdown>
-### 🎬 [Demo mode](demo-mode.md)
+### [Demo mode](demo-mode.md)
 No Proton account, no session file, no configuration. Try every feature on a fixture of CC0 photos.
 </div>
 
 <div class="pf-card" markdown>
-### 🛠️ Single process
+### Single process
 Set `RUN_INDEXER=1` on the `app` container to run the recognition pipeline in-process. Handy for debugging or low-resource boxes.
 </div>
 
 <div class="pf-card" markdown>
-### 🧑‍💻 Local dev (Python)
+### ‍💻 Local dev (Python)
 Install requirements, run `python main.py`. See [reference/configuration.md](../reference/configuration.md) for the env vars you need.
 </div>
 
