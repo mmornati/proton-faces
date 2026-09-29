@@ -4,92 +4,78 @@ hide:
   - toc
 ---
 
-# Private, self-hosted face · object · location search for your Proton Photos
+<div class="pf-docs-hero" markdown>
+<span class="pf-mark"></span>
+<div markdown>
+# Documentation
 
-<div class="pf-hero">
-  <div class="pf-hero-grid">
-    <div class="pf-hero-copy">
-      <h1>Search your photo library<br>like Google Photos — but private.</h1>
-      <p class="pf-tagline">Proton Faces indexes your end-to-end encrypted Proton Photos locally so you can search faces, places, and objects without ever uploading a single byte back.</p>
-      <div class="pf-cta">
-        <a class="pf-cta-primary" href="getting-started/quickstart/">Get started in 5 minutes →</a>
-        <a class="pf-cta-secondary" href="https://protonface.mornati.ovh">Try the live demo →</a>
-        <a class="pf-cta-secondary" href="https://github.com/mmornati/proton-faces">View on GitHub</a>
-      </div>
-      <p class="pf-demo-credentials"><strong>Live demo login</strong> — username <code>demo</code> · password <code>protonface-demo-2026-Q9vK3m</code></p>
-    </div>
-    <div class="pf-hero-phone">
-      <img src="assets/screencasts/mobile-browse.gif" alt="Browsing the Proton Faces mobile app inside an iPhone frame" loading="eager">
-    </div>
-  </div>
+Install, operate and extend Proton Faces: private face, object, place and free-text search over your Proton Photos, running on your own hardware. New here? Start with the [product tour](https://mmornati.github.io/proton-faces/) or the [80-second film](https://mmornati.github.io/proton-faces/video/).
 </div>
-
-<div class="pf-gallery" markdown>
-![Photos grid](assets/screenshots/photos.png){ loading=lazy }
-![Places map](assets/screenshots/places.png){ loading=lazy }
-![People grid](assets/screenshots/people.png){ loading=lazy }
-![Search](assets/screenshots/search-dog.png){ loading=lazy }
 </div>
-
-## What it does
-
-Proton Photos are **end-to-end encrypted** — so nobody but you (and your own machine) can ever look at them. That also means *you* have to do the searching. Proton Faces turns your encrypted photo library into a fully searchable archive, without ever uploading a single byte back.
 
 <div class="pf-cards" markdown>
 
 <div class="pf-card" markdown>
-### 👥 People
-RetinaFace + ArcFace detect and embed every face; HDBSCAN clusters them into persons you can name.
+### [Quickstart](getting-started/quickstart.md)
+From session file to your first real search in about ten minutes.
 </div>
 
 <div class="pf-card" markdown>
-### 🔍 "Who is this?"
-Drop a photo of a face → find every other photo of the same person.
+### [Installation](getting-started/installation.md)
+Docker Compose, the single-process layout, local development.
 </div>
 
 <div class="pf-card" markdown>
-### 🏷️ Face tagging UX
-Face-crop covers, clickable face boxes on each photo, name one face and **all look-alikes are auto-tagged**.
+### [Demo mode](getting-started/demo-mode.md)
+Run the whole app on a bundled photo library, no Proton account needed.
 </div>
 
 <div class="pf-card" markdown>
-### 🗺️ Places
-GPS reverse-geocoding → **interactive world map** with clustered markers (Leaflet + OSM).
+### [User guide](user-guide/index.md)
+Every view, feature and shortcut: photos, search, people, places, albums.
 </div>
 
 <div class="pf-card" markdown>
-### 📝 Free-text search
-Zero-shot CLIP — type *"dog"*, *"car"*, *"beach"*, *"Lille"*.
+### [Mobile & PWA](user-guide/mobile.md)
+Install on your phone, offline app shell, the phone-first layout.
 </div>
 
 <div class="pf-card" markdown>
-### 📱 iPhone (HEIC) photos
-Proton serves no preview → we decode the full-res file locally and generate our own thumbnail.
+### [Architecture](reference/architecture.md)
+Three containers, one SQLite index, zero telemetry.
 </div>
 
 <div class="pf-card" markdown>
-### 🧩 Unassigned queue
-Review faces that didn't cluster yet and name them in bulk.
+### [Configuration](reference/configuration.md)
+Every environment variable, with its safe default.
 </div>
 
 <div class="pf-card" markdown>
-### 🎬 Videos
-Detected and indexed, hidden from photo grids (no preview available).
+### [REST API](reference/api.md)
+Every endpoint and the auth each one requires.
+</div>
+
+<div class="pf-card" markdown>
+### [Security & privacy](reference/security-privacy.md)
+What is on disk, what is not, how tokens and signed URLs work.
+</div>
+
+<div class="pf-card" markdown>
+### [FAQ](reference/faq.md)
+Common questions, straight answers.
+</div>
+
+<div class="pf-card" markdown>
+### [Troubleshooting](reference/troubleshooting.md)
+When the indexer stalls, the bridge refuses, or faces do not cluster.
+</div>
+
+<div class="pf-card" markdown>
+### [Changelog](changelog.md)
+What changed, release by release.
 </div>
 
 </div>
-
-<div class="pf-banner" markdown>
-**Privacy-first by design.** No telemetry. No cloud APIs. The only network calls go to Proton's servers. All ML runs locally (ONNX Runtime + CLIP on CPU, no GPU required). The bridge is strictly read-only against Proton.
-</div>
-
-## See it in action
-
-<div class="pf-video">
-  <video src="assets/screencasts/search-typing.mp4" controls preload="metadata"></video>
-</div>
-
-<p class="pf-shot-caption">Type <code>dog</code>, <code>beach</code>, then <code>Lille</code> — results re-rank in real time.</p>
 
 ## How it works
 
@@ -103,36 +89,15 @@ flowchart LR
     E --> D
 ```
 
-- **proton-bridge** authenticates with your existing Proton session and is the **only** component that ever talks to Proton. Strictly read-only — no uploads, no writes, no deletions.
-- **indexer** runs recognition (faces + CLIP), generates thumbnails, clusters people, and reverse-geocodes GPS — all in the background.
+- **proton-bridge** authenticates with your existing Proton session and is the **only** component that ever talks to Proton. Strictly read-only: no uploads, no writes, no deletions.
+- **indexer** runs recognition (faces + CLIP), generates thumbnails, clusters people and reverse-geocodes GPS, all in the background.
 - **app** serves the FastAPI search API and the vanilla-JS web UI on `:8080`.
-- Every photo is processed **once**: thumbnail downloaded (or decoded locally for HEIC) → recognition run → small 512px thumbnail cached → original bytes discarded.
+- Every photo is processed **once**: thumbnail downloaded (or decoded locally for HEIC), recognition run, a 512 px thumbnail cached, original bytes discarded.
 
 ## Try it without a Proton account
 
-Want to poke at a running instance right now? **[Open the live demo](https://protonface.mornati.ovh)** — a hosted demo instance with a curated library of free CC0/Unsplash photos. Log in with username `demo` and password `protonface-demo-2026-Q9vK3m`.
+The hosted demo runs on a curated library of free CC0 and Unsplash photos: **[protonface.mornati.ovh](https://protonface.mornati.ovh)**, username `demo`, password `protonface-demo-2026-Q9vK3m`.
 
-Or run the same demo locally: proton-faces ships with a built-in **demo mode** that replaces the Proton bridge with a curated fixture of free CC0/Unsplash photos. `docker compose --profile demo up -d` and you're browsing a populated library in under a minute — no Proton credentials required.
+Or run the same fixture locally with `docker compose --profile demo up -d` and sign in at `http://localhost:8080` with `demo` / `proton-faces`. See the [demo mode guide](getting-started/demo-mode.md).
 
-[Read the demo mode guide →](getting-started/demo-mode.md)
-
-## Where to next?
-
-| Guide | Description |
-|-------|-------------|
-| [Installation](getting-started/installation.md) | Docker compose, single-process, local dev |
-| [Quickstart](getting-started/quickstart.md) | 5-minute tour: log in, search "dog", open People, name a face |
-| [Demo mode](getting-started/demo-mode.md) | Run the full app without a Proton account |
-| [User guide](user-guide/index.md) | Walk through every view, feature, and shortcut |
-| [Mobile & PWA](user-guide/mobile.md) | Install the app on your phone, offline shell, mobile layout |
-| [Architecture](reference/architecture.md) | Three containers, two SQLite writers, zero telemetry |
-| [API reference](reference/api.md) | Every REST endpoint |
-| [Configuration](reference/configuration.md) | Every environment variable |
-| [Security & privacy](reference/security-privacy.md) | What's on disk, what's not, and how tokens work |
-| [FAQ](reference/faq.md) | Common questions |
-
----
-
-<div style="text-align:center; opacity:0.6; font-size:0.85rem; margin-top:3rem;">
-This project is not affiliated with Proton AG. "Proton", "Proton Drive" and "Proton Photos" are trademarks of their respective owners. Use at your own risk.
-</div>
+<p class="pf-muted">This project is not affiliated with Proton AG. "Proton", "Proton Drive" and "Proton Photos" are trademarks of their respective owners. Use at your own risk.</p>

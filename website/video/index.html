@@ -1,0 +1,758 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proton Faces in 80 seconds</title>
+<meta name="description" content="An animated tour of Proton Faces: every frame is drawn in JavaScript on a canvas.">
+<meta name="theme-color" content="#050505">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+  @font-face { font-family: "Archivo"; src: url("../assets/fonts/archivo-latin.woff2") format("woff2"); font-weight: 100 900; font-stretch: 62% 125%; font-display: block; }
+  @font-face { font-family: "Martian Mono"; src: url("../assets/fonts/martian-mono-latin.woff2") format("woff2"); font-weight: 100 800; font-stretch: 75% 112.5%; font-display: block; }
+  :root { --ink: #050505; --panel: #111; --line: rgba(244,244,242,.18); --glass: #f4f4f2; --dim: #b1b2ae; --lock: #52d273; --on-lock: #03140a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--ink); color: var(--glass); font: 15px/1.5 Archivo, system-ui, sans-serif; }
+  ::selection { background: var(--lock); color: var(--on-lock); }
+  main { max-width: 1280px; margin: 0 auto; padding: 22px 16px 40px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { font: 800 1.35rem/1.2 Archivo, sans-serif; font-stretch: 125%; text-transform: uppercase; letter-spacing: -0.01em; margin: 0; }
+  header a { color: var(--dim); font: 500 12px "Martian Mono", monospace; letter-spacing: .06em; text-transform: uppercase; text-underline-offset: .25em; }
+  header a:hover { color: var(--glass); }
+  .stage { position: relative; aspect-ratio: 16 / 9; width: 100%; background: #000; overflow: hidden; border: 1px solid var(--line); }
+  canvas { display: block; width: 100%; height: 100%; cursor: pointer; }
+  .bar { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  button, select { font: 600 12px "Martian Mono", monospace; letter-spacing: .06em; text-transform: uppercase; color: var(--glass); background: var(--panel); border: 1px solid var(--line); border-radius: 2px; padding: 9px 14px; cursor: pointer; }
+  button:hover, select:hover { border-color: var(--glass); }
+  button.primary { background: var(--lock); border-color: var(--lock); color: var(--on-lock); min-width: 96px; }
+  :focus-visible { outline: 2px solid var(--lock); outline-offset: 2px; }
+  input[type=range] { flex: 1 1 240px; accent-color: var(--lock); }
+  .time { font: 12px "Martian Mono", monospace; color: var(--dim); min-width: 104px; text-align: right; font-variant-numeric: tabular-nums; }
+  .note { margin-top: 16px; font-size: 14px; color: var(--dim); max-width: 78ch; }
+  .note code { font: 12px "Martian Mono", monospace; color: var(--lock); }
+  body.embed main, body.capture main { max-width: none; padding: 0; }
+  body.embed header, body.embed .note, body.capture header, body.capture .bar, body.capture .note { display: none; }
+  body.embed .stage, body.capture .stage { border: 0; }
+  body.embed { overflow: hidden; }
+  body.embed .stage { height: calc(100vh - 44px); aspect-ratio: auto; }
+  body.embed .bar { margin: 0; padding: 6px 8px; background: #000; gap: 8px; }
+  body.embed .bar button, body.embed .bar select { padding: 6px 10px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Proton Faces in 80 seconds</h1>
+    <a id="back" href="../">Back to the site</a>
+  </header>
+  <div class="stage"><canvas id="c" role="img" aria-label="Animated presentation of Proton Faces" width="1920" height="1080"></canvas></div>
+  <div class="bar">
+    <button id="play" class="primary" type="button">Play</button>
+    <input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Position">
+    <span class="time" id="time">0:00 / 1:20</span>
+    <select id="lang" aria-label="Language">
+      <option value="en">English</option>
+      <option value="fr">Français</option>
+    </select>
+    <button id="full" type="button">Full screen</button>
+  </div>
+  <p class="note" id="note"></p>
+</main>
+
+<script>
+"use strict";
+/* Every frame is a pure function of time: render(t) repaints the whole canvas
+ * from t (seconds) with no hidden state and no unseeded randomness, so playback,
+ * seeking and frame-by-frame export (window.renderFrame) give identical images. */
+
+const W = 1280, H = 720;
+const params = new URLSearchParams(location.search);
+const RES = { "720": 1, "1080": 1.5, "1440": 2, "2160": 3 }[params.get("res") || "1080"] || 1.5;
+if (params.has("capture")) document.body.classList.add("capture");
+if (params.has("embed")) document.body.classList.add("embed");
+
+const canvas = document.getElementById("c");
+canvas.width = W * RES; canvas.height = H * RES;
+const ctx = canvas.getContext("2d");
+
+const C = {
+  ink: "#050505", ink2: "#0c0c0c", ink3: "#161616", line: "rgba(244,244,242,0.16)", line2: "rgba(244,244,242,0.3)",
+  glass: "#f4f4f2", dim: "#b1b2ae", faint: "#7c7d79", lock: "#52d273", onLock: "#03140a", flash: "#ff6a2b", film: "#1b1a17", edge: "#e8a33b",
+};
+const DISPLAY = "Archivo, sans-serif", MONO = '"Martian Mono", monospace';
+
+/* ------------------------------------------------------------ strings */
+const STR = {
+  en: {
+    title: "Proton Faces in 80 seconds", back: "Back to the site", play: "Play", pause: "Pause", full: "Full screen",
+    note: "Every frame is drawn in JavaScript on a canvas from the elapsed time alone: there is no video file. Space: play/pause, arrows: ±5 s. URL parameters: <code>?lang=fr</code>, <code>?t=30</code>. Photos come from the demo library; scores are illustrative.",
+    t1a: "Find anyone", t1b: "in your photos.", t1c: "Tell no one.", t1sub: "Private, self-hosted search for Proton Photos",
+    h2: "Your photos are end-to-end encrypted.", s2: "Nobody else can look inside. Not even a search engine.", q2: "grandma at the beach", r2: "0 results",
+    h3: "So the search runs on your machine.",
+    parts: [["SUBJECT", "Proton Photos", "encrypted library"], ["LENS", "proton-bridge", "read-only"], ["SENSOR", "indexer", "faces · CLIP · GPS"], ["MEMORY CARD", "SQLite", "index + thumbnails"], ["SCREEN", "web app", "localhost:8080"]],
+    blocked: "No telemetry · no cloud APIs · nothing written back",
+    h4: "Every face, grouped into people.", s4: "RetinaFace finds them. ArcFace describes them. HDBSCAN groups them.", person: "Person", photos: "photos",
+    h5a: "Name one face.", h5b: "Every look-alike follows.", name: "Grandma", nameLbl: "Name this person",
+    h6: "Who is this?", s6: "Drop one photo. Get every photo of that person.", query: "QUERY · 1 FACE", same: "same person", diff: "different person", thresh: "THRESHOLD 0.50",
+    h7: "Type what you remember.", s7: "Zero-shot CLIP ranks every photo against your words.", q7a: "leopard", q7b: "lighthouse at night",
+    h8: "Every GPS tag, back on the map.", s8: "Reverse-geocoded offline, plotted on an interactive map.",
+    h9: "And everything else in the bag.",
+    items: [["iPhone HEIC", "decoded locally"], ["Albums & tags", "local tags stay local"], ["Duplicates", "hide the extras"], ["Unassigned", "name faces in bulk"], ["Mobile PWA", "offline app shell"], ["Roles & 2FA", "read · write · admin"], ["Backups", "from the admin area"]],
+    h10: "Try it in one command.", s10: "Demo mode ships its own photo library. No Proton account needed.", live: "or open the live demo", url: "protonface.mornati.ovh",
+    end: "Open source · MIT · no telemetry", disclaimer: "Not affiliated with Proton AG. Proton, Proton Drive and Proton Photos are trademarks of their respective owners.",
+    demo: "DEMO-LIBRARY PHOTOS · SCORES ILLUSTRATIVE",
+  },
+  fr: {
+    title: "Proton Faces en 80 secondes", back: "Retour au site", play: "Lecture", pause: "Pause", full: "Plein écran",
+    note: "Chaque image est dessinée en JavaScript sur un canvas, à partir du seul temps écoulé : il n'y a pas de fichier vidéo. Espace : lecture/pause, flèches : ±5 s. Paramètres d'URL : <code>?lang=en</code>, <code>?t=30</code>. Photos de la bibliothèque de démo ; scores illustratifs.",
+    t1a: "Retrouvez chacun", t1b: "dans vos photos.", t1c: "Sans rien dire à personne.", t1sub: "Recherche privée et auto-hébergée pour Proton Photos",
+    h2: "Vos photos sont chiffrées de bout en bout.", s2: "Personne d'autre ne peut les voir. Pas même un moteur de recherche.", q2: "mamie à la plage", r2: "0 résultat",
+    h3: "Alors la recherche tourne chez vous.",
+    parts: [["SUJET", "Proton Photos", "bibliothèque chiffrée"], ["OBJECTIF", "proton-bridge", "lecture seule"], ["CAPTEUR", "indexer", "visages · CLIP · GPS"], ["CARTE MÉMOIRE", "SQLite", "index + vignettes"], ["ÉCRAN", "application web", "localhost:8080"]],
+    blocked: "Pas de télémétrie · pas d'API cloud · rien n'est réécrit",
+    h4: "Chaque visage, regroupé par personne.", s4: "RetinaFace les trouve. ArcFace les décrit. HDBSCAN les regroupe.", person: "Personne", photos: "photos",
+    h5a: "Nommez un visage.", h5b: "Tous les sosies suivent.", name: "Mamie", nameLbl: "Nommer cette personne",
+    h6: "Qui est-ce ?", s6: "Déposez une photo. Retrouvez toutes celles de cette personne.", query: "REQUÊTE · 1 VISAGE", same: "même personne", diff: "autre personne", thresh: "SEUIL 0,50",
+    h7: "Tapez ce dont vous vous souvenez.", s7: "CLIP zéro-shot classe chaque photo selon vos mots.", q7a: "léopard", q7b: "phare la nuit",
+    h8: "Chaque tag GPS, de retour sur la carte.", s8: "Géocodage inverse hors ligne, sur une carte interactive.",
+    h9: "Et tout le reste dans le sac.",
+    items: [["iPhone HEIC", "décodé en local"], ["Albums et tags", "les tags restent chez vous"], ["Doublons", "masquez le surplus"], ["Non assignés", "nommez en masse"], ["PWA mobile", "coque hors ligne"], ["Rôles et 2FA", "lecture · écriture · admin"], ["Sauvegardes", "depuis l'admin"]],
+    h10: "Essayez en une commande.", s10: "Le mode démo embarque sa propre photothèque. Aucun compte Proton requis.", live: "ou ouvrez la démo en ligne", url: "protonface.mornati.ovh",
+    end: "Open source · MIT · sans télémétrie", disclaimer: "Non affilié à Proton AG. Proton, Proton Drive et Proton Photos sont des marques de leurs propriétaires respectifs.",
+    demo: "PHOTOS DE LA DÉMO · SCORES ILLUSTRATIFS",
+  },
+};
+let lang = params.get("lang") === "fr" ? "fr" : (params.get("lang") === "en" ? "en" : ((navigator.language || "").toLowerCase().startsWith("fr") ? "fr" : "en"));
+let S = STR[lang];
+
+/* ------------------------------------------------------------ images */
+const IMG = {};
+const SRC = {
+  concert: "../assets/photos/scene-0141.jpg", leopard: "../assets/photos/scene-0102.jpg", bulacan: "../assets/photos/bulacan.jpg",
+  eiffel: "../assets/photos/scene-0147.jpg", photographer: "../assets/photos/photographer.jpg", lighthouse: "../assets/photos/scene-0101.jpg",
+  castle: "../assets/photos/scene-0142.jpg",
+};
+["0100", "0104", "0105", "0106", "0107", "0112", "0113", "0118", "0123", "0124", "0127", "0130", "0133", "0134", "0136", "0139", "0149"].forEach(n => { SRC["s" + n] = `../assets/photos/scene-${n}-sm.jpg`; });
+["women-05", "women-05-c1", "women-05-c2", "women-05-c3", "women-05-c4", "men-17", "men-17-c2", "men-29", "men-29-c3", "women-10", "women-43", "men-70",
+ "women-31", "men-03", "men-45", "women-19", "men-89", "women-77", "women-13", "men-71", "women-04", "women-80"].forEach(n => { SRC["f:" + n] = `../assets/faces/${n}.jpg`; });
+const imagesReady = Promise.all(Object.entries(SRC).map(([k, src]) => new Promise(res => {
+  const im = new Image(); im.onload = im.onerror = () => res(); im.src = src; IMG[k] = im;
+})));
+
+/* ------------------------------------------------------------ helpers */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const seg = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
+const outCubic = p => 1 - Math.pow(1 - p, 3);
+const outExpo = p => (p >= 1 ? 1 : 1 - Math.pow(2, -10 * p));
+const inOut = p => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+const lerp = (a, b, p) => a + (b - a) * p;
+const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+
+function font(weight, size, family, stretch) {
+  ctx.font = `${weight} ${size}px ${family}`;
+  if ("fontStretch" in ctx) ctx.fontStretch = stretch || "normal";
+}
+function text(s, x, y, o = {}) {
+  ctx.save();
+  font(o.weight || 400, o.size || 20, o.font || DISPLAY, o.stretch);
+  ctx.fillStyle = o.color || C.glass;
+  ctx.globalAlpha *= o.alpha == null ? 1 : o.alpha;
+  ctx.textAlign = o.align || "left";
+  ctx.textBaseline = o.baseline || "alphabetic";
+  if ("letterSpacing" in ctx && o.spacing) ctx.letterSpacing = o.spacing;
+  ctx.fillText(o.upper ? s.toUpperCase() : s, x, y);
+  const w = ctx.measureText(o.upper ? s.toUpperCase() : s).width;
+  ctx.restore();
+  return w;
+}
+function measure(s, o = {}) {
+  ctx.save(); font(o.weight || 400, o.size || 20, o.font || DISPLAY, o.stretch);
+  if ("letterSpacing" in ctx && o.spacing) ctx.letterSpacing = o.spacing;
+  const w = ctx.measureText(o.upper ? s.toUpperCase() : s).width; ctx.restore(); return w;
+}
+function display(s, x, y, size, o = {}) {
+  const base = { weight: 800, size, stretch: "expanded", upper: true, spacing: "-0.5px", ...o };
+  const max = o.max || W - 144;
+  const w = measure(s, base);
+  if (w > max) base.size = Math.floor(size * max / w);
+  return text(s, x, y, base);
+}
+function mono(s, x, y, o = {}) {
+  return text(s, x, y, { font: MONO, size: 13, weight: 500, stretch: "semi-condensed", spacing: "1px", ...o });
+}
+function cover(im, x, y, w, h, fx = 0.5, fy = 0.5, zoom = 1) {
+  if (!im || !im.naturalWidth) { ctx.fillStyle = C.ink3; ctx.fillRect(x, y, w, h); return null; }
+  const s = Math.max(w / im.naturalWidth, h / im.naturalHeight) * zoom;
+  const dw = im.naturalWidth * s, dh = im.naturalHeight * s;
+  const dx = x + (w - dw) * fx, dy = y + (h - dh) * fy;
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.drawImage(im, dx, dy, dw, dh);
+  ctx.restore();
+  return { dx, dy, dw, dh };
+}
+function brackets(x, y, w, h, color, o = {}) {
+  const l = Math.max(10, Math.min(34, Math.min(w, h) * 0.24));
+  ctx.save();
+  ctx.strokeStyle = color; ctx.lineWidth = o.lw || 2; ctx.globalAlpha *= o.alpha == null ? 1 : o.alpha;
+  if (o.dash) ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  ctx.moveTo(x, y + l); ctx.lineTo(x, y); ctx.lineTo(x + l, y);
+  ctx.moveTo(x + w - l, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + l);
+  ctx.moveTo(x + w, y + h - l); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - l, y + h);
+  ctx.moveTo(x + l, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - l);
+  ctx.stroke(); ctx.restore();
+}
+function tag(s, x, y, o = {}) {
+  const size = o.size || 12;
+  const w = measure(s, { font: MONO, size, weight: 600, stretch: "semi-condensed", spacing: "1px", upper: true }) + 16;
+  ctx.save(); ctx.globalAlpha *= o.alpha == null ? 1 : o.alpha;
+  ctx.fillStyle = o.bg || C.lock; ctx.fillRect(x, y, w, size + 13);
+  ctx.restore();
+  mono(s, x + 8, y + size + 5, { size, weight: 600, color: o.color || C.onLock, upper: true, alpha: o.alpha });
+  return w;
+}
+function rect(x, y, w, h, color, alpha = 1) { ctx.save(); ctx.globalAlpha *= alpha; ctx.fillStyle = color; ctx.fillRect(x, y, w, h); ctx.restore(); }
+function strokeRect(x, y, w, h, color, lw = 1, alpha = 1, dash) {
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.strokeStyle = color; ctx.lineWidth = lw; if (dash) ctx.setLineDash(dash);
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1); ctx.restore();
+}
+function shade(x0, x1, a0, a1) {
+  const g = ctx.createLinearGradient(x0, 0, x1, 0);
+  g.addColorStop(0, `rgba(5,5,5,${a0})`); g.addColorStop(1, `rgba(5,5,5,${a1})`);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+function wrap(s, x, y, maxW, lh, o = {}) {
+  const words = s.split(" "); let line = "", yy = y;
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (measure(test, o) > maxW && line) { text(line, x, yy, o); line = w; yy += lh; } else line = test;
+  }
+  if (line) text(line, x, yy, o);
+  return yy;
+}
+function typed(s, k) { return s.slice(0, Math.floor(s.length * clamp(k, 0, 1))); }
+function heading(a, b, t, o = {}) {
+  const k = outExpo(seg(t, 0.15, 0.9));
+  const x = o.x == null ? 72 : o.x, y = o.y == null ? 118 : o.y;
+  display(a, x, y + (1 - k) * 18, o.size || 46, { alpha: k, align: o.align });
+  if (b) text(b, x, y + 42 + (1 - k) * 18, { size: 20, color: C.dim, alpha: outExpo(seg(t, 0.4, 1.1)), align: o.align });
+}
+function aperture(k, cx = W / 2, cy = H / 2) {
+  if (k <= 0) return;
+  const R = Math.hypot(W, H) / 2 + 30, r = R * (1 - k), rot = k * 0.9;
+  const pts = [];
+  for (let i = 0; i < 6; i++) { const a = rot + i * Math.PI / 3; pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); }
+  ctx.save();
+  ctx.fillStyle = C.ink;
+  ctx.beginPath(); ctx.rect(0, 0, W, H);
+  ctx.moveTo(pts[0][0], pts[0][1]); for (let i = 5; i >= 0; i--) ctx.lineTo(pts[i][0], pts[i][1]); ctx.closePath();
+  ctx.fill("evenodd");
+  ctx.strokeStyle = "rgba(244,244,242,0.16)"; ctx.lineWidth = 1;
+  for (let i = 0; i < 6; i++) {
+    const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % 6];
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x1 + (x2 - x1) * 40, y1 + (y2 - y1) * 40); ctx.stroke();
+  }
+  ctx.restore();
+}
+function afGrid(t, x, y, w, h, cols, rows, alpha = 1, seed = 1) {
+  const step = Math.floor(t * 11);
+  for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
+    const px = x + (i + 0.5) * w / cols - 6, py = y + (j + 0.5) * h / rows - 6;
+    const hot = hash(step * 97 + i * 13 + j * 7 + seed) > 0.95;
+    ctx.save(); ctx.globalAlpha *= alpha;
+    if (hot) { ctx.fillStyle = "rgba(255,106,43,0.25)"; ctx.fillRect(px, py, 12, 12); }
+    ctx.strokeStyle = hot ? C.flash : "rgba(244,244,242,0.26)"; ctx.lineWidth = 1; ctx.strokeRect(px + 0.5, py + 0.5, 11, 11);
+    ctx.restore();
+  }
+}
+function lockOn(t, t0, box, from, label, score, o = {}) {
+  // hunts from `from` towards `box`, then snaps and turns green
+  const k = inOut(seg(t, t0, t0 + 0.9));
+  const x = lerp(from[0], box[0], k), y = lerp(from[1], box[1], k), w = lerp(from[2], box[2], k), h = lerp(from[3], box[3], k);
+  const locked = t >= t0 + 1.0;
+  brackets(x, y, w, h, locked ? (o.dash ? C.glass : C.lock) : "rgba(244,244,242,0.9)", { dash: o.dash, alpha: o.alpha });
+  if (locked && label) {
+    const ka = outCubic(seg(t, t0 + 1.0, t0 + 1.25));
+    tag(label + (score ? "   " + score : ""), x - 2, o.up ? y - 34 + (1 - ka) * 4 : y + h + 8 - (1 - ka) * 4, { alpha: ka * (o.alpha == null ? 1 : o.alpha), bg: o.dash ? C.glass : C.lock, color: o.dash ? C.ink : C.onLock });
+  }
+  return locked;
+}
+function flash(t, t0, dur = 0.5) {
+  const p = seg(t, t0, t0 + dur);
+  if (p <= 0 || p >= 1) return;
+  const a = p < 0.08 ? p / 0.08 : 1 - outCubic((p - 0.08) / 0.92);
+  rect(0, 0, W, H, "#fff", a * 0.9);
+}
+function icon(name, x, y, s, color, lw = 1.6) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s / 24, s / 24);
+  ctx.strokeStyle = color; ctx.lineWidth = lw * 24 / s; ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.beginPath();
+  if (name === "lock") { ctx.rect(5, 10, 14, 10); ctx.moveTo(8, 10); ctx.lineTo(8, 7); ctx.arc(12, 7, 4, Math.PI, 0); ctx.lineTo(16, 10); }
+  if (name === "lens") { ctx.arc(12, 12, 8, 0, 7); ctx.moveTo(15.5, 12); ctx.arc(12, 12, 3.5, 0, 7); }
+  if (name === "sensor") { ctx.rect(4, 4, 16, 16); ctx.moveTo(4, 9); ctx.lineTo(20, 9); ctx.moveTo(4, 15); ctx.lineTo(20, 15); ctx.moveTo(9, 4); ctx.lineTo(9, 20); ctx.moveTo(15, 4); ctx.lineTo(15, 20); }
+  if (name === "card") { ctx.moveTo(6, 3); ctx.lineTo(15, 3); ctx.lineTo(18, 6); ctx.lineTo(18, 21); ctx.lineTo(6, 21); ctx.closePath(); ctx.moveTo(9, 3); ctx.lineTo(9, 7); ctx.moveTo(12, 3); ctx.lineTo(12, 7); ctx.moveTo(15, 3); ctx.lineTo(15, 7); }
+  if (name === "screen") { ctx.rect(3, 5, 18, 12); ctx.moveTo(8, 21); ctx.lineTo(16, 21); ctx.moveTo(12, 17); ctx.lineTo(12, 21); }
+  if (name === "cloud") { ctx.moveTo(7, 17); ctx.bezierCurveTo(1, 17, 2, 9, 8, 9.5); ctx.bezierCurveTo(9, 4, 17, 4, 18, 10); ctx.bezierCurveTo(22, 10, 22, 17, 17.5, 17); ctx.closePath(); ctx.moveTo(4, 4); ctx.lineTo(20, 20); }
+  if (name === "search") { ctx.arc(11, 11, 6.5, 0, 7); ctx.moveTo(16, 16); ctx.lineTo(20.5, 20.5); }
+  ctx.stroke(); ctx.restore();
+}
+
+/* ------------------------------------------------------------ chrome */
+function background() { rect(0, 0, W, H, C.ink); }
+function chrome(t) {
+  // viewfinder corner marks + REC timecode, always on top
+  const m = 22, l = 26;
+  ctx.save(); ctx.strokeStyle = "rgba(244,244,242,0.7)"; ctx.lineWidth = 1.5; ctx.beginPath();
+  ctx.moveTo(m, m + l); ctx.lineTo(m, m); ctx.lineTo(m + l, m);
+  ctx.moveTo(W - m - l, m); ctx.lineTo(W - m, m); ctx.lineTo(W - m, m + l);
+  ctx.moveTo(W - m, H - m - l); ctx.lineTo(W - m, H - m); ctx.lineTo(W - m - l, H - m);
+  ctx.moveTo(m + l, H - m); ctx.lineTo(m, H - m); ctx.lineTo(m, H - m - l);
+  ctx.stroke(); ctx.restore();
+  const on = Math.floor(t * 1.25) % 2 === 0;
+  ctx.save(); ctx.fillStyle = C.flash; ctx.globalAlpha = on ? 1 : 0.25; ctx.beginPath(); ctx.arc(W - 150, 44, 5, 0, 7); ctx.fill(); ctx.restore();
+  const f = Math.floor((t % 1) * 25), s = Math.floor(t) % 60, mi = Math.floor(t / 60);
+  mono(`REC  00:${String(mi).padStart(2, "0")}:${String(s).padStart(2, "0")}:${String(f).padStart(2, "0")}`, W - 138, 49, { size: 11, color: C.glass });
+  // progress: frame counter along the bottom
+  const p = t / DURATION;
+  rect(44, H - 34, W - 88, 1, "rgba(244,244,242,0.18)");
+  rect(44, H - 34, (W - 88) * p, 1, C.lock);
+  let acc = 0;
+  SCENES.forEach((sc, i) => { const x = 44 + (W - 88) * acc / DURATION; rect(x, H - 38, 1, 9, i === 0 ? "transparent" : "rgba(244,244,242,0.35)"); acc += sc.d; });
+}
+
+/* ------------------------------------------------------------ scenes */
+function sIntro(t, d) {
+  // viewfinder hunting in the dark, then the photographer appears through the iris
+  const open = 1 - outCubic(seg(t, 1.3, 2.3));
+  const z = lerp(1.08, 1.0, outCubic(seg(t, 1.3, d)));
+  cover(IMG.photographer, 520, 0, 760, H, 0.5, 0.3, z);
+  const g = ctx.createLinearGradient(520, 0, 820, 0);
+  g.addColorStop(0, "rgba(5,5,5,1)"); g.addColorStop(1, "rgba(5,5,5,0)");
+  ctx.fillStyle = g; ctx.fillRect(520, 0, 300, H);
+  aperture(open < 1 ? open : 1);
+  afGrid(t, 320, 150, 640, 380, 11, 7, 1 - seg(t, 2.6, 3.2), 3);
+  if (t < 1.3) mono("AF-C  ·  HUNTING", W / 2, H / 2 + 6, { size: 12, align: "center", color: C.dim, alpha: seg(t, 0.2, 0.5) });
+  const fade = 1 - seg(t, d - 0.6, d);
+  lockOn(t, 2.3, [770, 40, 340, 330], [680, 140, 480, 480], "Face · Person 01", "0.92", { alpha: fade });
+  lockOn(t, 2.7, [800, 470, 280, 200], [900, 520, 160, 120], "“camera”", "0.29", { alpha: fade, up: true });
+  const k = outExpo(seg(t, 3.0, 3.8));
+  display(S.t1a, 72, 290 + (1 - k) * 20, 60, { alpha: k, max: 640 });
+  display(S.t1b, 72, 354 + (1 - k) * 20, 60, { alpha: outExpo(seg(t, 3.2, 4.0)), max: 640 });
+  display(S.t1c, 72, 418 + (1 - k) * 20, lang === "fr" ? 40 : 60, { alpha: outExpo(seg(t, 3.6, 4.4)), color: C.lock, max: 640 });
+  mono(S.t1sub.toUpperCase(), 74, 470, { size: 12, color: C.dim, alpha: seg(t, 4.2, 4.8) });
+  const kw = seg(t, 0.4, 0.9);
+  ctx.save(); ctx.globalAlpha = kw;
+  strokeRect(72, 44, 22, 22, C.glass, 1.5);
+  ctx.fillStyle = C.lock; ctx.beginPath(); ctx.arc(83, 55, 3.2, 0, 7); ctx.fill();
+  ctx.restore();
+  text("PROTON·FACES", 104, 62, { weight: 800, size: 17, stretch: "expanded", alpha: kw, spacing: "0.5px" });
+  flash(t, 2.25, 0.45);
+}
+
+function sProblem(t, d) {
+  heading(S.h2, S.s2, t);
+  // a grid of photos that decrypt into noise: encrypted library
+  const keys = ["s0100", "s0104", "s0105", "s0106", "s0107", "s0112", "s0113", "s0118", "s0123", "s0124", "s0127", "s0130", "s0133", "s0134", "s0136", "s0139"];
+  const gx = 72, gy = 200, cw = 132, ch = 96, gap = 8;
+  keys.forEach((k, i) => {
+    const c = i % 8, r = Math.floor(i / 8);
+    const x = gx + c * (cw + gap), y = gy + r * (ch + gap);
+    const a = outCubic(seg(t, 0.3 + i * 0.03, 0.8 + i * 0.03));
+    ctx.save(); ctx.globalAlpha = a;
+    cover(IMG[k], x, y, cw, ch);
+    // scramble: pixel blocks
+    const sc = seg(t, 1.4 + i * 0.04, 2.2 + i * 0.04);
+    if (sc > 0) {
+      const bs = 12;
+      for (let bx = 0; bx < cw; bx += bs) for (let by = 0; by < ch; by += bs) {
+        const hh = hash(i * 1000 + bx * 7 + by * 13);
+        if (hh < sc) { const v = Math.floor(18 + hash(hh * 99) * 40); ctx.fillStyle = `rgb(${v},${v},${v + 2})`; ctx.fillRect(x + bx, y + by, bs, bs); }
+      }
+      if (sc > 0.9) icon("lock", x + cw / 2 - 11, y + ch / 2 - 11, 22, C.glass);
+    }
+    ctx.restore();
+  });
+  // search box that finds nothing
+  const sy = 430, sk = outCubic(seg(t, 3.0, 3.5));
+  ctx.save(); ctx.globalAlpha = sk;
+  strokeRect(72, sy, 640, 56, C.line2, 1);
+  icon("search", 90, sy + 16, 24, C.dim);
+  ctx.restore();
+  const q = typed(S.q2, seg(t, 3.4, 4.8));
+  text(q, 128, sy + 36, { size: 22, alpha: sk });
+  if (t > 3.4 && t < 5.0 && Math.floor(t * 3) % 2 === 0) rect(130 + measure(q, { size: 22 }), sy + 16, 2, 26, C.lock, sk);
+  const rk = seg(t, 5.0, 5.3);
+  mono(S.r2.toUpperCase(), 740, sy + 34, { size: 14, color: C.flash, alpha: rk, weight: 600 });
+}
+
+function sLocal(t, d) {
+  heading(S.h3, null, t);
+  const parts = S.parts, icons = ["lock", "lens", "sensor", "card", "screen"];
+  const x0 = 72, span = W - 144, n = parts.length, cw = span / n, by = 300;
+  // beam
+  const bk = seg(t, 0.8, 3.2);
+  rect(x0 + 26, by, (span - cw + 0) * bk, 1, C.faint);
+  const pulse = ((t * 0.5) % 1);
+  if (t > 1.2) { ctx.save(); const px = x0 + 26 + (span - cw) * pulse; const g = ctx.createLinearGradient(px - 80, 0, px, 0); g.addColorStop(0, "rgba(82,210,115,0)"); g.addColorStop(1, C.lock); ctx.fillStyle = g; ctx.fillRect(px - 80, by - 1, 80, 3); ctx.restore(); }
+  parts.forEach((p, i) => {
+    const x = x0 + i * cw, k = outExpo(seg(t, 0.6 + i * 0.45, 1.3 + i * 0.45));
+    ctx.save(); ctx.globalAlpha = k;
+    rect(x, by - 26, 52, 52, C.ink);
+    strokeRect(x, by - 26, 52, 52, i === 0 ? C.line2 : C.glass, 1, 1, i === 0 ? [4, 3] : null);
+    icon(icons[i], x + 13, by - 13, 26, C.glass);
+    ctx.restore();
+    text(p[1], x, by + 70, { size: 23, weight: 700, stretch: "semi-expanded", alpha: k });
+    mono(p[0], x, by + 96, { size: 11, weight: 600, color: i ? C.lock : C.dim, alpha: k, spacing: "2px" });
+    mono(p[2], x, by + 122, { size: 12, color: C.dim, alpha: k });
+  });
+  // blocked uplink
+  const ck = outExpo(seg(t, 3.6, 4.4));
+  const cx = W - 250, cy = 520;
+  ctx.save(); ctx.globalAlpha = ck;
+  ctx.strokeStyle = C.flash; ctx.setLineDash([5, 5]); ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(x0 + 3 * cw + 26, by + 146); ctx.lineTo(x0 + 3 * cw + 26, cy + 20); ctx.lineTo(cx - 20, cy + 20); ctx.stroke();
+  ctx.restore();
+  ctx.save(); ctx.globalAlpha = ck; rect(cx - 16, cy - 6, 52, 52, C.ink); strokeRect(cx - 16, cy - 6, 52, 52, C.flash, 1.5); icon("cloud", cx - 3, cy + 7, 26, C.flash); ctx.restore();
+  mono(S.blocked.toUpperCase(), x0, cy + 70 + (1 - ck) * 8, { size: 13, weight: 600, color: C.flash, alpha: ck, spacing: "1.5px" });
+}
+
+const CLUSTER = [
+  ["women-05", 1], ["men-17", 2], ["women-10", 3], ["men-29", 4], ["women-43", 5], ["men-70", 6],
+  ["women-05-c1", 1], ["men-03", 7], ["women-31", 8], ["men-17-c2", 2], ["men-45", 9], ["women-19", 10],
+  ["women-05-c2", 1], ["men-89", 11], ["men-29-c3", 4], ["women-05-c3", 1], ["women-13", 12], ["women-05-c4", 1],
+];
+function sFaces(t, d) {
+  heading(S.h4, S.s4, t);
+  const cols = 9, s = 108, gap = 10, gx = 72, gy = 216;
+  const gather = inOut(seg(t, 4.6, 5.8));
+  CLUSTER.forEach(([f, p], i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    let x = gx + c * (s + gap), y = gy + r * (s + gap);
+    // person 01 faces fly into a stack on the right
+    const target = p === 1;
+    if (target) {
+      const j = CLUSTER.filter(q => q[1] === 1).findIndex(q => q[0] === f);
+      const tx = 820 + j * 16, ty = 470 + j * 10;
+      x = lerp(x, tx, gather); y = lerp(y, ty, gather);
+    }
+    const a = outCubic(seg(t, 0.3 + i * 0.04, 0.8 + i * 0.04)) * (target ? 1 : 1 - 0.75 * gather);
+    ctx.save(); ctx.globalAlpha = a;
+    cover(IMG["f:" + f], x, y, s, s);
+    ctx.restore();
+    const lt = 1.3 + i * 0.12;
+    if (t > lt) {
+      const locked = t > lt + 0.35;
+      brackets(x + 12, y + 12, s - 24, s - 24, locked ? C.lock : C.glass, { alpha: a });
+      if (locked && gather < 0.5) tag(`P${String(p).padStart(2, "0")}`, x, y + s - 21, { size: 10, alpha: a * (1 - gather * 2) });
+    }
+  });
+  const ck = outExpo(seg(t, 5.8, 6.5));
+  display(`${S.person} 01`, 72, 520 + (1 - ck) * 10, 40, { alpha: ck });
+  mono(`5 ${S.photos.toUpperCase()}  ·  HDBSCAN`, 74, 556, { size: 13, color: C.lock, alpha: ck, weight: 600 });
+}
+
+function sName(t, d) {
+  const faces = ["women-05", "women-05-c1", "women-05-c2", "women-05-c3", "women-05-c4"];
+  heading(S.h5a, S.h5b, t);
+  // input
+  const ik = outCubic(seg(t, 0.4, 0.9));
+  mono(S.nameLbl.toUpperCase(), 72, 222, { size: 11, color: C.dim, alpha: ik, spacing: "1.5px" });
+  strokeRect(72, 234, 420, 60, t > 1.0 ? C.lock : C.line2, 1.5, ik);
+  const nm = typed(S.name, seg(t, 1.0, 1.8));
+  text(nm, 92, 274, { size: 28, weight: 700, alpha: ik });
+  if (t > 0.9 && t < 2.2 && Math.floor(t * 3) % 2 === 0) rect(94 + measure(nm, { size: 28, weight: 700 }), 248, 2, 32, C.lock, ik);
+  // the face everyone else follows
+  faces.forEach((f, i) => {
+    const s = i === 0 ? 220 : 150;
+    const x = i === 0 ? 72 : 330 + (i - 1) * 206, y = i === 0 ? 330 : 400;
+    const a = outCubic(seg(t, 0.2 + i * 0.08, 0.7 + i * 0.08));
+    ctx.save(); ctx.globalAlpha = a; cover(IMG["f:" + f], x, y, s, s); ctx.restore();
+    const lt = i === 0 ? 1.9 : 2.3 + i * 0.22;
+    const on = t > lt;
+    brackets(x + 10, y + 10, s - 20, s - 20, on ? C.lock : "rgba(244,244,242,0.5)", { alpha: a });
+    if (on) tag(S.name, x, y + s + 8, { alpha: outCubic(seg(t, lt, lt + 0.25)), size: i ? 11 : 13 });
+    if (i > 0 && on) {
+      // link line from the named face
+      ctx.save(); ctx.strokeStyle = C.lock; ctx.globalAlpha = 0.5 * (1 - seg(t, lt + 0.6, lt + 1.2)); ctx.setLineDash([3, 4]);
+      ctx.beginPath(); ctx.moveTo(72 + 220, 330 + 110); ctx.lineTo(x, y + s / 2); ctx.stroke(); ctx.restore();
+    }
+  });
+  flash(t, 1.85, 0.4);
+}
+
+function sWho(t, d) {
+  heading(S.h6, S.s6, t);
+  const qk = outCubic(seg(t, 0.4, 1.0));
+  const qx = 72, qy = 210 + (1 - qk) * -60;
+  strokeRect(qx - 10, 200, 280, 360, C.line2, 1.5, seg(t, 0.2, 0.5), [6, 5]);
+  ctx.save(); ctx.globalAlpha = qk; cover(IMG["f:women-05"], qx, qy, 260, 300); ctx.restore();
+  lockOn(t, 1.0, [qx + 50, qy + 40, 160, 180], [qx + 10, qy + 10, 240, 280], null, null, { alpha: qk });
+  mono(S.query, qx, 548, { size: 11, color: C.dim, alpha: seg(t, 1.6, 2), spacing: "1.5px" });
+  const rows = [["women-05-c1", 0.96], ["women-05-c2", 0.94], ["women-05-c3", 0.91], ["women-05-c4", 0.89], null, ["women-80", 0.41], ["women-77", 0.37]];
+  let y = 200;
+  rows.forEach((r, i) => {
+    const k = outCubic(seg(t, 2.0 + i * 0.16, 2.5 + i * 0.16));
+    if (!r) {
+      ctx.save(); ctx.globalAlpha = k; ctx.strokeStyle = C.flash; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(420, y + 8); ctx.lineTo(1200, y + 8); ctx.stroke(); ctx.restore();
+      mono(S.thresh, 420, y + 28, { size: 11, color: C.flash, alpha: k, weight: 600 });
+      y += 42; return;
+    }
+    const below = r[1] < 0.5, a = k * (below ? 0.55 : 1);
+    ctx.save(); ctx.globalAlpha = a; cover(IMG["f:" + r[0]], 420, y, 50, 50); ctx.restore();
+    strokeRect(410, y - 6, 790, 62, C.line, 1, a);
+    mono((below ? S.diff : S.same).toUpperCase(), 490, y + 16, { size: 10.5, color: C.dim, alpha: a });
+    rect(490, y + 28, 600, 10, "rgba(244,244,242,0.08)", a);
+    rect(490, y + 28, 600 * r[1] * outCubic(seg(t, 2.3 + i * 0.16, 3.2 + i * 0.16)), 10, below ? C.faint : C.lock, a);
+    mono(r[1].toFixed(2), 1180, y + 38, { size: 14, weight: 600, align: "right", alpha: a });
+    y += 70;
+  });
+}
+
+const RANK = {
+  a: ["leopard", "s0106", "s0118", "s0130", "s0139", "castle", "s0149", "s0133"],
+  b: ["lighthouse", "eiffel", "s0104", "s0149", "s0130", "castle", "concert", "s0118"],
+};
+function sText(t, d) {
+  heading(S.h7, S.s7, t);
+  const sy = 196, sk = outCubic(seg(t, 0.3, 0.7));
+  strokeRect(72, sy, 1136, 56, C.line2, 1, sk);
+  icon("search", 90, sy + 16, 24, C.dim);
+  const second = t > 4.4;
+  const q = second ? typed(S.q7b, seg(t, 4.5, 5.4)) : typed(S.q7a, seg(t, 0.8, 1.5));
+  text(q, 128, sy + 37, { size: 23, alpha: sk });
+  if (Math.floor(t * 3) % 2 === 0) rect(130 + measure(q, { size: 23 }), sy + 15, 2, 27, C.lock, sk);
+  const A = RANK.a, B = RANK.b;
+  const all = [...new Set([...A, ...B])];
+  const pk = inOut(seg(t, 5.4, 6.2));
+  const cw = 278, ch = 176, gx = 72, gy = 276, gap = 8;
+  const pos = i => [gx + (i % 4) * (cw + gap), gy + Math.floor(i / 4) * (ch + gap)];
+  const SC = [0.33, 0.24, 0.22, 0.21, 0.2, 0.19, 0.18, 0.17];
+  all.forEach(k => {
+    const ia = A.indexOf(k), ib = B.indexOf(k);
+    const va = ia >= 0, vb = ib >= 0;
+    const pa = va ? pos(ia) : pos(ib), pb = vb ? pos(ib) : pos(ia);
+    const x = lerp(pa[0], pb[0], pk), y = lerp(pa[1], pb[1], pk);
+    let a = outCubic(seg(t, 1.6 + (va ? ia : 0) * 0.06, 2.1 + (va ? ia : 0) * 0.06));
+    if (!va) a = pk; if (!vb) a *= 1 - pk;
+    if (a <= 0) return;
+    const rank = pk < 0.5 ? ia : ib;
+    const im = IMG[k] || IMG["s" + k];
+    ctx.save(); ctx.globalAlpha = a;
+    cover(im, x, y, cw, ch, 0.5, 0.5);
+    if (rank >= 4) rect(x, y, cw, ch, C.ink, 0.5);
+    ctx.restore();
+    if (rank === 0) { ctx.save(); ctx.globalAlpha = a; strokeRect(x, y, cw, ch, C.lock, 3); ctx.restore(); }
+    if (rank >= 0) tag(SC[rank].toFixed(2), x + 8, y + 8, { size: 10, alpha: a, bg: rank === 0 ? C.lock : "rgba(5,5,5,0.75)", color: rank === 0 ? C.onLock : C.glass });
+  });
+}
+
+const PLACES = [
+  { k: "eiffel", city: "Paris", lat: 48.8584, lon: 2.2945, ax: "end", dx: -10, dy: -8 },
+  { k: "castle", city: "Schwangau", lat: 47.5576, lon: 10.7498, ax: "start", dx: 10, dy: 20 },
+  { k: "s0124", city: "San Francisco", lat: 37.7946, lon: -122.4029, ax: "start", dx: 10, dy: 20 },
+  { k: "s0136", city: "New York", lat: 40.783, lon: -73.959, ax: "start", dx: 10, dy: -8 },
+  { k: "bulacan", city: "Baliuag", lat: 14.954, lon: 120.897, ax: "end", dx: -10, dy: -8 },
+];
+function sPlaces(t, d) {
+  heading(S.h8, S.s8, t);
+  const mx = 72, my = 200, mw = 800, mh = 400;
+  const X = lon => mx + (lon + 180) / 360 * mw, Y = lat => my + (90 - lat) / 180 * mh;
+  const gk = seg(t, 0.3, 1.2);
+  ctx.save(); ctx.globalAlpha = gk;
+  strokeRect(mx, my, mw, mh, C.line, 1);
+  ctx.strokeStyle = "rgba(244,244,242,0.1)"; ctx.lineWidth = 1;
+  for (let lon = -150; lon <= 150; lon += 30) { ctx.beginPath(); ctx.moveTo(X(lon), my); ctx.lineTo(X(lon), my + mh); ctx.stroke(); }
+  for (let lat = -60; lat <= 60; lat += 30) { ctx.strokeStyle = lat === 0 ? "rgba(244,244,242,0.3)" : "rgba(244,244,242,0.1)"; ctx.beginPath(); ctx.moveTo(mx, Y(lat)); ctx.lineTo(mx + mw, Y(lat)); ctx.stroke(); }
+  ctx.restore();
+  PLACES.forEach((p, i) => {
+    const t0 = 1.0 + i * 0.55, k = outExpo(seg(t, t0, t0 + 0.5));
+    if (k <= 0) return;
+    const x = X(p.lon), y = Y(p.lat), s = lerp(60, 14, k);
+    brackets(x - s / 2, y - s / 2, s, s, t > t0 + 0.4 ? C.lock : C.glass, { lw: 1.5 });
+    ctx.save(); ctx.fillStyle = C.lock; ctx.globalAlpha = k; ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 7); ctx.fill(); ctx.restore();
+    mono(p.city.toUpperCase(), x + p.dx, y + p.dy, { size: 11, weight: 600, align: p.ax, alpha: seg(t, t0 + 0.3, t0 + 0.6) });
+  });
+  // readout card for the current place
+  const cur = clamp(Math.floor((t - 1.0) / 1.1), 0, PLACES.length - 1);
+  const p = PLACES[cur], ck = seg(t, 1.2, 1.6);
+  ctx.save(); ctx.globalAlpha = ck;
+  cover(IMG[p.k], 900, 200, 308, 230, 0.5, 0.35);
+  ctx.restore();
+  const lat = `${Math.abs(p.lat).toFixed(4)} ${p.lat >= 0 ? "N" : "S"}`, lon = `${Math.abs(p.lon).toFixed(4)} ${p.lon >= 0 ? "E" : "W"}`;
+  tag(`GPS  ${lat} · ${lon}`, 900, 440, { size: 11, alpha: ck });
+  display(p.city, 900, 510, 30, { alpha: ck });
+}
+
+function sBag(t, d) {
+  heading(S.h9, null, t);
+  // a strip of 35mm film sliding past
+  const fy = 220, fh = 330, off = lerp(40, -620, inOut(seg(t, 0.4, d - 0.3)));
+  rect(0, fy, W, fh, C.film);
+  for (let x = ((off % 22) + 22) % 22 - 22; x < W; x += 22) {
+    ctx.fillStyle = C.ink; ctx.beginPath(); ctx.arc(x + 11, fy + 13, 4, 0, 7); ctx.arc(x + 11, fy + fh - 13, 4, 0, 7); ctx.fill();
+  }
+  const edge = "PROTON FACES 400  ▸  ";
+  for (let x = off % 380 - 380; x < W; x += 380) mono(edge, x + 20, fy + 34, { size: 9, color: C.edge, weight: 700, spacing: "3px" });
+  const pics = ["s0113", "s0134", "s0106", "s0100", "s0105", "s0133", "s0123"];
+  S.items.forEach((it, i) => {
+    const x = 60 + off + i * 270, y = fy + 46;
+    if (x > W || x + 250 < 0) return;
+    cover(IMG[pics[i]], x, y, 250, 166);
+    mono(`${12 + i}A`, x + 242, y + 158, { size: 10, color: C.edge, align: "right", weight: 700 });
+    text(it[0], x, y + 206, { size: 21, weight: 700, stretch: "semi-expanded" });
+    mono(it[1].toUpperCase(), x, y + 232, { size: 11, color: C.dim });
+  });
+}
+
+function sOutro(t, d) {
+  heading(S.h10, S.s10, t);
+  const tk = outCubic(seg(t, 0.6, 1.0));
+  rect(72, 220, 760, 132, "#000", tk);
+  strokeRect(72, 220, 760, 132, C.line2, 1, tk);
+  const cmds = ["git clone https://github.com/mmornati/proton-faces.git", "cd proton-faces", "docker compose --profile demo up -d"];
+  cmds.forEach((c, i) => {
+    const k = seg(t, 1.0 + i * 0.9, 1.8 + i * 0.9);
+    if (k <= 0) return;
+    mono("$", 96, 260 + i * 34, { size: 14, color: C.lock, alpha: tk });
+    mono(typed(c, k), 118, 260 + i * 34, { size: 14, alpha: tk, spacing: "0.3px" });
+  });
+  mono(S.live.toUpperCase(), 74, 396, { size: 12, color: C.dim, alpha: seg(t, 3.8, 4.2), spacing: "1.5px" });
+  text(S.url, 72, 432, { size: 30, weight: 700, stretch: "semi-expanded", color: C.lock, alpha: seg(t, 3.9, 4.3) });
+  // the demo library, already indexed
+  const lib = ["women-05", "men-17", "women-10", "men-29", "women-43", "men-70", "women-31", "men-03", "men-45", "women-19", "men-89", "women-77", "women-13", "men-71", "women-04", "women-80"];
+  lib.forEach((f, i) => {
+    const c = i % 4, r = Math.floor(i / 4), s = 78, x = 900 + c * (s + 6), y = 220 + r * (s + 6);
+    const k = outCubic(seg(t, 1.2 + i * 0.12, 1.6 + i * 0.12));
+    ctx.save(); ctx.globalAlpha = k; cover(IMG["f:" + f], x, y, s, s); ctx.restore();
+    if (t > 1.6 + i * 0.12) brackets(x + 8, y + 8, s - 16, s - 16, C.lock, { lw: 1.5, alpha: k });
+  });
+  mono("DEMO LIBRARY · 82 PHOTOS", 900, 580, { size: 11, color: C.dim, alpha: seg(t, 3.0, 3.4), spacing: "1.5px" });
+  // end card through the iris
+  const ek = seg(t, 6.2, 6.9);
+  if (ek > 0) {
+    rect(0, 0, W, H, C.ink, ek);
+    const k = outExpo(seg(t, 6.7, 7.6));
+    ctx.save(); ctx.globalAlpha = k;
+    strokeRect(W / 2 - 40, 190, 80, 80, C.glass, 2);
+    ctx.strokeStyle = C.lock; ctx.lineWidth = 6; ctx.beginPath();
+    const x = W / 2 - 40, y = 190, s = 80, l = 22;
+    ctx.moveTo(x, y + l); ctx.lineTo(x, y); ctx.lineTo(x + l, y); ctx.moveTo(x + s - l, y); ctx.lineTo(x + s, y); ctx.lineTo(x + s, y + l);
+    ctx.moveTo(x + s, y + s - l); ctx.lineTo(x + s, y + s); ctx.lineTo(x + s - l, y + s); ctx.moveTo(x + l, y + s); ctx.lineTo(x, y + s); ctx.lineTo(x, y + s - l); ctx.stroke();
+    ctx.fillStyle = C.lock; ctx.beginPath(); ctx.arc(W / 2, 230, 11, 0, 7); ctx.fill();
+    ctx.restore();
+    display("Proton·Faces", W / 2, 352 + (1 - k) * 14, 64, { align: "center", alpha: k });
+    mono("github.com/mmornati/proton-faces", W / 2, 398, { size: 17, align: "center", color: C.lock, weight: 600, alpha: seg(t, 7.2, 7.8) });
+    mono(S.end.toUpperCase(), W / 2, 438, { size: 12, align: "center", color: C.dim, alpha: seg(t, 7.5, 8.1), spacing: "1.5px" });
+    text(S.disclaimer, W / 2, 640, { size: 13, align: "center", color: C.faint, alpha: seg(t, 7.9, 8.5) });
+    flash(t, 6.65, 0.5);
+  }
+}
+
+/* ------------------------------------------------------------ edit */
+const SCENES = [
+  { d: 6.4, f: sIntro, iris: false },
+  { d: 7.2, f: sProblem },
+  { d: 8.2, f: sLocal },
+  { d: 8.0, f: sFaces },
+  { d: 6.2, f: sName },
+  { d: 7.6, f: sWho },
+  { d: 8.4, f: sText },
+  { d: 8.0, f: sPlaces },
+  { d: 7.4, f: sBag },
+  { d: 12.0, f: sOutro },
+];
+const DURATION = SCENES.reduce((a, s) => a + s.d, 0);
+const SHUT = 0.32;
+
+function render(t) {
+  t = clamp(t, 0, DURATION);
+  ctx.setTransform(RES, 0, 0, RES, 0, 0);
+  ctx.globalAlpha = 1;
+  background();
+  let start = 0, irisK = 0, flashAt = -1;
+  SCENES.forEach((sc, i) => {
+    const lt = t - start, last = i === SCENES.length - 1;
+    if (lt >= 0 && (lt < sc.d || (last && lt <= sc.d))) {
+      ctx.save(); sc.f(lt, sc.d); ctx.restore();
+      // shutter between scenes: close at the end, open at the start
+      if (i > 0 && lt < SHUT) { irisK = Math.max(irisK, 1 - outCubic(lt / SHUT)); flashAt = start; }
+      if (!last && lt > sc.d - SHUT) irisK = Math.max(irisK, Math.pow((lt - (sc.d - SHUT)) / SHUT, 2));
+    }
+    start += sc.d;
+  });
+  aperture(irisK);
+  if (flashAt >= 0) flash(t, flashAt + SHUT * 0.4, 0.35);
+  if (t > 6.4 && t < DURATION - 5) mono(S.demo, 44, H - 50, { size: 10, color: C.faint });
+  chrome(t);
+}
+
+/* ------------------------------------------------------------ player */
+const $ = id => document.getElementById(id);
+let playing = false, t0 = 0, tNow = clamp(parseFloat(params.get("t")) || 0, 0, DURATION), raf = 0;
+const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+function applyLang() {
+  S = STR[lang];
+  document.documentElement.lang = lang;
+  document.title = S.title;
+  $("title").textContent = S.title;
+  $("back").textContent = S.back;
+  $("full").textContent = S.full;
+  $("play").textContent = playing ? S.pause : S.play;
+  $("note").innerHTML = S.note;
+  $("lang").value = lang;
+}
+function show(t) {
+  tNow = t; render(t);
+  $("seek").value = Math.round((t / DURATION) * 1000);
+  $("time").textContent = `${fmt(t)} / ${fmt(DURATION)}`;
+}
+function tick(now) {
+  if (!playing) return;
+  const t = (now - t0) / 1000;
+  if (t >= DURATION) { playing = false; show(DURATION); $("play").textContent = S.play; return; }
+  show(t);
+  raf = requestAnimationFrame(tick);
+}
+function play() {
+  if (tNow >= DURATION) tNow = 0;
+  playing = true; t0 = performance.now() - tNow * 1000;
+  $("play").textContent = S.pause;
+  raf = requestAnimationFrame(tick);
+}
+function pause() { playing = false; cancelAnimationFrame(raf); $("play").textContent = S.play; }
+function toggle() { playing ? pause() : play(); }
+function seekTo(t) { t = clamp(t, 0, DURATION); if (playing) t0 = performance.now() - t * 1000; show(t); }
+
+$("play").addEventListener("click", toggle);
+canvas.addEventListener("click", toggle);
+$("seek").addEventListener("input", e => seekTo((e.target.value / 1000) * DURATION));
+$("lang").addEventListener("change", e => {
+  lang = e.target.value; applyLang(); show(tNow);
+  const u = new URL(location.href); u.searchParams.set("lang", lang); history.replaceState(null, "", u);
+});
+$("full").addEventListener("click", () => {
+  const el = document.querySelector(".stage");
+  document.fullscreenElement ? document.exitFullscreen() : el.requestFullscreen?.();
+});
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.code === "Space") { e.preventDefault(); toggle(); }
+  if (e.code === "ArrowRight") seekTo(tNow + 5);
+  if (e.code === "ArrowLeft") seekTo(tNow - 5);
+});
+
+/* Frame-by-frame capture API. */
+window.DURATION = DURATION;
+window.renderFrame = t => render(t);
+window.videoReady = Promise.all([
+  "800 20px Archivo", "700 20px Archivo", "400 20px Archivo", '500 20px "Martian Mono"', '600 20px "Martian Mono"',
+].map(f => document.fonts.load(f))).then(() => document.fonts.ready).then(() => imagesReady).then(() => {
+  applyLang(); show(tNow);
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (params.get("autoplay") === "1" && !reduce) play();
+  return true;
+});
+applyLang(); show(tNow);
+</script>
+</body>
+</html>

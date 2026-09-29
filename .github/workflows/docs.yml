@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'docs/**'
+      - 'website/**'
+      - 'scripts/build-site.sh'
       - 'mkdocs.yml'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
@@ -57,8 +59,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-docs.txt
 
-      - name: Build documentation
-        run: mkdocs build --strict --clean
+      - name: Build site (landing + film at the root, docs under /docs/)
+        run: bash scripts/build-site.sh
 
       - name: Setup Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0

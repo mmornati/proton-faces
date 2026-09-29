@@ -69,7 +69,7 @@ scripts/export-session.sh    # writes credentials/auth-session.json
 
 > The file contains your account tokens — treat it like a password. It is mounted **only** into
 > the `proton-bridge` container, and `.gitignore` already excludes `credentials/`. See the
-> [session-export guide](https://mmornati.github.io/proton-faces/getting-started/session-export/)
+> [session-export guide](https://mmornati.github.io/proton-faces/docs/getting-started/session-export/)
 > for GPG-encrypting it at rest.
 
 ### 2. Configure
@@ -116,7 +116,7 @@ No Proton account, no session file, no setup. Sign in at http://localhost:8080 w
 The app loads a fixture of 82 CC0 photos (32 face portraits + 50 picsum scenes) — every feature
 of the real app works against it, including face clustering, places, search-by-example, and the
 admin area. Override the password with `DEMO_ADMIN_PASSWORD=...`. See the
-[demo-mode guide](https://mmornati.github.io/proton-faces/getting-started/demo-mode/) for details.
+[demo-mode guide](https://mmornati.github.io/proton-faces/docs/getting-started/demo-mode/) for details.
 
 ---
 
@@ -138,24 +138,24 @@ admin area. Override the password with `DEMO_ADMIN_PASSWORD=...`. See the
   12, refresh tokens rotate, login is rate-limited, and every container drops Linux
   capabilities.
 
-See the [architecture](https://mmornati.github.io/proton-faces/reference/architecture/) and
-[security & privacy](https://mmornati.github.io/proton-faces/reference/security-privacy/) docs
+See the [architecture](https://mmornati.github.io/proton-faces/docs/reference/architecture/) and
+[security & privacy](https://mmornati.github.io/proton-faces/docs/reference/security-privacy/) docs
 for the deep dive.
 
 ---
 
 ## 📚 Documentation
 
-The full user guide is published at **[mmornati.github.io/proton-faces](https://mmornati.github.io/proton-faces/)** — search, people, places, admin area, REST API, architecture, every env var.
+The full user guide is published at **[mmornati.github.io/proton-faces/docs](https://mmornati.github.io/proton-faces/docs/)** — search, people, places, admin area, REST API, architecture, every env var.
 
 Highlights:
 
-- [Quickstart](https://mmornati.github.io/proton-faces/getting-started/quickstart/) — install to your first real search in ~10 minutes
-- [Demo mode](https://mmornati.github.io/proton-faces/getting-started/demo-mode/) — run the full app **with zero Proton credentials**
-- [People & face tagging](https://mmornati.github.io/proton-faces/user-guide/face-tagging/) — name one face, auto-tag every look-alike
-- [REST API](https://mmornati.github.io/proton-faces/reference/api/) — every endpoint
-- [Configuration](https://mmornati.github.io/proton-faces/reference/configuration/) — every environment variable
-- [Security & privacy](https://mmornati.github.io/proton-faces/reference/security-privacy/) — what's on disk, what's not, how auth works
+- [Quickstart](https://mmornati.github.io/proton-faces/docs/getting-started/quickstart/) — install to your first real search in ~10 minutes
+- [Demo mode](https://mmornati.github.io/proton-faces/docs/getting-started/demo-mode/) — run the full app **with zero Proton credentials**
+- [People & face tagging](https://mmornati.github.io/proton-faces/docs/user-guide/face-tagging/) — name one face, auto-tag every look-alike
+- [REST API](https://mmornati.github.io/proton-faces/docs/reference/api/) — every endpoint
+- [Configuration](https://mmornati.github.io/proton-faces/docs/reference/configuration/) — every environment variable
+- [Security & privacy](https://mmornati.github.io/proton-faces/docs/reference/security-privacy/) — what's on disk, what's not, how auth works
 
 The docs are rebuilt and published on every push to `main` by the [docs workflow](.github/workflows/docs.yml). To preview locally:
 

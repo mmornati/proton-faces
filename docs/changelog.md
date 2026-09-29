@@ -22,6 +22,7 @@ Releases are cut by pushing a `v*` tag (or running the **Release** workflow with
 
 ### Changed
 
+- **New public site.** GitHub Pages now serves a hand-built product page at the root (`website/`), an 80-second canvas film at [`/video/`](https://mmornati.github.io/proton-faces/video/) (English and French, no video file), and this documentation under [`/docs/`](https://mmornati.github.io/proton-faces/docs/) with a matching "viewfinder" skin. Old documentation URLs redirect to `/docs/`. Build locally with `scripts/build-site.sh`.
 - `compose.yml` now includes the demo profile services.
 - Demo profile services (`indexer-demo`, `app-demo`) now carry the same container hardening as prod (`cap_drop: ALL`, `no-new-privileges`, `mem_limit`, `pids_limit`, CPU caps) — demo is the profile most likely to be exposed publicly (issue #110).
 - `.env.example` documents `DEMO_MODE` and `DEMO_ADMIN_PASSWORD`.

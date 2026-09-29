@@ -5,52 +5,52 @@ The web UI is a single-page vanilla-JS application. There are nine top-level vie
 <div class="pf-cards" markdown>
 
 <div class="pf-card" markdown>
-### 📷 [Photos](photos.md)
+### [Photos](photos.md)
 The main infinite-scroll grid with date rail, "On this day", and the full-res detail panel.
 </div>
 
 <div class="pf-card" markdown>
-### 🔍 [Search](search.md)
+### [Search](search.md)
 Zero-shot CLIP text search and "find photos of a person from a photo" face search.
 </div>
 
 <div class="pf-card" markdown>
-### 👥 [People](people.md)
+### [People](people.md)
 Auto-clustered persons, naming, merging, the per-person map, and the people duplicates finder.
 </div>
 
 <div class="pf-card" markdown>
-### 🏷️ [Face tagging](face-tagging.md)
+### [Face tagging](face-tagging.md)
 Clickable face boxes, naming one face auto-tags look-alikes, the unassigned queue.
 </div>
 
 <div class="pf-card" markdown>
-### 🗺️ [Places](places.md)
+### [Places](places.md)
 Leaflet world map with clustered city markers and a city list.
 </div>
 
 <div class="pf-card" markdown>
-### 🖼️ [Albums & tags](albums-tags.md)
+### [Albums & tags](albums-tags.md)
 Proton albums (read-only) and your free-form lowercase tags.
 </div>
 
 <div class="pf-card" markdown>
-### ⭐ [Favorites & archive](favorites-archive.md)
+### [Favorites & archive](favorites-archive.md)
 Star, archive, hide, content-hash duplicates.
 </div>
 
 <div class="pf-card" markdown>
-### 📱 [Mobile & PWA](mobile.md)
+### [Mobile & PWA](mobile.md)
 Install on iOS/Android/desktop, offline app shell, the phone-first layout.
 </div>
 
 <div class="pf-card" markdown>
-### ⚙️ [Admin area](admin.md)
+### [Admin area](admin.md)
 Gear-icon modal: server info, health checks, backups, schedule, users.
 </div>
 
 <div class="pf-card" markdown>
-### 🔎 [Status & diagnostics](status.md)
+### [Status & diagnostics](status.md)
 Bottom status bar + `?` overlay — every view shows live indexer state.
 </div>
 
