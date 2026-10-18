@@ -37,6 +37,12 @@ The install flow is the standard one for each platform. You only need to do it o
 - **Dark & light themes** — the app follows your system `prefers-color-scheme`; the installed PWA's splash screen and status bar match (`#101114` dark, `#f4f5f7` light).
 - **Safe-area aware** — the bottom navigation respects the iPhone home indicator and Android gesture bar via `env(safe-area-inset-bottom)`.
 
+## Browsing photos like an album
+
+- **Swipe** left or right on a photo to move to the next or previous one; the photo follows your finger and the neighbours are preloaded, so the change is instant.
+- **Play** starts a hands-free slideshow from the current photo (or from the top of the grid, using the ▶ button next to the search bar). It crossfades with a slow zoom, shows the place and date, keeps the screen awake, and loops. Tap to reveal controls (pause, previous/next, 3 s / 5 s / 8 s per photo), swipe to skip, swipe down or tap ✕ to exit. On desktop: `P` plays, Space pauses, ← → skip, Esc exits.
+- Face names are off by default; toggle them with **Names** on the photo.
+
 ## The mobile layout
 
 Below 940px the app switches to a phone-first shell:

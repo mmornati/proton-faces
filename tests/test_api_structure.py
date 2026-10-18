@@ -192,4 +192,28 @@ def test_spa_grid_listeners_are_delegated():
 def test_service_worker_never_caches_failed_shell():
     _, sw = _spa_sources()
     assert 'if (resp.ok && resp.type === "basic")' in sw
-    assert 'const VERSION = "pf-shell-v4"' in sw
+    assert 'const VERSION = "pf-shell-v5"' in sw
+
+
+def test_spa_face_layer_is_off_by_default_and_persisted():
+    """Face boxes are opt-in (issue #197): never drawn unless the user toggled
+    them on, and the choice is remembered per device."""
+    html, _ = _spa_sources()
+    assert 'let _faceLayerOn = false;' in html
+    assert 'localStorage.getItem(FACE_LAYER_KEY) === "1"' in html
+    assert 'if (_faceLayerOn) loadFaceBoxes(uid);' in html
+    assert 'img.onload = () => loadFaceBoxes(uid);' not in html
+
+
+def test_spa_viewer_has_slideshow_and_swipe():
+    html, _ = _spa_sources()
+    needles = ('id="dplay"', 'id="btn-play"', 'id="show"', "function startSlideshow(", '_wireDetailSwipe($("#dslide"))')
+    for needle in needles:
+        assert needle in html, needle
+
+
+def test_spa_mobile_detail_image_is_contained_not_cropped():
+    """`object-fit: cover` crops the photo and misaligns the percentage-based face boxes."""
+    static = __import__("pathlib").Path(__file__).resolve().parent.parent / "app" / "src" / "static"
+    css = (static / "css" / "design-system.css").read_text()
+    assert "#detailimgwrap img { width: 100%; max-height: 52vh; object-fit: cover; }" not in css

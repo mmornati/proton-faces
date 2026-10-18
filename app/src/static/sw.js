@@ -6,7 +6,7 @@
  *    goes straight to the network, untouched, so per-user data and signed
  *    URLs are never intercepted or replayed.
  */
-const VERSION = "pf-shell-v4";
+const VERSION = "pf-shell-v5";
 const SHELL_ASSETS = [
   "./",
   "./manifest.json",

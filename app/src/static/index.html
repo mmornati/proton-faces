@@ -100,6 +100,10 @@
     <input id="q" placeholder="Search: &quot;dog&quot;, &quot;car&quot;, &quot;Lille&quot;, &quot;beach&quot;...">
     <button id="btn-search">Search</button>
     <button id="btn-face" class="secondary" title="Find photos of a person from a photo on your computer">Search by example</button>
+    <button id="btn-play" class="secondary iconbtn" type="button" title="Play these photos as a slideshow" aria-label="Play slideshow" hidden>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>
+      <span class="lbl">Play</span>
+    </button>
     <button id="btn-admin" class="secondary" title="Admin" style="display:none">⚙</button>
     <button id="btn-theme" class="secondary iconbtn" type="button" title="Toggle light / dark theme" aria-label="Toggle light / dark theme">
       <svg class="i-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
@@ -124,9 +128,21 @@
     <button id="dfull" class="secondary">View full resolution</button>
   </div>
   <div id="detailbody">
-    <div id="detailimgwrap"><img id="dimg" alt=""><video id="dvideo" controls preload="metadata" playsinline style="display:none"></video>
-      <button class="dnav prev" id="dprev" title="Previous (←)">‹</button>
-      <button class="dnav next" id="dnext" title="Next (→)">›</button>
+    <div id="detailimgwrap">
+      <div id="dslide"><img id="dimg" alt=""><div id="facelayer"></div></div>
+      <video id="dvideo" controls preload="metadata" playsinline style="display:none"></video>
+      <button class="dnav prev" id="dprev" title="Previous (←)" aria-label="Previous photo">‹</button>
+      <button class="dnav next" id="dnext" title="Next (→)" aria-label="Next photo">›</button>
+      <div id="stagebar">
+        <button type="button" class="stagebtn" id="dfaces" aria-pressed="false" title="Show who is in this photo (N)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8V6a2 2 0 0 1 2-2h2M21 8V6a2 2 0 0 0-2-2h-2M3 16v2a2 2 0 0 0 2 2h2M21 16v2a2 2 0 0 1-2 2h-2"/><circle cx="12" cy="11" r="3"/><path d="M6.5 18c.8-2 2.8-3 5.5-3s4.7 1 5.5 3" /></svg>
+          <span class="lbl">Names</span><span class="cnt" id="dfacecnt"></span>
+        </button>
+        <button type="button" class="stagebtn" id="dplay" title="Play slideshow from here (P)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>
+          <span class="lbl">Play</span>
+        </button>
+      </div>
     </div>
     <div id="metapanel"></div>
   </div>
@@ -137,6 +153,32 @@
   <button class="dnav next" id="lbnext" title="Next (→)">›</button>
   <img id="lbimg" alt="">
   <video id="lbvideo" controls preload="metadata" playsinline style="display:none"></video>
+</div>
+<div id="show" role="dialog" aria-modal="true" aria-label="Slideshow" hidden>
+  <div id="showstage"><img class="showlayer" id="showA" alt=""><img class="showlayer" id="showB" alt=""></div>
+  <div id="showcap" aria-live="polite"><div class="cap-main" id="showcapmain"></div><div class="cap-sub" id="showcapsub"></div></div>
+  <div id="showctrl">
+    <div class="showtop">
+      <button type="button" class="showbtn" id="showclose" aria-label="Exit slideshow" title="Exit (Esc)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+      <span id="showpos"></span>
+      <button type="button" class="showchip" id="showspeed" title="Time per photo">5s</button>
+    </div>
+    <div class="showmid">
+      <button type="button" class="showbtn" id="showprev" aria-label="Previous photo" title="Previous (←)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <button type="button" class="showbtn big" id="showtoggle" aria-label="Pause" title="Pause (Space)">
+        <svg class="i-pause" width="26" height="26" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+        <svg class="i-play" width="26" height="26" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>
+      </button>
+      <button type="button" class="showbtn" id="shownext" aria-label="Next photo" title="Next (→)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+      </button>
+    </div>
+  </div>
+  <div id="showprogress"><i id="showbar"></i></div>
 </div>
 <div id="popover"></div>
 <div id="loader"><div class="spinner"></div><div class="lmsg" id="lmsg"></div></div>
@@ -759,6 +801,52 @@ function _updateNav() {
   }
 }
 
+// ----- Face-name layer (off by default, remembered per device) -----
+const FACE_LAYER_KEY = "pf.faceLayer";
+let _faceLayerOn = false;
+try { _faceLayerOn = localStorage.getItem(FACE_LAYER_KEY) === "1"; } catch (e) {}
+let _detailTok = 0;       // guards against slow responses landing after a newer navigation
+let _detailFaceCount = null;
+let _navEnter = 0;        // direction the incoming photo should slide in from (-1 / 1 / 0)
+
+function _paintFaceToggle() {
+  const btn = $("#dfaces");
+  btn.setAttribute("aria-pressed", _faceLayerOn ? "true" : "false");
+  btn.title = _faceLayerOn ? "Hide names (N)" : "Show who is in this photo (N)";
+  $("#detailimgwrap").classList.toggle("faces-on", _faceLayerOn);
+}
+
+function setFaceLayer(on) {
+  _faceLayerOn = !!on;
+  try { localStorage.setItem(FACE_LAYER_KEY, _faceLayerOn ? "1" : "0"); } catch (e) {}
+  _paintFaceToggle();
+  const uid = $("#dimg").dataset.uid;
+  if (_faceLayerOn) { if (uid) loadFaceBoxes(uid); }
+  else { closePopover(); $("#facelayer").replaceChildren(); }
+}
+
+// ----- Neighbour prefetch: meta + thumbnail for the photos either side of the
+// current one, so a swipe lands on an already-decoded image. -----
+const _metaCache = new Map();
+function _prefetchNeighbors() {
+  const want = new Set();
+  for (const d of [1, -1, 2]) {
+    const u = _navUids[_navIdx + d];
+    if (u) want.add(u);
+  }
+  for (const k of _metaCache.keys()) if (!want.has(k)) _metaCache.delete(k);
+  for (const u of want) {
+    if (_metaCache.has(u)) continue;
+    const row = (state.photos || []).find((x) => x.uid === u);
+    if (row && row.kind === "video") continue;
+    const pr = api(`/api/photos/${u}/meta`).then((m) => {
+      if (m && m.thumb_url && m.kind !== "video") { const im = new Image(); im.src = m.thumb_url; }
+      return m;
+    }).catch(() => null);
+    _metaCache.set(u, pr);
+  }
+}
+
 function _goNav(dir) {
   if (_navUids.length < 2 || _navIdx < 0) return;
   const next = _navIdx + dir;
@@ -766,19 +854,44 @@ function _goNav(dir) {
   _navIdx = next;
   const uid = _navUids[next];
   if ($("#lightbox").classList.contains("open")) openLightbox(uid);
-  else openDetail(uid);
+  else { _navEnter = dir; openDetail(uid); }
+}
+
+// Slide the incoming photo in from the side it came from.
+function _playEnter(dir) {
+  const sl = $("#dslide");
+  if (!dir || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    sl.style.transition = ""; sl.style.transform = ""; sl.style.opacity = "";
+    return;
+  }
+  sl.style.transition = "none";
+  sl.style.transform = `translate3d(${dir * 28}%,0,0)`;
+  sl.style.opacity = "0";
+  void sl.offsetWidth;
+  sl.style.transition = "transform .32s cubic-bezier(.22,1,.36,1), opacity .24s ease-out";
+  sl.style.transform = "";
+  sl.style.opacity = "1";
 }
 
 async function openDetail(uid) {
+  const tok = ++_detailTok;
+  const enter = _navEnter; _navEnter = 0;
   _setNavFromPhotos(uid);
   _updateNav();
   $("#detail").classList.add("open");
   $("#dname").textContent = "Loading…";
+  closePopover();
+  $("#facelayer").replaceChildren();
+  _paintFaceToggle();
   $("#dfull").onclick = () => openLightbox(uid, meta?.kind, meta);
+  $("#dplay").onclick = () => startSlideshow(uid);
   let meta;
   try {
-    meta = await api(`/api/photos/${uid}/meta`);
+    const cached = _metaCache.get(uid);
+    _metaCache.delete(uid);
+    meta = (cached && await cached) || await api(`/api/photos/${uid}/meta`);
   } catch (e) { meta = null; }
+  if (tok !== _detailTok) return;
   // Prefer the human-friendly Proton name (usually a short filename) over the
   // long base64 UID; fall back to a truncated UID so the bar never overflows.
   const label = (meta?.name || uid).trim();
@@ -802,17 +915,24 @@ async function openDetail(uid) {
     } catch (err) { toast("Archive failed: " + err.message); }
   };
 
+  const wrap = $("#detailimgwrap");
   const img = $("#dimg");
   const vid = $("#dvideo");
+  const isVideo = meta?.kind === "video";
+  wrap.classList.toggle("isvideo", isVideo);
+  _detailFaceCount = meta?.face_count ?? null;
+  const fc = $("#dfaces");
+  fc.hidden = _detailFaceCount === 0;
+  $("#dfacecnt").textContent = _detailFaceCount ? String(_detailFaceCount) : "";
   img.onerror = null;
   vid.onerror = null;
   img.onload = null;
   vid.onloadeddata = null;
-  img.style.display = "none";
-  vid.style.display = "none";
   vid.pause();
   vid.removeAttribute("src");
-  if (meta?.kind === "video") {
+  if (isVideo) {
+    img.style.display = "none";
+    vid.style.display = "none";
     const fail = () => { hideLoader(); toast("Couldn't load full resolution"); };
     vid.onerror = fail;
     vid.onloadeddata = () => hideLoader();
@@ -820,24 +940,35 @@ async function openDetail(uid) {
     const fullPath = `/api/photos/${uid}/full`;
     let src = meta.full_url;
     if (!src) { const signed = await _signPaths([fullPath]); src = signed[fullPath] || fullPath; }
+    if (tok !== _detailTok) return;
     vid.src = src;
     vid.style.display = "block";
+    _playEnter(0);
   } else {
-    img.onerror = () => toast("Couldn't load image");
+    vid.style.display = "none";
     const thumbPath = `/api/photos/${uid}/thumb`;
     // Signed URLs ride along in /meta (one round-trip fewer before the
     // image can start downloading); /api/sign is only the fallback.
     let src = meta?.thumb_url;
     if (!src) { const signed = await _signPaths([thumbPath]); src = signed[thumbPath] || thumbPath; }
-    img.src = src;
+    if (tok !== _detailTok) return;
+    // Decode off-screen first: the previous photo stays up (or slides away)
+    // until the next one can be painted in a single frame, no blank flash.
+    const pre = new Image();
+    pre.src = src;
+    try { await pre.decode(); } catch (e) {
+      if (tok !== _detailTok) return;
+      toast("Couldn't load image");
+    }
+    if (tok !== _detailTok) return;
     img.dataset.uid = uid;
+    img.src = src;
     img.style.display = "block";
-    img.onload = () => loadFaceBoxes(uid);
+    _playEnter(enter);
+    if (_faceLayerOn) loadFaceBoxes(uid);
   }
-  // clear old boxes
-  const wrap = $("#detailimgwrap");
-  wrap.querySelectorAll(".facebox").forEach((b) => b.remove());
   loadPhotoMeta(uid, meta);
+  _prefetchNeighbors();
 }
 
 async function loadPhotoMeta(uid, prefetched) {
@@ -931,24 +1062,24 @@ function fmtDateTime(ts) {
 }
 
 async function loadFaceBoxes(uid) {
-  const wrap = $("#detailimgwrap");
-  wrap.querySelectorAll(".facebox").forEach((b) => b.remove());
+  const layer = $("#facelayer");
   let faces = [];
   try {
     const data = await api(`/api/photos/${uid}/faces`);
     faces = data.faces || [];
   } catch (e) { return; }
-  const img = $("#dimg");
-  const iw = img.naturalWidth, ih = img.naturalHeight;
-  if (!iw || !ih) return;
-  for (const f of faces) {
+  // The photo or the toggle may have changed while the request was in flight.
+  if (!_faceLayerOn || $("#dimg").dataset.uid !== uid) return;
+  const frag = document.createDocumentFragment();
+  faces.forEach((f, i) => {
     const [x, y, w, h] = f.bbox;
     const box = document.createElement("div");
-    box.className = "facebox" + (f.person_id == null ? " unassigned" : "");
+    box.className = "facebox" + (f.person_id == null ? " unassigned" : "") + (y < 0.1 ? " below" : "");
     box.style.left = (x * 100) + "%";
     box.style.top = (y * 100) + "%";
     box.style.width = (w * 100) + "%";
     box.style.height = (h * 100) + "%";
+    box.style.setProperty("--i", i);
     const tag = document.createElement("div");
     tag.className = "tag";
     tag.textContent = f.person_name || "?";
@@ -957,8 +1088,9 @@ async function loadFaceBoxes(uid) {
       e.stopPropagation();
       openFacePopover(f, e.clientX, e.clientY);
     });
-    wrap.appendChild(box);
-  }
+    frag.appendChild(box);
+  });
+  layer.replaceChildren(frag);
 }
 
 async function openFacePopover(face, x, y) {
@@ -3394,6 +3526,11 @@ document.addEventListener("keydown", (e) => {
     if ($("#statusmodal").classList.contains("open")) closeStatusModal();
     else if ($("#adminmodal").classList.contains("open")) closeAdminModal();
     else if ($("#facemodal").classList.contains("open")) closeFaceModal();
+  } else if ((e.key === "n" || e.key === "N" || e.key === "p" || e.key === "P") && !e.ctrlKey && !e.metaKey && !e.altKey
+             && $("#detail").classList.contains("open") && !$("#lightbox").classList.contains("open")) {
+    e.preventDefault();
+    if (e.key === "n" || e.key === "N") { if (!$("#dfaces").hidden) setFaceLayer(!_faceLayerOn); }
+    else if ($("#dimg").dataset.uid) startSlideshow($("#dimg").dataset.uid);
   } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
     const detailOpen = $("#detail").classList.contains("open");
     const lbOpen = $("#lightbox").classList.contains("open");
@@ -3475,8 +3612,237 @@ function _wireSwipe(el) {
     _goNav(dx < 0 ? 1 : -1);
   }, { passive: true });
 }
-_wireSwipe($("#detailimgwrap"));
 _wireSwipe($("#lightbox"));
+
+// Detail swipe: the photo follows the finger, then slides away and the next one
+// slides in (see _playEnter). Vertical gestures are left to the page scroll.
+function _wireDetailSwipe(el) {
+  let sx = 0, sy = 0, t0 = 0, dx = 0, axis = null, on = false;
+  const hasNeighbor = (dir) => _navIdx + dir >= 0 && _navIdx + dir < _navUids.length;
+  el.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1 || _navUids.length < 2) { on = false; return; }
+    const t = e.touches[0];
+    sx = t.clientX; sy = t.clientY; t0 = e.timeStamp; dx = 0; axis = null; on = true;
+    el.style.transition = "none";
+  }, { passive: true });
+  el.addEventListener("touchmove", (e) => {
+    if (!on) return;
+    const t = e.touches[0];
+    dx = t.clientX - sx;
+    const dy = t.clientY - sy;
+    if (!axis) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 8) return;
+      axis = Math.abs(dx) > Math.abs(dy) * 1.2 ? "x" : "y";
+    }
+    if (axis !== "x") return;
+    const dir = dx < 0 ? 1 : -1;
+    const off = hasNeighbor(dir) ? dx : dx * 0.22;
+    el.style.transform = `translate3d(${off}px,0,0)`;
+    el.style.opacity = String(1 - Math.min(0.5, Math.abs(off) / (el.offsetWidth * 1.4)));
+  }, { passive: true });
+  const finish = (e, cancelled) => {
+    if (!on) return;
+    on = false;
+    if (axis !== "x") { el.style.transition = ""; return; }
+    const dir = dx < 0 ? 1 : -1;
+    const v = Math.abs(dx) / Math.max(1, e.timeStamp - t0);
+    const commit = !cancelled && hasNeighbor(dir) && (Math.abs(dx) > el.offsetWidth * 0.2 || v > 0.45);
+    if (commit) {
+      el.style.transition = "transform .16s cubic-bezier(.4,0,1,1), opacity .16s ease-in";
+      el.style.transform = `translate3d(${-dir * 40}%,0,0)`;
+      el.style.opacity = "0";
+      setTimeout(() => _goNav(dir), 150);
+    } else {
+      el.style.transition = "transform .28s cubic-bezier(.22,1,.36,1), opacity .2s";
+      el.style.transform = "";
+      el.style.opacity = "1";
+    }
+  };
+  el.addEventListener("touchend", (e) => finish(e, false), { passive: true });
+  el.addEventListener("touchcancel", (e) => finish(e, true), { passive: true });
+}
+_wireDetailSwipe($("#dslide"));
+$("#dfaces").addEventListener("click", () => setFaceLayer(!_faceLayerOn));
+_paintFaceToggle();
+
+// ----- Slideshow ("play") -----
+// A full-screen, hands-free album player: crossfade + slow Ken Burns, a hairline
+// progress bar, caption with place/date, tap to reveal controls, swipe to skip.
+const SHOW_SPEEDS = [3000, 5000, 8000];
+const SHOW_ORIGINS = ["30% 40%", "70% 35%", "50% 60%", "35% 65%", "65% 55%"];
+const SHOW_SPEED_KEY = "pf.show.ms";
+let _show = null;
+let _wakeLock = null;
+
+async function _holdAwake() {
+  try { if (navigator.wakeLock) _wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+}
+function _releaseAwake() {
+  try { if (_wakeLock) _wakeLock.release(); } catch (e) {}
+  _wakeLock = null;
+}
+
+function _showCtrl(visible) {
+  const el = $("#show");
+  clearTimeout(_show && _show.ctrlTimer);
+  el.classList.toggle("ctrl", visible);
+  if (visible && _show && _show.playing) _show.ctrlTimer = setTimeout(() => el.classList.remove("ctrl"), 2800);
+}
+
+function _showPaint() {
+  const el = $("#show");
+  el.classList.toggle("paused", !_show.playing);
+  const tg = $("#showtoggle");
+  tg.setAttribute("aria-label", _show.playing ? "Pause" : "Play");
+  tg.title = _show.playing ? "Pause (Space)" : "Play (Space)";
+  $("#showspeed").textContent = `${_show.ms / 1000}s`;
+}
+
+function _showRestartBar() {
+  const bar = $("#showbar");
+  bar.style.animation = "none";
+  void bar.offsetWidth;
+  bar.style.animation = `showprog ${_show.ms}ms linear forwards`;
+}
+
+async function _showGo(i) {
+  const s = _show;
+  if (!s) return;
+  const n = s.items.length;
+  i = ((i % n) + n) % n;
+  const tok = ++s.tok;
+  const it = s.items[i];
+  const pre = new Image();
+  pre.src = it.thumb_url;
+  try { await pre.decode(); } catch (e) {
+    if (tok !== s.tok) return;
+    if (++s.failed >= n) { toast("Couldn't load these photos"); stopSlideshow(); return; }
+    return _showGo(i + (s.dir || 1));
+  }
+  if (tok !== s.tok) return;
+  s.failed = 0;
+  s.i = i;
+  const old = s.front;
+  const next = old === $("#showA") ? $("#showB") : $("#showA");
+  next.classList.remove("on", "kb");
+  next.src = it.thumb_url;
+  next.style.transformOrigin = SHOW_ORIGINS[Math.floor(Math.random() * SHOW_ORIGINS.length)];
+  next.style.setProperty("--kb", `${s.ms + 2400}ms`);
+  void next.offsetWidth;
+  next.classList.add("on", "kb");
+  old.classList.remove("on");
+  s.front = next;
+  $("#showpos").textContent = `${i + 1} / ${n}`;
+  const place = it.place ? String(it.place) : "";
+  const date = it.capture_time ? fmtDate(it.capture_time) : "";
+  $("#showcapmain").textContent = place || date;
+  $("#showcapsub").textContent = place ? date : "";
+  const cap = $("#showcap");
+  cap.classList.remove("in");
+  void cap.offsetWidth;
+  cap.classList.add("in");
+  _showRestartBar();
+  const ahead = new Image();
+  ahead.src = s.items[(i + 1) % n].thumb_url;
+}
+
+function startSlideshow(fromUid) {
+  const items = (state.photos || []).filter((p) => p.kind !== "video" && p.thumb_url);
+  if (!items.length) { toast("No photos to play"); return; }
+  let i = fromUid ? items.findIndex((p) => p.uid === fromUid) : 0;
+  if (i < 0) i = 0;
+  let ms = 5000;
+  try { ms = +localStorage.getItem(SHOW_SPEED_KEY) || 5000; } catch (e) {}
+  if (!SHOW_SPEEDS.includes(ms)) ms = 5000;
+  _show = { items, i, ms, playing: true, tok: 0, failed: 0, dir: 1, front: $("#showB"), ctrlTimer: 0 };
+  const el = $("#show");
+  $("#showA").classList.remove("on", "kb");
+  $("#showB").classList.remove("on", "kb");
+  el.hidden = false;
+  requestAnimationFrame(() => el.classList.add("open"));
+  _showPaint();
+  _showCtrl(true);
+  _holdAwake();
+  _showGo(i);
+}
+
+function stopSlideshow() {
+  const s = _show;
+  if (!s) return;
+  _show = null;
+  s.tok++;
+  clearTimeout(s.ctrlTimer);
+  const el = $("#show");
+  el.classList.remove("open", "ctrl", "paused");
+  el.hidden = true;
+  $("#showbar").style.animation = "none";
+  _releaseAwake();
+  // Leave the photo sheet on whatever was showing last, so "stop" lands in context.
+  const last = s.items[s.i];
+  if ($("#detail").classList.contains("open") && last && last.uid !== $("#dimg").dataset.uid) openDetail(last.uid);
+}
+
+function _showStep(dir, auto) {
+  if (!_show) return;
+  _show.dir = dir;
+  _showGo(_show.i + dir);
+  if (!auto) _showCtrl(true);
+}
+
+function _showToggle() {
+  if (!_show) return;
+  _show.playing = !_show.playing;
+  _showPaint();
+  _showCtrl(true);
+}
+
+$("#btn-play").addEventListener("click", () => startSlideshow(null));
+$("#showclose").addEventListener("click", stopSlideshow);
+$("#showprev").addEventListener("click", () => _showStep(-1));
+$("#shownext").addEventListener("click", () => _showStep(1));
+$("#showtoggle").addEventListener("click", _showToggle);
+$("#showspeed").addEventListener("click", () => {
+  if (!_show) return;
+  _show.ms = SHOW_SPEEDS[(SHOW_SPEEDS.indexOf(_show.ms) + 1) % SHOW_SPEEDS.length];
+  try { localStorage.setItem(SHOW_SPEED_KEY, String(_show.ms)); } catch (e) {}
+  _showPaint();
+  _showRestartBar();
+  _showCtrl(true);
+});
+$("#showbar").addEventListener("animationend", (e) => {
+  if (e.animationName === "showprog" && _show && _show.playing) _showStep(1, true);
+});
+$("#show").addEventListener("click", (e) => {
+  if (!_show || e.target.closest("button")) return;
+  _showCtrl(!$("#show").classList.contains("ctrl"));
+});
+(function () {
+  const el = $("#show");
+  let sx = 0, sy = 0;
+  el.addEventListener("touchstart", (e) => { sx = e.changedTouches[0].clientX; sy = e.changedTouches[0].clientY; }, { passive: true });
+  el.addEventListener("touchend", (e) => {
+    if (!_show) return;
+    const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+    if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.3) _showStep(dx < 0 ? 1 : -1);
+    else if (dy > 90 && Math.abs(dy) > Math.abs(dx) * 1.5) stopSlideshow();
+  }, { passive: true });
+})();
+document.addEventListener("keydown", (e) => {
+  if (!_show) return;
+  const k = e.key;
+  if (k === "Escape") stopSlideshow();
+  else if (k === "ArrowRight") _showStep(1);
+  else if (k === "ArrowLeft") _showStep(-1);
+  else if (k === " ") _showToggle();
+  else return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}, true);
+document.addEventListener("visibilitychange", () => {
+  if (!_show) return;
+  if (document.hidden) { if (_show.playing) _showToggle(); }
+  else if (_show.playing) _holdAwake();
+});
 $("#lightbox").addEventListener("click", (e) => { if (e.target.id === "lightbox") $("#lightbox").classList.remove("open"); });
 $("#mpclose").addEventListener("click", closeMergePicker);
 $("#cpclose").addEventListener("click", closeCoverPicker);
@@ -3498,6 +3864,8 @@ if ("serviceWorker" in navigator) {
 function setViewTitle() {
   const t = document.getElementById("viewtitle");
   if (!t) return;
+  const playBtn = document.getElementById("btn-play");
+  if (playBtn) playBtn.hidden = state.view !== "photos";
   const src = state.photoSource || {};
   if (src.type === "album" && src.name) { t.textContent = src.name; return; }
   const a = document.querySelector('nav a[data-view="' + state.view + '"]');
