@@ -5,7 +5,7 @@
 # requirements-core.txt. All of these are imported lazily at runtime
 # (faces._load, clip._load).
 
-pillow-heif>=1.0,<1.8
+pillow-heif>=1.8.0,<1.9
 onnxruntime>=1.30.0,<1.31
 insightface>=2.0,<3
 tokenizers>=0.23.2,<0.24
