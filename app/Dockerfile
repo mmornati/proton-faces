@@ -6,7 +6,7 @@
 # Python 3.12 + numpy>=1.26: insightface >=2.0 ships a py3-none wheel with
 # no cp312 blocker and no reliance on numpy aliases removed in 1.24+.
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # System deps: onnxruntime wheels need libgomp1; build-essential is required to
 # compile reverse_geocoder's Cython extension (insightface's own wheel is pure
