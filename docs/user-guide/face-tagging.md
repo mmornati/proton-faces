@@ -4,7 +4,7 @@ Face tagging is the workflow of naming a face inside a photo and letting the sys
 
 ## What you see on a photo
 
-Open any photo that has detected faces. The detail panel highlights each face with a clickable blue box.
+Open any photo that has detected faces. The photo is shown clean by default; tap **Names** (or press `N`) on the photo to draw a clickable box and name label on every face. The choice is remembered per device, so a phone can stay clean while your desktop keeps names on. The button shows how many faces were detected.
 
 ![Photo with face boxes](../assets/screenshots/face-tagging.png){ loading=lazy }
 
