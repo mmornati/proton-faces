@@ -12,7 +12,7 @@
 
 # Base image pinned by digest — oven/bun:1.4 (bun 1.4.2 as of 2026-09-20).
 # Resolve a fresh digest with: docker buildx imagetools inspect oven/bun:1.4
-FROM oven/bun:1.4@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS build
+FROM oven/bun:1.4@sha256:ec06c3b6cea04192ae6770c434f668ca41d343ad19fa6472216c7b48be39c598 AS build
 
 ARG SDK_REPO=https://github.com/ProtonDriveApps/sdk.git
 # SDK pinned to the commit behind the cli/v0.8.0 tag (resolved 2026-09-10).
