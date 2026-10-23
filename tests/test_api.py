@@ -2430,7 +2430,7 @@ class TestCompression:
         """Streaming JSON responses are gzipped chunk-by-chunk."""
         import asyncio
 
-        from compression import CompressionMiddleware
+        from gzip_middleware import CompressionMiddleware
 
         async def app(scope, receive, send):
             await send(
@@ -2463,7 +2463,7 @@ class TestCompression:
         """pathsend responses are forwarded uncompressed."""
         import asyncio
 
-        from compression import CompressionMiddleware
+        from gzip_middleware import CompressionMiddleware
 
         async def app(scope, receive, send):
             await send(
