@@ -33,6 +33,13 @@ name: proton-faces
 # pulls the prebuilt images — there is no local build step. Local development
 # against an edited source tree should use `docker compose build --pull` from
 # a separate checkout that adds `build:` keys, then push to GHCR.
+#
+# Image tags (published only after the test suite passed on that commit):
+#   :latest   the highest stable release (vX.Y.Z) — the default below
+#   :X.Y.Z    one release, never moves; :X.Y follows its newest patch
+#   :edge     the tested head of main — newest fixes, no release notes yet
+#   :sha-<7>  one exact commit
+# Swap :latest for :edge on every image line to track main.
 
 services:
   proton-bridge:

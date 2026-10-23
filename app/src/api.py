@@ -293,9 +293,9 @@ from bridge_client import get_bridge  # noqa: F401  (re-exported for tests)
 # Re-export the ML modules so tests can monkeypatch `api.clip.warm_up` /
 # `api.faces.warm_up` and the route bodies resolve through `api.<name>`.
 from clip import embed_text  # noqa: F401  (re-exported for tests)
-from compression import CompressionMiddleware
 from config import settings
 from faces import embed_query_face  # noqa: F401  (re-exported for tests)
+from gzip_middleware import CompressionMiddleware
 from security_headers import SecurityHeadersMiddleware
 
 # Re-export sidecar symbols that tests monkeypatch via `api.<name>`.

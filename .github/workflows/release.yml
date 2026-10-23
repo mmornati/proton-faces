@@ -1,15 +1,19 @@
 name: Release
 
 # Creates a GitHub Release with auto-generated notes (PR list + full changelog
-# link) whenever a v* tag is pushed. The publish workflow builds the versioned
-# Docker images on the same tag push; this workflow only writes the release.
+# link) for a v* tag, and makes sure the versioned images exist.
 #
 # Two ways to trigger:
-#   1. Push a tag:  git tag v1.2.3 && git push origin v1.2.3
-#   2. Run the "Release" workflow from the Actions tab with a version input —
-#      it creates and pushes the tag for you, then creates the release in the
-#      same run. (A tag pushed with GITHUB_TOKEN does not trigger a new run,
-#      so the release job must run on workflow_dispatch too.)
+#   1. Run the "Release" workflow from the Actions tab on main with a version
+#      input — it tags the current main commit, builds and pushes the images
+#      (publish.yml via workflow_call: a tag pushed with GITHUB_TOKEN triggers
+#      no other workflow), then writes the release.
+#   2. Push a tag:  git tag v1.2.3 && git push origin v1.2.3
+#      publish.yml builds the images on its own tag trigger; this workflow
+#      only writes the release.
+#
+# Either way, the commit must have a successful Test run on main first:
+# a commit whose tests did not pass is never released.
 
 on:
   push:
@@ -22,60 +26,124 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  create-tag:
-    if: github.event_name == 'workflow_dispatch'
+  verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - name: Create and push tag
+      - name: Check the commit passed Test on main
+        id: check
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           # Passed through the environment, never interpolated into the
           # script: a crafted input would otherwise run as shell.
-          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
-          VERSION="${INPUT_VERSION#v}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
+          set -euo pipefail
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            if [ "$REF" != refs/heads/main ]; then
+              echo "::error::Run the Release workflow on main (got $REF)"
+              exit 1
+            fi
+            tag="v${INPUT_VERSION#v}"
+            if gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+              echo "::error::Tag $tag already exists"
+              exit 1
+            fi
+          else
+            tag="$REF_NAME"
+          fi
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$tag' is not a SemVer tag (expected vX.Y.Z or vX.Y.Z-suffix)"
+            exit 1
+          fi
 
-  release:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    needs: create-tag
+          result="$(gh run list --commit "$SHA" --workflow test.yml --event push --branch main \
+            --limit 1 --json status,conclusion --jq '.[0] | "\(.status)/\(.conclusion)"')"
+          if [ "$result" != completed/success ]; then
+            echo "::error::Test on main for ${SHA:0:7} is '${result:-missing}', not completed/success: refusing to release $tag"
+            exit 1
+          fi
+          echo "Test on main passed for ${SHA:0:7}: releasing $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  create-tag:
+    needs: verify
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Create and push tag
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG" "$SHA"
+          git push origin "refs/tags/$TAG"
+
+  publish:
+    needs: [verify, create-tag]
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish.yml
+    with:
+      tag: ${{ needs.verify.outputs.tag }}
+
+  release:
+    needs: [verify, create-tag, publish]
+    # On a tag push create-tag and publish are skipped (publish.yml runs on
+    # its own trigger); on a dispatch the release waits for the images.
+    if: >-
+      always() && needs.verify.result == 'success'
+      && contains(fromJSON('["success","skipped"]'), needs.create-tag.result)
+      && contains(fromJSON('["success","skipped"]'), needs.publish.result)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Create release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_VERSION: ${{ github.event.inputs.version }}
-          EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify.outputs.tag }}
         run: |
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            VERSION="${INPUT_VERSION#v}"
-            TAG="v${VERSION}"
-          else
-            TAG="$REF_NAME"
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — nothing to do."
+            exit 0
           fi
-          gh api -X POST "repos/${{ github.repository }}/releases/generate-notes" \
+          version="${TAG#v}"
+          gh api -X POST "repos/$GH_REPO/releases/generate-notes" \
             -f tag_name="$TAG" -f target_commitish="$TAG" --jq ".body" > /tmp/notes-body.md
           cat >> /tmp/notes-body.md << EOF
 
           ## Images
 
-          Versioned images are published to GHCR by the publish workflow on this tag:
+          - ghcr.io/mmornati/proton-faces-app:$version
+          - ghcr.io/mmornati/proton-faces-bridge:$version
 
-          - ghcr.io/mmornati/proton-faces-app:$TAG
-          - ghcr.io/mmornati/proton-faces-bridge:$TAG
-
-          Pull with \`docker compose pull\` (tracks :latest) or pin compose.yml to $TAG.
+          \`:latest\` follows the highest stable release, \`:edge\` the tested head of main.
+          Pin compose.yml to \`:$version\` for an immutable deploy.
           EOF
-          gh release create "$TAG" --notes-file /tmp/notes-body.md
+          args=(--title "$TAG" --notes-file /tmp/notes-body.md --verify-tag)
+          case "$TAG" in *-*) args+=(--prerelease) ;; esac
+          gh release create "$TAG" "${args[@]}"
