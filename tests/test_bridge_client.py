@@ -1,4 +1,6 @@
+import datetime
 import json
+from email.utils import format_datetime
 
 import httpx
 import pytest
@@ -29,7 +31,12 @@ class TestParseRetryAfter:
         assert bridge_client._parse_retry_after("-5") == 0.0
 
     def test_http_date(self):
-        assert bridge_client._parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT") > 0
+        target = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=120)
+        assert 100 < bridge_client._parse_retry_after(format_datetime(target, usegmt=True)) <= 120
+
+    def test_http_date_in_past(self):
+        target = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=120)
+        assert bridge_client._parse_retry_after(format_datetime(target, usegmt=True)) == 0.0
 
     def test_garbage(self):
         assert bridge_client._parse_retry_after("later") == 0.0
