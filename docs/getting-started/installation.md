@@ -143,20 +143,41 @@ docker compose up -d
 
 The data volume is preserved across updates. The schema migrates automatically on `init_db()`.
 
+### Image tags
+
+Images are published to GHCR only after the full test suite has passed on the commit they are built from.
+
+| Tag | What it points to | Moves when |
+|---|---|---|
+| `:latest` | The highest stable release (`vX.Y.Z`). Default in `compose.yml`. | A new highest release is cut (a patch on an older line does not move it). |
+| `:X.Y.Z` | One release, e.g. `:1.6.0`. | Never. |
+| `:X.Y` | The newest patch of that minor line, e.g. `:1.6`. | A new `X.Y.*` release. |
+| `:edge` | The tested head of `main`: newest fixes, not yet in a release. | Every merge to `main` whose tests pass. |
+| `:sha-<7>` | One exact commit, e.g. `:sha-605b34a`. | Never. |
+
+Pre-releases (`vX.Y.Z-rc.N`) publish `:X.Y.Z-rc.N` and `:sha-<7>` only. Every image carries the OCI labels `org.opencontainers.image.revision` (the built commit), `org.opencontainers.image.version` and `org.opencontainers.image.created`:
+
+```bash
+docker image inspect ghcr.io/mmornati/proton-faces-app:edge \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+```
+
+To track `main` (e.g. a nightly auto-update), replace `:latest` with `:edge` on every `image:` line of `compose.yml`.
+
 ### Pinning images to a version or digest
 
-`compose.yml` references `ghcr.io/mmornati/proton-faces-*:latest` by default, so `docker compose pull` always fetches the newest published image. For a supply-chain-conscious deployment you can pin to an immutable reference instead:
+`docker compose pull` always fetches whatever `:latest` (or `:edge`) currently points to. For a supply-chain-conscious deployment you can pin to an immutable reference instead:
 
-- **Versioned tag** — every `v*` git tag publishes `ghcr.io/mmornati/proton-faces-{bridge,app}:<tag>` (in addition to `:latest`). Pin a release:
+- **Versioned tag** — every `vX.Y.Z` release publishes `ghcr.io/mmornati/proton-faces-{bridge,app}:X.Y.Z` (no `v` prefix). Pin a release:
 
   ```yaml
-  image: ghcr.io/mmornati/proton-faces-app:v1.2.3
+  image: ghcr.io/mmornati/proton-faces-app:1.2.3
   ```
 
 - **Digest pin** — the strongest guarantee: the image is identified by its content hash, so a compromised or broken publish can never be pulled silently. Resolve the digest of a known-good tag, then pin it:
 
   ```bash
-  docker buildx imagetools inspect ghcr.io/mmornati/proton-faces-app:v1.2.3
+  docker buildx imagetools inspect ghcr.io/mmornati/proton-faces-app:1.2.3
   ```
 
   ```yaml
@@ -167,18 +188,22 @@ The data volume is preserved across updates. The schema migrates automatically o
 
 ## Releases
 
-Releases are cut from git tags. Pushing a `v*` tag does two things: the [publish workflow](https://github.com/mmornati/proton-faces/actions/workflows/publish.yml) builds and pushes the versioned images to GHCR, and the [release workflow](https://github.com/mmornati/proton-faces/actions/workflows/release.yml) creates a GitHub Release whose notes list every merged PR since the previous tag (with links) plus a full changelog diff.
+Releases are cut from git tags, and only from a commit whose [Test workflow](https://github.com/mmornati/proton-faces/actions/workflows/test.yml) run on `main` succeeded — the [release workflow](https://github.com/mmornati/proton-faces/actions/workflows/release.yml) refuses anything else.
 
-To cut a release:
+The usual way: run the **Release** workflow from the Actions tab on `main` and enter the version (e.g. `1.2.3`). It tags the current `main` commit, builds and pushes the versioned images (it calls the [publish workflow](https://github.com/mmornati/proton-faces/actions/workflows/publish.yml) directly, since a tag pushed by a workflow triggers no other workflow), then creates a GitHub Release whose notes list every merged PR since the previous tag plus a full changelog diff.
+
+Pushing a tag by hand also works:
 
 ```bash
 git tag v1.2.3
 git push origin v1.2.3
 ```
 
-Or run the **Release** workflow from the Actions tab and enter the version (e.g. `1.2.3`) — it creates and pushes the tag for you.
+The publish workflow then builds the images on the tag push (after re-running the tests) and the release workflow writes the release.
 
-Each release links the matching images, e.g. `ghcr.io/mmornati/proton-faces-app:v1.2.3`. The images are the release artifacts — there are no binary assets attached to the release itself. Deploy a specific release by pinning `compose.yml` as shown above, or track the latest with `docker compose pull && docker compose up -d`.
+To rebuild the images of an existing tag (e.g. a release whose images are missing), run the **publish** workflow from the Actions tab with that tag as input.
+
+Each release links the matching images, e.g. `ghcr.io/mmornati/proton-faces-app:1.2.3`. The images are the release artifacts — there are no binary assets attached to the release itself. Deploy a specific release by pinning `compose.yml` as shown above, or track the newest release with `docker compose pull && docker compose up -d`.
 
 ## Uninstalling
 

@@ -4,20 +4,58 @@ name: publish
 # Registry (ghcr.io). Images are referenced by compose.yml, so the server can
 # deploy with a plain `docker compose pull && docker compose up -d` — no heavy
 # build on the server itself.
+#
+# Nothing is pushed unless test.yml passes on the exact commit being built
+# (the `test` job below calls it as a reusable workflow).
+#
+# Tags:
+#   push to main            → :edge, :sha-<7>    (tested head of main, never :latest)
+#   release vX.Y.Z          → :X.Y.Z, :X.Y, :sha-<7>, plus :latest only when it is
+#                             the highest stable tag (a patch on an old line never
+#                             moves :latest back)
+#   pre-release vX.Y.Z-rc.N → :X.Y.Z-rc.N, :sha-<7>  (never :latest nor :X.Y)
+#   manual run, no tag      → :branch-<name>, :sha-<7>  (try a branch before merging)
+#   manual run, tag input   → rebuilds that existing tag (e.g. backfill)
+#
+# A tag pushed by release.yml with GITHUB_TOKEN triggers no other workflow, so
+# release.yml calls this one through `workflow_call` with the tag it created.
+#
+# Every image carries org.opencontainers.image.revision = the built commit (not
+# github.sha: when called from release.yml that is the dispatch commit).
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing vX.Y.Z tag to (re)build. Empty: build the selected branch."
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
 
 env:
-  REGISTRY: ghcr.io
-  # Change to your GitHub username/org.
   IMAGE_PREFIX: ghcr.io/mmornati/proton-faces
 
 jobs:
+  test:
+    # Canonical repository only: a fork has nothing to push under ghcr.io/mmornati.
+    if: github.repository == 'mmornati/proton-faces'
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: ${{ inputs.tag || github.sha }}
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,8 +68,72 @@ jobs:
             context: ./bridge
           - name: app
             context: ./app
+    concurrency:
+      # Two merges in quick succession: only the last one matters for :edge.
+      # A release is never cancelled.
+      group: publish-${{ matrix.image.name }}-${{ inputs.tag || github.ref }}
+      cancel-in-progress: ${{ inputs.tag == '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+          fetch-depth: 0 # every tag, to tell whether this release is the highest
+
+      - name: Compute tags
+        id: meta
+        env:
+          IMAGE: ${{ env.IMAGE_PREFIX }}-${{ matrix.image.name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ] && [ "$REF_TYPE" = tag ]; then tag="$REF_NAME"; fi
+
+          sha="$(git rev-parse HEAD)"
+          tags=("$IMAGE:sha-${sha:0:7}")
+          if [ -n "$tag" ]; then
+            if ! [[ "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::'$tag' is not a SemVer tag (expected vX.Y.Z or vX.Y.Z-suffix)"
+              exit 1
+            fi
+            version="${tag#v}"
+            tags+=("$IMAGE:$version")
+            if [ -z "${BASH_REMATCH[4]}" ]; then
+              tags+=("$IMAGE:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}")
+              highest="$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+              if [ "$highest" = "$tag" ]; then
+                tags+=("$IMAGE:latest")
+              else
+                echo "::notice::$tag is not the highest release ($highest): :latest unchanged"
+              fi
+            fi
+          elif [ "$REF_NAME" = main ]; then
+            version="edge"
+            # A slower run of an older commit must not move :edge backwards.
+            git fetch --quiet origin main
+            if [ "$(git rev-parse FETCH_HEAD)" = "$sha" ]; then
+              tags+=("$IMAGE:edge")
+            else
+              echo "::notice::main has moved past ${sha:0:7}: :edge left to the newer run"
+            fi
+          else
+            # Branch name → valid Docker tag ([a-z0-9._-], at most 128 chars).
+            slug="$(printf '%s' "$REF_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-' | cut -c1-100)"
+            version="branch-$slug"
+            tags+=("$IMAGE:branch-$slug")
+          fi
+
+          {
+            echo "revision=$sha"
+            echo "version=$version"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "tags<<EOF"
+            printf '%s\n' "${tags[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          printf 'Tags: %s\n' "${tags[*]}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -39,33 +141,44 @@ jobs:
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute tags
-        id: meta
-        shell: bash
-        run: |
-          IMAGE="${{ env.IMAGE_PREFIX }}-${{ matrix.image.name }}"
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            TAGS="${IMAGE}:${GITHUB_REF_NAME},${IMAGE}:latest"
-          else
-            TAGS="${IMAGE}:latest,${IMAGE}:main"
-          fi
-          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
-
       - name: Build and push
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.image.context }}
           file: ${{ matrix.image.context }}/Dockerfile
           push: true
+          # Always start from the newest base image, with its security fixes.
+          pull: true
           tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.meta.outputs.revision }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
           platforms: linux/amd64
           # Attach a build provenance attestation and an SBOM to every
-          # pushed image so consumers can verify what is inside `:latest`.
+          # pushed image so consumers can verify what is inside it.
           provenance: true
           sbom: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,scope=${{ matrix.image.name }},mode=max
+
+      - name: Summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REVISION: ${{ steps.meta.outputs.revision }}
+        run: |
+          {
+            echo "### ${{ matrix.image.name }} image published"
+            echo
+            echo "Revision \`${REVISION:0:7}\`, digest \`$DIGEST\`"
+            echo
+            while read -r tag; do
+              [ -z "$tag" ] || echo "- \`$tag\`"
+            done <<< "$TAGS"
+          } >> "$GITHUB_STEP_SUMMARY"
