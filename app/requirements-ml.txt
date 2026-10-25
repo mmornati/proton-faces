@@ -7,5 +7,5 @@
 
 pillow-heif>=1.8.0,<1.9
 onnxruntime>=1.30.0,<1.31
-insightface>=2.0,<3
+insightface>=2.1,<3
 tokenizers>=0.23.2,<0.24
