@@ -168,6 +168,10 @@ services:
       - SYNC_INTERVAL=${SYNC_INTERVAL:-600}
       - SYNC_LIMIT=${SYNC_LIMIT:-0}
       - WORKERS=${WORKERS:-3}
+      # Optional metrics, off unless set: see docs/reference/observability.md.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_SDK_DISABLED=${OTEL_SDK_DISABLED:-false}
+      - OTEL_METRIC_EXPORT_INTERVAL=${OTEL_METRIC_EXPORT_INTERVAL:-60000}
       - CLUSTER_INTERVAL=${CLUSTER_INTERVAL:-1800}
       - GPS_INTERVAL=${GPS_INTERVAL:-21600}
       - FACE_SIM_THRESHOLD=${FACE_SIM_THRESHOLD:-0.45}
@@ -254,6 +258,10 @@ services:
       # its own CLIP session, so keep this low on memory-constrained hosts
       # (see APP_MEM_LIMIT / APP_CPUS above and config.uvicorn_workers).
       - UVICORN_WORKERS=${UVICORN_WORKERS:-2}
+      # Optional metrics, off unless set: see docs/reference/observability.md.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_SDK_DISABLED=${OTEL_SDK_DISABLED:-false}
+      - OTEL_METRIC_EXPORT_INTERVAL=${OTEL_METRIC_EXPORT_INTERVAL:-60000}
       # Pre-load CLIP + InsightFace in each worker at startup (issue #97) so
       # the first search request after a deploy/restart isn't slow. MT COST:
       # a worker takes a few extra seconds to become ready on boot.

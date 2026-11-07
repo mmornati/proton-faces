@@ -54,6 +54,7 @@ from fastapi.staticfiles import StaticFiles
 
 import clip
 import faces
+import telemetry
 
 # --- Cross-router pure helpers --------------------------------------------
 # Re-exported so tests can call `api._people_all_cached()`,
@@ -341,9 +342,11 @@ async def _lifespan(_: FastAPI):
     don't pay a multi-second model load inside a user request.
     """
     require_signing_secret()
+    telemetry.setup(telemetry.APP_SERVICE)
     _cap_threadpool()
     warm_models()
     yield
+    telemetry.shutdown()
 
 
 def _cap_threadpool() -> None:
@@ -396,7 +399,7 @@ app = FastAPI(
 
 app.add_middleware(CompressionMiddleware, minimum_size=1024)
 app.add_middleware(SecurityHeadersMiddleware)
-# Outermost: reject oversized bodies before anything else touches them. The
+# Reject oversized bodies before anything else touches them. The
 # face-search upload has its own byte cap (F-09) and is multipart, so it is
 # exempt here.
 app.add_middleware(
@@ -404,6 +407,8 @@ app.add_middleware(
     max_bytes=settings.max_json_body_bytes,
     exempt_prefixes=("/api/search/face",),
 )
+# Outermost, so requests the body limit rejects are measured too. Inert when metrics are off.
+app.add_middleware(telemetry.MetricsMiddleware)
 
 _STATIC = Path(__file__).parent / "static"
 

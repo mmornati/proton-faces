@@ -20,6 +20,7 @@ import threading
 
 import uvicorn
 
+import telemetry
 from config import settings
 from indexer import backfill_gps, enrich_places, start
 from indexer_status import app as status_app
@@ -87,6 +88,8 @@ def main() -> None:
         except Exception as exc:  # pragma: no cover
             log.warning("DEMO_MODE admin bootstrap failed: %s", exc)
 
+    # After the one-shots above, which exit before an export interval elapses.
+    telemetry.setup(telemetry.INDEXER_SERVICE)
     threads = start()
     log.info("indexer pipeline up (%d background threads)", len(threads))
 
@@ -144,6 +147,7 @@ def main() -> None:
     except (KeyboardInterrupt, SystemExit):
         pass
 
+    telemetry.shutdown()
     log.info("indexer_main exiting")
     sys.exit(0)
 

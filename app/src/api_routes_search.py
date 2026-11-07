@@ -11,6 +11,7 @@ import logging
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 import api  # noqa: E402  (intentional: see api_common docstring)
+import telemetry
 from auth import CurrentUser, require_user
 
 log = logging.getLogger("api")
@@ -26,11 +27,13 @@ def api_search(q: str, limit: int = 60, offset: int = 0,
     if not q:
         raise HTTPException(400, "q required")
     try:
-        vec = api.embed_text(q)
+        with telemetry.search_timer("text", "embed"):
+            vec = api.embed_text(q)
     except Exception as exc:
         log.warning("clip text embed failed: %s", exc)
         raise HTTPException(503, "CLIP model unavailable")
-    return api._semantic_search(vec, limit, user.id)
+    with telemetry.search_timer("text", "match"):
+        return api._semantic_search(vec, limit, user.id)
 
 
 _pixel_cap_applied = False
@@ -77,7 +80,9 @@ def api_search_face(file: UploadFile = File(...),
         raise
     except Exception as exc:
         raise HTTPException(400, f"could not read image: {exc}")
-    emb = api.embed_query_face(bgr)
+    with telemetry.search_timer("face", "embed"):
+        emb = api.embed_query_face(bgr)
     if emb is None:
         raise HTTPException(404, "no face found in image")
-    return api._face_similarity(emb, limit, user.id)
+    with telemetry.search_timer("face", "match"):
+        return api._face_similarity(emb, limit, user.id)
