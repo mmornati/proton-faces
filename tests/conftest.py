@@ -32,6 +32,7 @@ import config  # noqa: E402
 import faces  # noqa: E402
 import geocode  # noqa: E402
 import store  # noqa: E402
+import telemetry  # noqa: E402
 
 
 @pytest.fixture
@@ -81,6 +82,7 @@ def _reset_module_state():
     cluster._person_means_ts = 0.0
     bridge_client._bridge = None
     bridge_client._async_client = None
+    telemetry.shutdown()
     faces._app = None
     geocode._rg = None
     try:

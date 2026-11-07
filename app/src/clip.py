@@ -12,10 +12,12 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 
 import numpy as np
 from PIL import Image, ImageOps
 
+import telemetry
 from config import settings
 
 log = logging.getLogger("clip")
@@ -67,6 +69,7 @@ def _load():
     with _lock:
         if _sess_vision is not None:
             return _sess_vision, _sess_text, _tokenizer
+        start = time.perf_counter()
         import onnxruntime as ort
 
         clip_dir = _model_dir()
@@ -92,6 +95,7 @@ def _load():
         _tokenizer.enable_padding(
             length=_SEQ, pad_id=_PAD_ID, pad_token="<|endoftext|>"
         )
+        telemetry.record_model_load("clip", time.perf_counter() - start)
         log.info("CLIP ONNX loaded (%s, %s)", vision_path.name, text_path.name)
         return _sess_vision, _sess_text, _tokenizer
 

@@ -130,6 +130,7 @@ nav:
       - reference/index.md
       - Architecture: reference/architecture.md
       - Configuration: reference/configuration.md
+      - Observability: reference/observability.md
       - REST API: reference/api.md
       - Security & privacy: reference/security-privacy.md
       - FAQ: reference/faq.md

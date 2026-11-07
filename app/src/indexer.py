@@ -25,6 +25,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+import telemetry
 from bridge_client import BridgeError, BridgeTransientError, get_bridge
 from clip import embed_batch, embed_pil
 from cluster import _person_means_cached, cluster_once, match_person
@@ -339,6 +340,14 @@ def get_indexer_state() -> dict:
     }
 
 
+def _metrics_snapshot() -> dict:
+    state = get_indexer_state()
+    return {
+        "queues": {"pending": state["pending_in_queue"], "fullres_backoff": len(_fullres_backoff)},
+        "threads": state["threads"],
+    }
+
+
 def _rebuild_pending(batch: int = 2000) -> None:
     """Re-queue photos that were mid-pipeline when the process last stopped.
 
@@ -589,6 +598,7 @@ def _downloader_tick(bridge) -> float:
     try:
         resp = bridge.thumbnails(claimed)
     except BridgeTransientError as exc:
+        telemetry.count_error("download_transient")
         released = release_download_claims(claimed)
         pause = min(600.0, max(exc.retry_after_sec, 30.0))
         log.warning(
@@ -597,6 +607,7 @@ def _downloader_tick(bridge) -> float:
         )
         return pause
     except Exception as exc:
+        telemetry.count_error("download")
         log.warning("thumbnail batch failed: %s", exc)
         set_photos_error(claimed, str(exc)[:300])
         return _DOWNLOAD_ERROR_PAUSE_SEC
@@ -618,6 +629,7 @@ def _downloader_tick(bridge) -> float:
                 else:
                     set_photo_done(uid, "", None, None)
             else:
+                telemetry.count_error("thumbnail")
                 set_photo_error(uid, str(err)[:300])
     return 0.0
 
@@ -650,7 +662,9 @@ def _worker_loop() -> None:
         try:
             _process_batch(uids)
         except Exception as exc:  # pragma: no cover
+            telemetry.count_error("worker")
             for uid in uids:
+                telemetry.record_photo(None, False)
                 log.exception("failed processing %s: %s", uid, exc)
                 set_photo_error(uid, str(exc)[:300])
 
@@ -693,6 +707,7 @@ def _process_batch(uids: list[str]) -> None:
     batches detections in a single app.get() call, so there is nothing to
     gain from hoisting it up. Only the CLIP step is merged.
     """
+    batch_start = time.perf_counter()
     decoded: dict[str, Image.Image] = {}
     for uid in uids:
         work = _work_path(uid)
@@ -702,6 +717,7 @@ def _process_batch(uids: list[str]) -> None:
             with Image.open(work) as img:
                 decoded[uid] = _oriented(img).convert("RGB")
         except Exception as exc:  # pragma: no cover
+            telemetry.count_error("decode")
             log.warning("could not decode %s: %s", uid, exc)
 
     # Reclaim fast-path: photos that already have a CLIP vector (re-processed
@@ -715,10 +731,17 @@ def _process_batch(uids: list[str]) -> None:
         if vecs is not None:
             embed_map = dict(zip((uid for uid, _ in need), vecs))
 
+    batch_share = (time.perf_counter() - batch_start) / max(1, len(uids))
     for uid in uids:
+        start = time.perf_counter()
         try:
-            _process_one(uid, work_img=decoded.get(uid), clip_vec=embed_map.get(uid))
+            processed = _process_one(uid, work_img=decoded.get(uid), clip_vec=embed_map.get(uid))
+            # None: another worker won the claim, so this one processed nothing.
+            if processed is not None:
+                telemetry.record_photo(batch_share + time.perf_counter() - start, processed)
         except Exception as exc:  # pragma: no cover
+            telemetry.record_photo(batch_share + time.perf_counter() - start, False)
+            telemetry.count_error("process")
             log.exception("failed processing %s: %s", uid, exc)
             set_photo_error(uid, str(exc)[:300])
 
@@ -727,7 +750,8 @@ def _process_one(
     uid: str,
     work_img: Image.Image | None = None,
     clip_vec: np.ndarray | None = None,
-) -> None:
+) -> bool | None:
+    """Returns True when processed, False when flagged as an error, None on a lost claim."""
     work = _work_path(uid)
     # Warm the person-means cache before opening the transaction: a cold
     # first load issues its own store calls, and those must not run inside
@@ -751,7 +775,7 @@ def _process_one(
 
         if not work.exists():
             set_photo_error(uid, "work file missing", conn=conn)
-            return
+            return False
 
         if work_img is not None:
             rgb = work_img
@@ -835,6 +859,8 @@ def _process_one(
             uid, face_count, bool(existing_faces), matched if not existing_faces else 0,
             clip_vec is not None,
         )
+        return True
+    return None
 
 
 def _photo_row(uid: str, conn=None):
@@ -896,6 +922,7 @@ def _fullres_loop() -> None:
 
             bridge = get_bridge()
             tmp = settings.work_dir / f"{uid}.download"
+            job = telemetry.JobRun("fullres")
             try:
                 resp = bridge.full_photo(uid)
                 try:
@@ -930,6 +957,7 @@ def _fullres_loop() -> None:
                         )
                     _pending.put(uid)
 
+                job.finish()
                 # Pace the backlog drain. Full-res downloads (especially videos)
                 # are large and the SDK's internal block requests bypass the
                 # bridge's rate limiter, so back-to-back items saturate a home
@@ -937,6 +965,7 @@ def _fullres_loop() -> None:
                 # timeouts). Sleep between successful items to bound throughput.
                 time.sleep(settings.fullres_drain_interval_sec)
             except BridgeTransientError as exc:
+                job.finish("transient")
                 # Bridge returned 429/502/503 — back off rather than failing
                 # the row. Release the claim (set status back to 'full' so
                 # other rows can be tried in the meantime; the startup reset
@@ -957,6 +986,7 @@ def _fullres_loop() -> None:
                 # same 600s ceiling we use in the bridge parser.
                 time.sleep(min(600.0, max(exc.retry_after_sec, 30.0)))
             except Exception as exc:
+                job.finish("error")
                 log.warning("fullres failed for %s: %s", uid, exc)
                 tmp.unlink(missing_ok=True)
                 _fullres_backoff[uid] = time.time() + settings.fullres_backoff_sec
@@ -966,6 +996,7 @@ def _fullres_loop() -> None:
                 # commit each) at full request rate.
                 time.sleep(min(60.0, max(1.0, float(settings.fullres_drain_interval_sec))))
         except Exception as exc:  # pragma: no cover
+            telemetry.count_error("fullres")
             log.exception("fullres loop error: %s", exc)
             time.sleep(10)
 
@@ -1140,9 +1171,10 @@ def _cluster_loop() -> None:
     while True:
         time.sleep(settings.cluster_interval)
         try:
-            cluster_once(settings.cluster_max_faces)
-            # Sweep placeholder rows left empty by face deletions/reassignments.
-            gc = delete_empty_people()
+            with telemetry.job_run("cluster"):
+                cluster_once(settings.cluster_max_faces)
+                # Sweep placeholder rows left empty by face deletions/reassignments.
+                gc = delete_empty_people()
             if gc:
                 log.info("swept %d empty people rows", gc)
             _runtime["last_cluster"] = time.time()
@@ -1164,18 +1196,20 @@ def _albums_loop() -> None:
 
 def _sync_albums_once() -> int:
     """Fetch album names from the bridge and reconcile local covers/counts."""
-    try:
-        data = get_bridge().albums()
-        albums = data.get("albums", []) if isinstance(data, dict) else data
-    except Exception as exc:
-        log.warning("albums fetch failed: %s", exc)
-        return 0
-    if not albums:
-        return 0
-    t0 = time.monotonic()
-    n = sync_albums(albums)
-    log.info("albums: synced %d albums in %.2fs", n, time.monotonic() - t0)
-    return n
+    with telemetry.job_run("albums") as run:
+        try:
+            data = get_bridge().albums()
+            albums = data.get("albums", []) if isinstance(data, dict) else data
+        except Exception as exc:
+            run.fail()
+            log.warning("albums fetch failed: %s", exc)
+            return 0
+        if not albums:
+            return 0
+        t0 = time.monotonic()
+        n = sync_albums(albums)
+        log.info("albums: synced %d albums in %.2fs", n, time.monotonic() - t0)
+        return n
 
 
 # --- public entry point ----------------------------------------------------
@@ -1229,17 +1263,19 @@ def start() -> list[threading.Thread]:
     for t in threads:
         t.start()
     _record_threads(threads)
+    telemetry.watch_indexer(_metrics_snapshot)
     log.info("indexer started with %d workers", settings.workers)
     return threads
 
 
 def _run_full_scan_and_cleanup() -> None:
     """Run a full scan then purge thumbnails for confirmed-deleted rows."""
-    _sync_once()
-    try:
-        cleanup_deleted()
-    except Exception as exc:  # pragma: no cover
-        log.warning("cleanup_deleted failed: %s", exc)
+    with telemetry.job_run("sync"):
+        _sync_once()
+        try:
+            cleanup_deleted()
+        except Exception as exc:  # pragma: no cover
+            log.warning("cleanup_deleted failed: %s", exc)
 
 
 def _sync_loop() -> None:
@@ -1300,7 +1336,8 @@ def _sync_loop() -> None:
         # This NEVER touches deletion logic — only a full scan reconciles
         # removals, so a truncated tip listing can't cause false deletions.
         try:
-            new_uploads = _tip_check(cfg)
+            with telemetry.job_run("sync_tip"):
+                new_uploads = _tip_check(cfg)
         except Exception as exc:  # pragma: no cover
             log.exception("tip check failed: %s", exc)
             _runtime["last_sync_error"] = f"{type(exc).__name__}: {exc}"
@@ -1536,13 +1573,15 @@ def _gps_loop() -> None:
     while True:
         time.sleep(settings.gps_interval)
         try:
-            _run_gps_subprocess()
+            with telemetry.job_run("gps") as run:
+                if not _run_gps_subprocess():
+                    run.fail()
             _runtime["last_gps"] = time.time()
         except Exception as exc:  # pragma: no cover
             log.exception("gps loop error: %s", exc)
 
 
-def _run_gps_subprocess() -> None:
+def _run_gps_subprocess() -> bool:
     import subprocess
     import sys
 
@@ -1569,8 +1608,10 @@ def _run_gps_subprocess() -> None:
             proc.stdout[-300:],
             proc.stderr[-300:],
         )
+        return proc.returncode == 0
     except subprocess.TimeoutExpired:  # pragma: no cover
         log.warning("gps loop: subprocess timed out after 1h")
+        return False
 
 
 def cleanup_deleted() -> None:

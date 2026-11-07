@@ -20,6 +20,9 @@ These are read by `docker-compose.yml` itself, not by the containers:
 | `ALBUM_FULL_RESCAN_SEC` | `21600` (6 h) | How often (seconds) the albums sync runs a full photos-table rescan as a repair pass. Between rescans the sync is incremental (issue #95): only albums whose membership changed are recounted. Lower it to converge out-of-band edits faster at the cost of more scanning. |
 | `FACE_SIM_THRESHOLD` | `0.45` | Default cosine similarity threshold for face auto-tagging. |
 | `MIN_CLUSTER_SIZE` | `2` | Default minimum faces to form a person cluster. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (off) | OTLP/HTTP base URL of your collector, such as `http://otel-collector:4318`. Set it to export metrics from `app` and `indexer`. See [Observability](observability.md). |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns metrics export off even with an endpoint set. |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` | Metrics export interval in milliseconds. |
 | `LOG_LEVEL` | `INFO` | Default logging verbosity. |
 | `DEMO_ADMIN_PASSWORD` | `proton-faces` | Password for the auto-created `demo` admin in demo mode. |
 | `RUN_INDEXER` | `0` | Set `1` on the `app` service to start the in-process indexer (legacy single-process layout). |

@@ -172,6 +172,10 @@ class Settings:
         # Threads the API runs sync routes on (anyio default 40). Each thread
         # holds its own SQLite connection and page cache.
         self.api_threadpool_size = max(2, int(os.environ.get("API_THREADPOOL_SIZE", "16")))
+        # OpenTelemetry metrics stay off unless an OTLP/HTTP endpoint is set. The
+        # SDK reads the other OTEL_* variables itself (see telemetry.py).
+        self.otel_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+        self.otel_sdk_disabled = _env_bool("OTEL_SDK_DISABLED", False)
 
         # Derived paths
         self.work_dir = self.data_dir / "work"

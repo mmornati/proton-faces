@@ -1,6 +1,6 @@
 # Security & privacy
 
-Proton Faces is **privacy-first by design**: no telemetry, no cloud APIs, and the only network calls go to Proton's servers via the bridge container. All ML runs locally through ONNX Runtime on CPU.
+Proton Faces is **privacy-first by design**: no telemetry, no cloud APIs, and the only network calls go to Proton's servers via the bridge container. The one opt-in exception is [metrics export](observability.md) to a collector you run: operational numbers only, with no photo, person or user data. All ML runs locally through ONNX Runtime on CPU.
 
 ## What's on disk
 
@@ -152,7 +152,7 @@ posture. For a production install:
 ## What we don't do
 
 - We do not upload anything to Proton (read-only bridge).
-- We do not upload anything to any third party (no telemetry).
+- We do not upload anything to any third party (no telemetry; optional metrics go only to the collector you configure).
 - We do not store full-resolution photos.
 - We do not log photo bytes to disk (the `processed_at` field is the only timestamp).
 - We do not require GPU access.

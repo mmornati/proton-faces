@@ -220,7 +220,10 @@ def main() -> None:
         logging.getLogger(__name__).info(
             "RUN_INDEXER=1: starting in-process indexer alongside uvicorn"
         )
+        import telemetry
         from indexer import start
+        # workers is forced to 1 here, so the lifespan's setup() finds this provider.
+        telemetry.setup(telemetry.APP_SERVICE)
         start()
     else:
         logging.getLogger(__name__).info(

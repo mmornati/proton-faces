@@ -13,6 +13,7 @@ Releases are cut by pushing a `v*` tag (or running the **Release** workflow with
 
 ### Added
 
+- **Optional OpenTelemetry metrics** — `app` and `indexer` export request, search, model-load, photo and per-job metrics over OTLP/HTTP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Off by default. See [Observability](reference/observability.md).
 - **User-selectable person cover photo** — the "main photo" shown on each People card is no longer stuck at "highest-confidence crop". A **Set photo** button on each card opens a face-crop grid picker; a **Set as cover** action is also available from the face popover in photo detail. Backed by `GET /api/people/{id}/faces` and `POST /api/people/{id}/cover`.
 - **MkDocs documentation site** with dark-slate + amber Material theme, deployed to GitHub Pages ([docs site](https://mmornati.github.io/proton-faces/)).
 - **`DEMO_MODE`** (`DEMO_MODE=1`) — runs the full app without a Proton account. Built-in fixture of 82 CC0/Unsplash photos (32 face portraits + 50 picsum scenes), auto-created `demo` admin user, GPS-injected for the places demo.

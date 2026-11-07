@@ -15,6 +15,11 @@ Every environment variable, what it does, what the default is, and when to tune 
 </div>
 
 <div class="pf-card" markdown>
+### [Observability](observability.md)
+Optional OpenTelemetry metrics: how to enable them, every metric name, and what is never exported.
+</div>
+
+<div class="pf-card" markdown>
 ### [REST API](api.md)
 Every endpoint, request shape, response shape, and required role.
 </div>

@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
 
+import telemetry
 from config import settings
 
 log = logging.getLogger("faces")
@@ -26,6 +28,7 @@ def _load():
     with _lock:
         if _app is not None:
             return _app
+        start = time.perf_counter()
         from insightface.app import FaceAnalysis
 
         model_dir = Path(settings.models_dir) / "insightface"
@@ -44,6 +47,7 @@ def _load():
         )
         app.prepare(ctx_id=0, det_size=(640, 640))
         _app = app
+        telemetry.record_model_load("insightface", time.perf_counter() - start)
         log.info("InsightFace buffalo_l loaded")
         return app
 
