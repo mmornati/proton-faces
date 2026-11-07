@@ -8,4 +8,4 @@
 pillow-heif>=1.8.0,<1.9
 onnxruntime>=1.31.0,<1.32
 insightface>=2.0,<3
-tokenizers>=0.23.2,<0.24
+tokenizers>=0.23.3,<0.24
