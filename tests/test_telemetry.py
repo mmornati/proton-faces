@@ -459,6 +459,7 @@ class TestFullresJob:
             def __init__(self):
                 self.full_photo = full_photo
 
+        monkeypatch.setattr(indexer, "_fullres_backoff", {})
         store.upsert_photos([_photo("fr-uid")])
         store.set_photo_full("fr-uid")
         monkeypatch.setattr(indexer, "get_bridge", lambda: _Bridge())
