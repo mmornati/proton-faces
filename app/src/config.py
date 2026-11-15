@@ -169,9 +169,9 @@ class Settings:
         # Header carrying the real client IP when a CDN/tunnel sits in front
         # of the reverse proxy (e.g. CF-Connecting-IP behind Cloudflare, where
         # the proxy's X-Forwarded-For is the tunnel container). Only the login
-        # rate limiter uses it. Set it ONLY when every route to the app passes
-        # through something that overwrites this header; otherwise a client
-        # can pick its own limiter key.
+        # rate limiter uses it, and only for requests whose peer is inside
+        # TRUSTED_PROXY_IPS, so a client that bypasses the proxy chain cannot
+        # pick its own limiter key by sending the header.
         self.client_ip_header = os.environ.get("CLIENT_IP_HEADER", "").strip()
         # Ceiling on any non-multipart request body (JSON routes). The face
         # search upload is exempt and bounded by FACE_SEARCH_MAX_UPLOAD_BYTES.

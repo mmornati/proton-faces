@@ -288,7 +288,8 @@ services:
       # is the reverse proxy, and one attacker's failures lock everyone out.
       # TRUSTED_PROXY_IPS: the proxy's network (uvicorn then trusts its
       # X-Forwarded-For). CLIENT_IP_HEADER: e.g. CF-Connecting-IP when a
-      # Cloudflare tunnel sits in front of the proxy.
+      # Cloudflare tunnel sits in front of the proxy; honoured only for
+      # requests arriving through TRUSTED_PROXY_IPS.
       - TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS:-}
       - CLIENT_IP_HEADER=${CLIENT_IP_HEADER:-}
       # FP-1: the refresh-token cookie is Secure-only. Prod is behind Traefik

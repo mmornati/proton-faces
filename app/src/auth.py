@@ -743,21 +743,44 @@ def reauth_password_ok(user_id: int, username: str, password: object) -> bool:
     return ok
 
 
+def _is_trusted_proxy(host: str | None) -> bool:
+    """Whether *host* falls inside TRUSTED_PROXY_IPS (IPs, CIDRs or ``*``)."""
+    trusted = settings.trusted_proxy_ips
+    if not trusted or not host:
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    for entry in (e.strip() for e in trusted.split(",")):
+        if entry == "*":
+            return True
+        try:
+            if addr in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def client_ip(request) -> str | None:
     """The address the login limiter keys on.
 
-    ``CLIENT_IP_HEADER`` (e.g. ``CF-Connecting-IP``) wins when set and holds a
-    valid IP; otherwise the peer uvicorn reports, which honours
-    ``TRUSTED_PROXY_IPS``.
+    The peer uvicorn reports (which honours ``TRUSTED_PROXY_IPS``), unless
+    ``CLIENT_IP_HEADER`` is set AND that peer is itself a trusted proxy: then
+    the header (e.g. ``CF-Connecting-IP``) names the real client. A request
+    that did not come through a trusted hop cannot pick its own limiter key
+    by sending the header.
     """
+    peer = request.client.host if request.client else None
     header = settings.client_ip_header
-    if header:
+    if header and _is_trusted_proxy(peer):
         value = (request.headers.get(header) or "").strip()
         try:
             return str(ipaddress.ip_address(value))
         except ValueError:
             pass
-    return request.client.host if request.client else None
+    return peer
 
 
 def record_login_success(ip: str | None, username: str) -> None:

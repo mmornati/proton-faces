@@ -3154,6 +3154,7 @@ class TestLoginHardening:
         import config
         _seed_user(password_hash=password_hash)
         monkeypatch.setattr(config.settings, "client_ip_header", "CF-Connecting-IP")
+        monkeypatch.setattr(config.settings, "trusted_proxy_ips", "*")
         bad = {"username": "admin", "password": "wrong-password"}
         attacker = {"CF-Connecting-IP": "203.0.113.9"}
         owner = {"CF-Connecting-IP": "198.51.100.7"}
@@ -3165,19 +3166,28 @@ class TestLoginHardening:
         assert client.post("/api/auth/login", json=good, headers=owner).status_code == 200
         assert ("203.0.113.9", "admin") in auth._login_attempts
 
-    def test_client_ip_header_ignored_when_invalid_or_unset(self, monkeypatch):
+    def test_client_ip_header_needs_a_trusted_peer(self, monkeypatch):
         import auth
         import config
 
         class Req:
-            headers = {"CF-Connecting-IP": "not-an-ip"}
-            client = type("C", (), {"host": "10.0.0.1"})()
+            headers = {"CF-Connecting-IP": "203.0.113.9"}
+            client = type("C", (), {"host": "172.18.0.5"})()
 
-        assert auth.client_ip(Req()) == "10.0.0.1"
+        # Header not configured.
+        assert auth.client_ip(Req()) == "172.18.0.5"
         monkeypatch.setattr(config.settings, "client_ip_header", "CF-Connecting-IP")
-        assert auth.client_ip(Req()) == "10.0.0.1"
-        Req.headers = {"CF-Connecting-IP": "203.0.113.9"}
+        # Configured, but no trusted proxies: a direct client cannot pick its key.
+        assert auth.client_ip(Req()) == "172.18.0.5"
+        monkeypatch.setattr(config.settings, "trusted_proxy_ips", "10.0.0.0/8, 172.18.0.0/16")
         assert auth.client_ip(Req()) == "203.0.113.9"
+        # Peer outside the trusted range: header ignored.
+        Req.client = type("C", (), {"host": "192.168.1.50"})()
+        assert auth.client_ip(Req()) == "192.168.1.50"
+        # Trusted peer, garbage header value: fall back to the peer.
+        Req.client = type("C", (), {"host": "172.18.0.5"})()
+        Req.headers = {"CF-Connecting-IP": "not-an-ip"}
+        assert auth.client_ip(Req()) == "172.18.0.5"
 
 
 class TestBridgeHealthCache:
