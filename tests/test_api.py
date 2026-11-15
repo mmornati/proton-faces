@@ -3325,3 +3325,26 @@ class TestStaticShellCaching:
 
     def test_api_responses_keep_their_own_policy(self, client):
         assert client.get("/api/health").headers.get("cache-control") != "no-cache"
+
+
+class TestMemoriesDates:
+    def test_todays_photos_are_not_memories(self, client, password_hash):
+        import datetime as dt
+
+        _seed_user(password_hash=password_hash)
+        now = dt.datetime.now(dt.timezone.utc)
+        _seed_done_photo("today", capture_time=int(now.timestamp()) - 60)
+        try:
+            last_year = now.replace(year=now.year - 1)
+        except ValueError:  # 29 February
+            last_year = now.replace(year=now.year - 1, day=28)
+        _seed_done_photo("lastyear", capture_time=int(last_year.timestamp()))
+        r = client.get("/api/memories", params={"month": last_year.month, "day": last_year.day},
+                       headers=_bearer(client))
+        assert [p["uid"] for p in r.json()["photos"]] == ["lastyear"]
+
+    def test_out_of_range_date_falls_back(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        r = client.get("/api/memories", params={"month": 99, "day": 0}, headers=_bearer(client))
+        assert r.status_code == 200
+        assert 1 <= r.json()["month"] <= 12 and 1 <= r.json()["day"] <= 31

@@ -151,7 +151,7 @@ def write_face_sidecar(
     uids_arr = np.zeros((len(photo_uids), max_len), dtype=np.uint8)
     for i, u in enumerate(photo_uids):
         encoded = u.encode("utf-8")
-        uids_arr[i, : len(encoded)] = list(encoded)
+        uids_arr[i, : len(encoded)] = np.frombuffer(encoded, dtype=np.uint8)
     tmp_mat = _stage_npy(d / _FACE_MAT_PATH, mat)
     tmp_uids = _stage_npy(d / _FACE_UIDS_PATH, uids_arr)
     tmp_meta = _stage_bytes(d / _FACE_META_PATH, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
@@ -272,9 +272,26 @@ def _stage_bytes(path: Path, data: bytes) -> Path:
 
 def _stage_npy(path: Path, arr: np.ndarray) -> Path:
     tmp = path.with_suffix(".tmp.npy")
-    np.save(str(tmp), arr)
+    if isinstance(arr, np.memmap) and arr.filename and Path(arr.filename).resolve() == tmp.resolve():
+        # Already written in place by open_staged_matrix(): just persist it.
+        arr.flush()
+    else:
+        np.save(str(tmp), arr)
     _fsync_file(tmp)
     return tmp
+
+
+def open_staged_matrix(kind: str, rows: int, dim: int) -> np.memmap:
+    """A float32 (rows, dim) matrix backed by the sidecar's temp file.
+
+    The indexer fills it row by row straight from a DB cursor and hands it to
+    ``write_face_sidecar`` / ``write_clip_sidecar``, so a rebuild no longer
+    holds the whole table as Python rows plus two in-memory copies of the
+    matrix (~1 GB peak on an 80k-photo library).
+    """
+    name = {"face": _FACE_MAT_PATH, "clip": _CLIP_MAT_PATH}[kind]
+    tmp = (_sidecar_dir() / name).with_suffix(".tmp.npy")
+    return np.lib.format.open_memmap(str(tmp), mode="w+", dtype=np.float32, shape=(rows, dim))
 
 
 def invalidate_face_cache() -> None:

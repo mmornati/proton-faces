@@ -1354,7 +1354,8 @@ async function loadMemories() {
   const wrap = $("#memorieswrap");
   const box = $("#memories");
   try {
-    const data = await api("/api/memories?limit=12");
+    const today = new Date();
+    const data = await api(`/api/memories?limit=12&month=${today.getMonth() + 1}&day=${today.getDate()}`);
     if (!data.photos || !data.photos.length) {
       wrap.style.display = "none";
       return;

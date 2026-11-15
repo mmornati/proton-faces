@@ -1356,6 +1356,23 @@ def clip_exists(photo_uid: str, conn: sqlite3.Connection | None = None) -> bool:
         return row is not None
 
 
+@contextmanager
+def read_snapshot() -> sqlite3.Connection:
+    """A dedicated read-only connection holding one consistent snapshot.
+
+    For long table scans that must see a stable row set (a COUNT followed by
+    a cursor walk) without loading the table into memory or touching the
+    calling thread's persistent connection.
+    """
+    conn = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN")
+        yield conn
+    finally:
+        conn.close()
+
+
 def all_face_rows() -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(
@@ -2457,8 +2474,10 @@ def memories_for_today(month: int, day: int, limit: int = 200) -> list[sqlite3.R
     """Photos whose capture_time falls on (month, day) in any previous year.
 
     "On this day" / "memories" feature — pairs with the current calendar
-    date so the UI can surface "X years ago today" thumbnails. Excludes the
-    current year so the same-day photo doesn't dominate.
+    date so the UI can surface "X years ago today" thumbnails. Only photos
+    at least ~10 months old qualify, so today's own photos (and a same-day
+    burst) never show up as a memory — the docstring promised this before
+    the query did.
     """
     with get_conn() as conn:
         return conn.execute(
@@ -2468,6 +2487,7 @@ def memories_for_today(month: int, day: int, limit: int = 200) -> list[sqlite3.R
             "AND hidden = 0 "
             "AND strftime('%m-%d', capture_time, 'unixepoch') = ? "
             "AND capture_time IS NOT NULL "
+            "AND capture_time < CAST(strftime('%s', 'now', '-300 days') AS INTEGER) "
             "ORDER BY capture_time DESC LIMIT ?",
             (f"{int(month):02d}-{int(day):02d}", limit),
         ).fetchall()

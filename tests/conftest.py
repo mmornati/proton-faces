@@ -125,6 +125,7 @@ def _reset_module_state():
         import disk_usage
 
         disk_usage._dirsize_cache = {}
+        disk_usage._dirsize_refreshing = set()
     except ImportError:
         pass
     try:

@@ -235,6 +235,14 @@ def _drop_people_crops(person_ids: list[int]) -> None:
 
 # --- Image type sniffing (used by /full when bridge returns octet-stream) -
 
+# Types /full may relay from the bridge's own Content-Type. Anything else is
+# sniffed; scriptable types (html, svg) never pass through.
+_FULL_SAFE_TYPES = frozenset({
+    "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "image/heif",
+    "image/avif", "image/tiff", "image/bmp",
+})
+
+
 def _sniff_image_type(data: bytes) -> str | None:
     if data[:3] == b"\xff\xd8\xff":
         return "image/jpeg"
@@ -808,21 +816,34 @@ async def _serve_full(uid: str, row, request: Request) -> Response:
         if v:
             headers[h] = v
 
+    # One iterator for the whole body: the first chunk is pulled here to
+    # sniff the type, the rest streams from the same iterator. (The old
+    # ``resp.aread(n)`` raised TypeError — aread takes no size — which was
+    # swallowed, so every untyped response went out as image/jpeg, videos
+    # included.)
+    chunks = resp.aiter_bytes(1 << 16)
     first_chunk = b""
-    if content_type == "application/octet-stream":
-        log.warning("full photo %s returned octet-stream; sniffing magic bytes", uid)
+    declared = content_type.split(";", 1)[0].strip().lower()
+    if declared in _FULL_SAFE_TYPES or declared.startswith("video/"):
+        headers["Content-Type"] = declared
+    else:
+        # Untyped or not on the allow-list (never relay text/html or SVG
+        # from upstream as-is): go by the magic bytes.
         try:
-            first_chunk = await resp.aread(1 << 16)
+            first_chunk = await chunks.__anext__()
+        except StopAsyncIteration:
+            first_chunk = b""
         except Exception:
-            pass
-        sniffed = _sniff_image_type(first_chunk)
-        headers["Content-Type"] = sniffed or "image/jpeg"
+            await resp.aclose()
+            api._record_full_res_failure()
+            raise HTTPException(502, "bridge fetch failed")
+        headers["Content-Type"] = _sniff_image_type(first_chunk) or "application/octet-stream"
 
     async def gen():
         try:
             if first_chunk:
                 yield first_chunk
-            async for chunk in resp.aiter_bytes(1 << 16):
+            async for chunk in chunks:
                 yield chunk
         finally:
             await resp.aclose()
