@@ -30,6 +30,9 @@ log = logging.getLogger("cluster")
 # resident memory in every API worker that never clusters anything.
 HDBSCAN = None
 
+# Where the next capped clustering run starts (face id). Process-local.
+_cluster_cursor = 0
+
 
 def _hdbscan():
     global HDBSCAN
@@ -156,7 +159,19 @@ def cluster_once(max_faces: int = 5000) -> int:
     `max_faces` caps how many unassigned faces one run clusters; 0 or a
     negative value means no cap (use with care on large libraries).
     """
-    rows = faces_without_person(limit=max_faces if max_faces > 0 else None)
+    global _cluster_cursor
+    capped = max_faces > 0
+    rows = faces_without_person(limit=max_faces if capped else None, after_id=_cluster_cursor if capped else 0)
+    # Faces that cluster as noise stay unassigned, so "the oldest N" used to
+    # be the same N forever once they were mutual noise: every run repeated
+    # the same work and newer faces were never looked at. The window now
+    # advances by half its width each run (so neighbours across a boundary
+    # still meet) and wraps at the end. A library with fewer unassigned
+    # faces than the cap never moves the cursor.
+    if capped and len(rows) == max_faces:
+        _cluster_cursor = int(rows[len(rows) // 2]["id"])
+    else:
+        _cluster_cursor = 0
     if len(rows) < settings.min_cluster_size:
         return 0
 
