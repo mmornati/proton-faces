@@ -3227,3 +3227,12 @@ class TestBridgeHealthCache:
             assert api_common._cached_bridge_health() == (True, True)
         finally:
             api._bridge_health_cache_lock.release()
+
+
+class TestMeAdminArea:
+    def test_me_reports_admin_area(self, client, password_hash, monkeypatch):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        assert client.get("/api/auth/me", headers=headers).json()["admin_area"] is True
+        monkeypatch.setenv("DEMO_DISABLE_ADMIN_AREA", "1")
+        assert client.get("/api/auth/me", headers=headers).json()["admin_area"] is False

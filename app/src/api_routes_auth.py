@@ -254,6 +254,9 @@ def api_me(user: CurrentUser = Depends(require_user)):
         "username": user.username,
         "display_name": user.display_name,
         "role": user.role,
+        # False on public demos (DEMO_DISABLE_ADMIN_AREA): the SPA then hides
+        # the admin entry points instead of opening a panel of 404s.
+        "admin_area": not api.demo_disable_admin_area(),
         "totp_enabled": bool(row and row["totp_enabled"]),
     }
 

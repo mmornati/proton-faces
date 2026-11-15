@@ -81,6 +81,7 @@
     <a href="#" data-view="tags" data-label="Tags"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 11 3.8A2 2 0 0 0 9.6 3.2H4a1 1 0 0 0-1 1v5.6c0 .5.2 1 .6 1.4l9.6 9.6a2 2 0 0 0 2.8 0l4.6-4.6a2 2 0 0 0 0-2.8z"/><circle cx="7.5" cy="7.5" r="1.2"/></svg><span>Tags</span></a>
     <a href="#" data-view="duplicates" data-label="Duplicates"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Duplicates</span></a>
     <a href="#" data-view="unassigned" data-label="Unassigned"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5s1 2 3.5 2 3.5-2 3.5-2"/><circle cx="9" cy="9.5" r=".9" fill="currentColor" stroke="none"/><circle cx="15" cy="9.5" r=".9" fill="currentColor" stroke="none"/></svg><span>Unassigned</span></a>
+    <button type="button" id="nav-more" aria-haspopup="dialog" aria-expanded="false" aria-controls="moresheet"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span>More</span></button>
   </nav>
   <div class="rail-spacer"></div>
   <div class="userchip" id="userchip" role="button" tabindex="0" aria-haspopup="menu" aria-expanded="false" title="Account">
@@ -179,6 +180,26 @@
     </div>
   </div>
   <div id="showprogress"><i id="showbar"></i></div>
+</div>
+<div id="moresheet" role="dialog" aria-modal="true" aria-labelledby="moresheet-title" hidden>
+  <div id="moresheet-panel">
+    <div class="ms-grip" aria-hidden="true"></div>
+    <h2 id="moresheet-title">More</h2>
+    <div class="ms-group" role="group" aria-label="Library">
+      <button type="button" class="ms-item" data-go="favorites"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg><span>Favorites</span></button>
+      <button type="button" class="ms-item" data-go="archive"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M2 4h20v4H2z"/><path d="M10 12h4"/></svg><span>Archive</span></button>
+      <button type="button" class="ms-item" data-go="tags"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.2"/></svg><span>Tags</span></button>
+      <button type="button" class="ms-item" data-go="unassigned"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/><path d="M18 3v4M16 5h4"/></svg><span>Unassigned faces</span></button>
+      <button type="button" class="ms-item" data-go="duplicates"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M5 16H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h11a1 1 0 0 1 1 1v1"/></svg><span>Duplicates</span></button>
+    </div>
+    <div class="ms-group" role="group" aria-label="Tools">
+      <button type="button" class="ms-item" data-act="face"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8V6a2 2 0 0 1 2-2h2M17 4h2a2 2 0 0 1 2 2v2M21 16v2a2 2 0 0 1-2 2h-2M7 20H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="11" r="3"/><path d="M7.5 17a5 5 0 0 1 9 0"/></svg><span>Search by example</span></button>
+      <button type="button" class="ms-item" data-act="theme"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg><span>Light / dark theme</span></button>
+      <button type="button" class="ms-item" data-act="status"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Status</span></button>
+      <button type="button" class="ms-item" data-act="admin" id="ms-admin" hidden><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3.1 14H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.1-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Admin</span></button>
+      <button type="button" class="ms-item" data-act="account"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span id="ms-account-label">Account</span></button>
+    </div>
+  </div>
 </div>
 <div id="popover"></div>
 <div id="loader"><div class="spinner"></div><div class="lmsg" id="lmsg"></div></div>
@@ -558,7 +579,10 @@ async function bootAuth() {
 function syncAdminButton() {
   const b = $("#btn-admin");
   if (!b) return;
-  b.style.display = (_me && _me.role === "admin") ? "" : "none";
+  const allowed = !!(_me && _me.role === "admin" && _me.admin_area !== false);
+  b.style.display = allowed ? "" : "none";
+  const m = $("#ms-admin");
+  if (m) m.hidden = !allowed;
 }
 
 async function doLoginSubmit(ev) {
@@ -888,6 +912,11 @@ function _playEnter(dir) {
 }
 
 async function openDetail(uid) {
+  // First open (not a prev/next step) adds a history entry, so the phone's
+  // back gesture closes the photo instead of leaving the app.
+  if (!$("#detail").classList.contains("open") && !(history.state && history.state.overlay)) {
+    history.pushState({ overlay: "detail", key: _routeKey }, "", location.hash);
+  }
   const tok = ++_detailTok;
   const enter = _navEnter; _navEnter = 0;
   _setNavFromPhotos(uid);
@@ -987,13 +1016,13 @@ async function openDetail(uid) {
 
 async function loadPhotoMeta(uid, prefetched) {
   const panel = $("#metapanel");
-  panel.innerHTML = '<h3>Metadata</h3><div class="empty" style="padding:8px 0">Loading…</div>';
+  panel.innerHTML = '<h3>Details</h3><div class="empty" style="padding:8px 0">Loading…</div>';
   let m = prefetched;
   if (!m) {
     try {
       m = await api(`/api/photos/${uid}/meta`);
     } catch (e) {
-      panel.innerHTML = '<h3>Metadata</h3><div class="empty" style="padding:8px 0">Unavailable</div>';
+      panel.innerHTML = '<h3>Details</h3><div class="empty" style="padding:8px 0">Unavailable</div>';
       return;
     }
   }
@@ -1018,23 +1047,27 @@ async function loadPhotoMeta(uid, prefetched) {
   // `m.name` and `m.media_type` come from Proton — a photo shared into the
   // library by someone else controls them, so they are untrusted.
   const HTML = true;
+  // Who, where, when first; file-level facts sit behind a disclosure.
   const rows = [
+    ["People", people, HTML],
+    ["Location", m.place || (m.gps_lat != null ? `${m.gps_lat.toFixed(4)}, ${m.gps_lng.toFixed(4)}` : "—")],
+    ["Captured", m.capture_time ? fmtDateTime(m.capture_time) : "—"],
+    ["Albums", albums, HTML],
+    ["Your tags", localTagsHtml, HTML],
+    ["Proton tags", tags, HTML],
+  ];
+  const fileRows = [
     ["Name", m.name],
     ["Type", m.media_type || m.mediaType],
-    ["Captured", m.capture_time ? fmtDateTime(m.capture_time) : "—"],
     ["Size", size],
     dur ? ["Duration", dur] : null,
-    ["SHA-1", m.sha1],
-    ["Location", m.place || (m.gps_lat != null ? `${m.gps_lat.toFixed(4)}, ${m.gps_lng.toFixed(4)}` : "—")],
-    ["Albums", albums, HTML],
-    ["Proton tags", tags, HTML],
-    ["Your tags", localTagsHtml, HTML],
-    ["People", people, HTML],
     ["Faces", m.face_count != null ? `${m.face_count}` : "—"],
+    ["SHA-1", m.sha1],
     ["UID", m.uid],
   ].filter(Boolean);
-  panel.innerHTML = `<h3>Metadata</h3><table>${rows
+  const table = (list) => `<table>${list
     .map(([k, v, html]) => `<tr><td class="k">${escv(k)}</td><td class="v">${html ? v : escv(v)}</td></tr>`).join("")}</table>`;
+  panel.innerHTML = `<h3>Details</h3>${table(rows)}<details class="filemeta"><summary>File</summary>${table(fileRows)}</details>`;
   // Tag editor wiring.
   const taginput = $("#taginput");
   if (taginput) {
@@ -1482,7 +1515,8 @@ async function loadAlbums(q = null) {
   const data = await api(`/api/albums${q ? `?q=${encodeURIComponent(q)}` : ""}`);
   const el = $("#view");
   if (!data.albums.length) {
-    el.innerHTML = '<div class="empty">No albums yet.</div>';
+    $("#counts").textContent = q ? "0 matching" : "0 albums";
+    el.innerHTML = `<div class="empty">${q ? "No album matches that name." : "No albums yet."}</div>`;
     return;
   }
   $("#counts").textContent = q ? `${data.albums.length} of ${data.total} matching` : `${data.albums.length} albums`;
@@ -2304,9 +2338,17 @@ async function loadUnassigned() {
 document.querySelectorAll("nav a").forEach((a) => {
   a.addEventListener("click", async (e) => {
     e.preventDefault();
+    // A view change always lands on the view itself, never under a photo
+    // that was left open on top of the previous one.
+    $("#detail").classList.remove("open");
+    closePopover();
     document.querySelectorAll("nav a").forEach((x) => x.classList.remove("active"));
     a.classList.add("active");
     state.view = a.dataset.view;
+    // The count line belongs to the view: never carry "7 places" into
+    // Albums or People. Views without their own count show library totals.
+    $("#counts").textContent = "";
+    if (["photos", "favorites", "archive", "people"].includes(state.view)) refresh();
     $("#q").value = "";
     state.q = "";
     peopleQ = "";
@@ -3528,7 +3570,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 $("#btn-admin").addEventListener("click", () => {
-  if (!(_me && _me.role === "admin")) { toast("Admin only"); return; }
+  if (!(_me && _me.role === "admin" && _me.admin_area !== false)) { toast("Admin only"); return; }
   toggleAdminModal();
 });
 $("#adminclose").addEventListener("click", closeAdminModal);
@@ -3610,7 +3652,7 @@ async function refresh() {
   }
 }
 
-$("#dclose").addEventListener("click", () => $("#detail").classList.remove("open"));
+$("#dclose").addEventListener("click", closeDetail);
 $("#lbclose").addEventListener("click", () => $("#lightbox").classList.remove("open"));
 $("#dprev").addEventListener("click", () => _goNav(-1));
 $("#dnext").addEventListener("click", () => _goNav(1));
@@ -3889,6 +3931,120 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
   });
 }
+// ---- Routing: views live in the URL hash --------------------------------
+// #/people, #/places … so a reload stays on the view, links are shareable
+// and the browser/phone back gesture walks through views and closes
+// overlays. Views are still switched by the nav click handler above; this
+// only mirrors `state` into history and replays history into nav clicks.
+const SECONDARY_VIEWS = new Set(["favorites", "archive", "tags", "duplicates", "unassigned"]);
+let _routeKey = "";
+let _routing = false;
+
+function _routeKeyNow() {
+  const src = state.photoSource || {};
+  return [state.view, src.type || "", src.id || src.name || ""].join("|");
+}
+function _hashView() {
+  const m = /^#\/([a-z]+)/.exec(location.hash);
+  return m && document.querySelector('nav a[data-view="' + m[1] + '"]') ? m[1] : null;
+}
+function _paintMoreTab() {
+  const more = $("#nav-more");
+  if (more) more.classList.toggle("active", SECONDARY_VIEWS.has(state.view));
+}
+function _routeSync() {
+  _paintMoreTab();
+  const key = _routeKeyNow();
+  if (key === _routeKey) return;
+  _routeKey = key;
+  if (!_routing) history.pushState({ key }, "", "#/" + state.view);
+}
+// history.back() is asynchronous. When the app itself pops an overlay entry
+// it parks what should happen next here, and the popstate handler runs it
+// instead of treating the event as a user navigation.
+let _afterPop = null;
+function _popOwnEntry(after) {
+  _afterPop = after || (() => {});
+  history.back();
+}
+function closeDetail() {
+  $("#detail").classList.remove("open");
+  closePopover();
+  if (history.state && history.state.overlay === "detail") _popOwnEntry();
+}
+// Back gesture/button: close the topmost overlay only.
+function _closeOverlaysForBack() {
+  if (!$("#moresheet").hidden) { closeMoreSheet(true); return true; }
+  if ($("#lightbox").classList.contains("open")) {
+    $("#lightbox").classList.remove("open");
+    // The entry just consumed belonged to the photo underneath; put it back.
+    if ($("#detail").classList.contains("open")) history.pushState({ overlay: "detail", key: _routeKey }, "", location.hash);
+    return true;
+  }
+  if ($("#detail").classList.contains("open")) { $("#detail").classList.remove("open"); closePopover(); return true; }
+  return false;
+}
+window.addEventListener("popstate", () => {
+  if (_afterPop) { const next = _afterPop; _afterPop = null; next(); return; }
+  if (_closeOverlaysForBack()) return;
+  const view = _hashView() || "photos";
+  if (view === state.view && _routeKeyNow() === (history.state && history.state.key)) return;
+  _routing = true;
+  try {
+    document.querySelector('nav a[data-view="' + view + '"]').click();
+    _routeKey = _routeKeyNow();
+  } finally { _routing = false; }
+  _paintMoreTab();
+  setViewTitle();
+});
+// Any click may have changed the view (nav, an album, a person, a place…).
+document.addEventListener("click", () => setTimeout(_routeSync, 0));
+
+// ---- More sheet (phone): everything that does not fit the tab bar --------
+let _moreReturnFocus = null;
+function openMoreSheet() {
+  const sheet = $("#moresheet");
+  if (!sheet.hidden) return;
+  _moreReturnFocus = document.activeElement;
+  $("#ms-account-label").textContent = _me ? `Account · ${_me.display_name || _me.username}` : "Account";
+  sheet.querySelectorAll(".ms-item[data-go]").forEach((b) => b.classList.toggle("current", b.dataset.go === state.view));
+  sheet.hidden = false;
+  $("#nav-more").setAttribute("aria-expanded", "true");
+  history.pushState({ overlay: "more", key: _routeKey }, "", location.hash);
+  const first = sheet.querySelector(".ms-item:not([hidden])");
+  if (first) first.focus({ preventScroll: true });
+}
+function closeMoreSheet(fromHistory, after) {
+  const sheet = $("#moresheet");
+  if (sheet.hidden) { if (after) after(); return; }
+  sheet.hidden = true;
+  $("#nav-more").setAttribute("aria-expanded", "false");
+  if (_moreReturnFocus && _moreReturnFocus.focus) _moreReturnFocus.focus({ preventScroll: true });
+  // Drop the sheet's own history entry, then continue: an action picked in
+  // the sheet must be recorded after that entry is gone.
+  if (!fromHistory && history.state && history.state.overlay === "more") _popOwnEntry(after);
+  else if (after) after();
+}
+$("#nav-more").addEventListener("click", (e) => { e.stopPropagation(); openMoreSheet(); });
+$("#moresheet").addEventListener("click", (e) => {
+  const item = e.target.closest(".ms-item");
+  if (!item) { if (e.target.id === "moresheet") closeMoreSheet(); return; }
+  const run = () => {
+    if (item.dataset.go) { document.querySelector('nav a[data-view="' + item.dataset.go + '"]').click(); return; }
+    const act = item.dataset.act;
+    if (act === "face") openFaceModal();
+    else if (act === "theme") $("#btn-theme").click();
+    else if (act === "status") openStatusModal();
+    else if (act === "admin") $("#btn-admin").click();
+    else if (act === "account") openUserMenu();
+    setTimeout(_routeSync, 0);
+  };
+  closeMoreSheet(false, run);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#moresheet").hidden) closeMoreSheet();
+});
+
 function setViewTitle() {
   const t = document.getElementById("viewtitle");
   if (!t) return;
@@ -3932,8 +4088,18 @@ function setViewTitle() {
     if (av) av.textContent = ((_me.display_name || _me.username || "d"))[0].toUpperCase();
   }
   await refresh();
-  await loadPhotos();
-  loadAnchors();
+  const startView = _hashView();
+  if (startView && startView !== "photos") {
+    _routing = true;
+    try { document.querySelector('nav a[data-view="' + startView + '"]').click(); } finally { _routing = false; }
+    setViewTitle();
+  } else {
+    await loadPhotos();
+    loadAnchors();
+  }
+  _routeKey = _routeKeyNow();
+  history.replaceState({ key: _routeKey }, "", "#/" + state.view);
+  _paintMoreTab();
   setInterval(refresh, 60000);
 })();
 

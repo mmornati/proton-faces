@@ -6,7 +6,7 @@
  *    goes straight to the network, untouched, so per-user data and signed
  *    URLs are never intercepted or replayed.
  */
-const VERSION = "pf-shell-v5";
+const VERSION = "pf-shell-v6";
 const SHELL_ASSETS = [
   "./",
   "./manifest.json",
@@ -16,6 +16,7 @@ const SHELL_ASSETS = [
   "./css/tokens.css",
   "./css/app.css",
   "./css/design-system.css",
+  "./qrcode.js",
   "./vendor/leaflet/leaflet.js",
   "./vendor/leaflet/leaflet.css",
   "./vendor/markercluster/leaflet.markercluster.js",
@@ -58,7 +59,10 @@ self.addEventListener("fetch", (event) => {
           // Only a real 200 from this origin may become the offline shell:
           // a 502 from the reverse proxy during a restart would otherwise
           // be served as "the app" on every offline load afterwards.
-          if (resp.ok && resp.type === "basic") {
+          // …and only the app's own entry point: any other same-origin
+          // navigation (a vendor file opened in a tab) would otherwise
+          // replace the offline shell.
+          if (resp.ok && resp.type === "basic" && url.pathname === "/") {
             const copy = resp.clone();
             caches.open(VERSION).then((cache) => cache.put("./", copy));
           }
