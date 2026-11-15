@@ -191,8 +191,9 @@ def test_spa_grid_listeners_are_delegated():
 
 def test_service_worker_never_caches_failed_shell():
     _, sw = _spa_sources()
-    assert 'if (resp.ok && resp.type === "basic")' in sw
-    assert 'const VERSION = "pf-shell-v5"' in sw
+    # Only a real 200 for the app's own entry point may become the shell.
+    assert 'if (resp.ok && resp.type === "basic" && url.pathname === "/")' in sw
+    assert 'const VERSION = "pf-shell-v6"' in sw
 
 
 def test_spa_face_layer_is_off_by_default_and_persisted():
@@ -217,3 +218,19 @@ def test_spa_mobile_detail_image_is_contained_not_cropped():
     static = __import__("pathlib").Path(__file__).resolve().parent.parent / "app" / "src" / "static"
     css = (static / "css" / "design-system.css").read_text()
     assert "#detailimgwrap img { width: 100%; max-height: 52vh; object-fit: cover; }" not in css
+
+
+def test_phone_shell_keeps_every_view_reachable():
+    """Every view hidden from the phone tab bar must be offered by the More
+    sheet (audit 2026-11: Duplicates, Unassigned, the account menu and
+    search-by-example were simply display:none on phones)."""
+    html, sw = _spa_sources()
+    static = __import__("pathlib").Path(__file__).resolve().parent.parent / "app" / "src" / "static"
+    css = (static / "css" / "design-system.css").read_text()
+    for view in ("favorites", "archive", "tags", "duplicates", "unassigned"):
+        assert f'#rail nav a[data-view="{view}"]' in css
+        assert f'data-go="{view}"' in html
+    for act in ("face", "theme", "status", "admin", "account"):
+        assert f'data-act="{act}"' in html
+    assert "safe-area-inset-top" in css.split("@media (max-width: 940px)")[1]
+    assert '"./qrcode.js"' in sw
