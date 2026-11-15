@@ -748,13 +748,14 @@ def _is_trusted_proxy(host: str | None) -> bool:
     trusted = settings.trusted_proxy_ips
     if not trusted or not host:
         return False
+    entries = [e.strip() for e in trusted.split(",")]
+    if "*" in entries:
+        return True
     try:
         addr = ipaddress.ip_address(host)
     except ValueError:
         return False
-    for entry in (e.strip() for e in trusted.split(",")):
-        if entry == "*":
-            return True
+    for entry in entries:
         try:
             if addr in ipaddress.ip_network(entry, strict=False):
                 return True
