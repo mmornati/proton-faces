@@ -166,6 +166,13 @@ class Settings:
         # per-IP key onto one address. Set it to the proxy's network (e.g.
         # 172.18.0.0/16) so the real client IP reaches the limiter.
         self.trusted_proxy_ips = os.environ.get("TRUSTED_PROXY_IPS", "").strip()
+        # Header carrying the real client IP when a CDN/tunnel sits in front
+        # of the reverse proxy (e.g. CF-Connecting-IP behind Cloudflare, where
+        # the proxy's X-Forwarded-For is the tunnel container). Only the login
+        # rate limiter uses it, and only for requests whose peer is inside
+        # TRUSTED_PROXY_IPS, so a client that bypasses the proxy chain cannot
+        # pick its own limiter key by sending the header.
+        self.client_ip_header = os.environ.get("CLIENT_IP_HEADER", "").strip()
         # Ceiling on any non-multipart request body (JSON routes). The face
         # search upload is exempt and bounded by FACE_SEARCH_MAX_UPLOAD_BYTES.
         self.max_json_body_bytes = int(os.environ.get("MAX_JSON_BODY_BYTES", str(256 * 1024)))

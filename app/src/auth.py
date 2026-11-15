@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import logging
 import os
 import threading
@@ -29,6 +30,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import Depends, HTTPException, Request, status
 
 import store
+from config import settings
 
 log = logging.getLogger("auth")
 
@@ -573,6 +575,9 @@ class _IpBudget:
 # its budget is deliberately generous.
 _LOGIN_MAX_FAILURES = 5
 _LOGIN_LOCKOUT_SEC = 900
+# Ceiling on the exponential lockout. Uncapped, five requests per round kept
+# doubling a victim's lock (15 min, 30 min, ... days) for free.
+_LOGIN_LOCKOUT_MAX_SEC = 3600
 _LOGIN_FAILURE_WINDOW_SEC = 900
 _LOGIN_MAX_ENTRIES = 10_000
 _IP_MAX_FAILURES = 30
@@ -678,7 +683,7 @@ def record_login_failure(ip: str | None, username: str) -> None:
         attempt.first_failure_at = now
     attempt.failures += 1
     if attempt.failures >= _LOGIN_MAX_FAILURES:
-        backoff = _LOGIN_LOCKOUT_SEC * (2 ** attempt.lockout_count)
+        backoff = min(_LOGIN_LOCKOUT_MAX_SEC, _LOGIN_LOCKOUT_SEC * (2 ** min(attempt.lockout_count, 8)))
         attempt.locked_until = now + backoff
         attempt.lockout_count += 1
         attempt.failures = 0
@@ -689,6 +694,94 @@ def record_login_failure(ip: str | None, username: str) -> None:
         budget = _IpBudget(window_start=now)
         _ip_attempts[ip or "unknown"] = budget
     budget.failures += 1
+
+
+# Re-authentication inside a session (password change, 2FA enable/disable).
+# Keyed by user id: the caller already holds a token, so the question is how
+# many guesses that token buys. Without a budget a stolen 8-hour access token
+# could walk the password or the 6-digit TOTP space online.
+_REAUTH_MAX_FAILURES = 5
+_REAUTH_WINDOW_SEC = 900
+_reauth_attempts: dict[int, _IpBudget] = {}
+
+
+def check_reauth_allowed(user_id: int) -> None:
+    """Raise 429 once a user has spent their re-authentication budget."""
+    now = time.time()
+    budget = _reauth_attempts.get(user_id)
+    if budget is None:
+        return
+    if budget.window_start + _REAUTH_WINDOW_SEC <= now:
+        _reauth_attempts.pop(user_id, None)
+    elif budget.failures >= _REAUTH_MAX_FAILURES:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many failed attempts",
+            headers={"Retry-After": str(int(budget.window_start + _REAUTH_WINDOW_SEC - now) + 1)},
+        )
+
+
+def record_reauth_failure(user_id: int) -> None:
+    now = time.time()
+    budget = _reauth_attempts.get(user_id)
+    if budget is None or budget.window_start + _REAUTH_WINDOW_SEC <= now:
+        budget = _IpBudget(window_start=now)
+        _reauth_attempts[user_id] = budget
+    budget.failures += 1
+
+
+def reauth_password_ok(user_id: int, username: str, password: object) -> bool:
+    """Check the current password for a signed-in user, throttled and gated."""
+    check_reauth_allowed(user_id)
+    if not isinstance(password, str) or not password:
+        return False
+    row = store.get_user_by_username(username)
+    with _password_check_gate():
+        ok = row is not None and verify_password(password, row["password_hash"])
+    if not ok:
+        record_reauth_failure(user_id)
+    return ok
+
+
+def _is_trusted_proxy(host: str | None) -> bool:
+    """Whether *host* falls inside TRUSTED_PROXY_IPS (IPs, CIDRs or ``*``)."""
+    trusted = settings.trusted_proxy_ips
+    if not trusted or not host:
+        return False
+    entries = [e.strip() for e in trusted.split(",")]
+    if "*" in entries:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    for entry in entries:
+        try:
+            if addr in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def client_ip(request) -> str | None:
+    """The address the login limiter keys on.
+
+    The peer uvicorn reports (which honours ``TRUSTED_PROXY_IPS``), unless
+    ``CLIENT_IP_HEADER`` is set AND that peer is itself a trusted proxy: then
+    the header (e.g. ``CF-Connecting-IP``) names the real client. A request
+    that did not come through a trusted hop cannot pick its own limiter key
+    by sending the header.
+    """
+    peer = request.client.host if request.client else None
+    header = settings.client_ip_header
+    if header and _is_trusted_proxy(peer):
+        value = (request.headers.get(header) or "").strip()
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            pass
+    return peer
 
 
 def record_login_success(ip: str | None, username: str) -> None:

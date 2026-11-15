@@ -112,7 +112,10 @@ class BridgeClient:
         return h
 
     def health(self) -> dict:
-        r = self._client.get(f"{self.base_url}/health", headers=self._headers())
+        # Short timeout: this backs unauthenticated status routes, and the
+        # client default (120 s) would park a threadpool thread per caller
+        # for as long as a stalled bridge stays silent.
+        r = self._client.get(f"{self.base_url}/health", headers=self._headers(), timeout=3.0)
         r.raise_for_status()
         return r.json()
 

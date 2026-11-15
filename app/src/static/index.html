@@ -2645,6 +2645,7 @@ function render2FASection() {
       <div class="sec2fa">
         <div class="hint">Two-factor authentication is <b>off</b>. Enable it to require a 6-digit code from an authenticator app at every login.</div>
         <div class="adminactions">
+          <input type="password" id="sec2fa-enable-pw" autocomplete="current-password" placeholder="Current password" aria-label="Current password">
           <button class="small" id="sec2fa-enable">Enable 2FA</button>
         </div>
       </div>`;
@@ -2657,9 +2658,11 @@ function render2FASection() {
 function wire2FAHandlers() {
   const enableBtn = $("#sec2fa-enable");
   if (enableBtn) enableBtn.addEventListener("click", async () => {
+    const password = $("#sec2fa-enable-pw").value;
+    if (!password) { toast("Enter your current password"); return; }
     enableBtn.disabled = true;
     try {
-      _2faSetup = await api("/api/auth/2fa/setup", { method: "POST" });
+      _2faSetup = await api("/api/auth/2fa/setup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }) });
       renderStatusModal(lastStatus);
     } catch (e) { toast("Setup failed: " + (e.message || e)); }
     finally { enableBtn.disabled = false; }
@@ -3377,6 +3380,7 @@ function renderUserMenu() {
         <div class="sec2fa">
           <div class="hint">2FA is <b>off</b>. Enable it to require a 6-digit code from an authenticator app at every login.</div>
           <div class="um-actions">
+            <input type="password" id="um-2fa-enable-pw" autocomplete="current-password" placeholder="Current password" aria-label="Current password">
             <button class="small" id="um-2fa-enable">Enable 2FA</button>
             <button class="small secondary" id="um-back">Back</button>
           </div>
@@ -3439,9 +3443,11 @@ function wireUserMenuHandlers() {
 
   const tfaEnable = $("#um-2fa-enable");
   if (tfaEnable) tfaEnable.addEventListener("click", async () => {
+    const password = $("#um-2fa-enable-pw").value;
+    if (!password) { toast("Enter your current password"); return; }
     tfaEnable.disabled = true;
     try {
-      _um2faSetup = await api("/api/auth/2fa/setup", { method: "POST" });
+      _um2faSetup = await api("/api/auth/2fa/setup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }) });
       renderUserMenu();
     } catch (e) { toast("Setup failed: " + (e.message || e)); }
     finally { tfaEnable.disabled = false; }
