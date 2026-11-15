@@ -458,10 +458,17 @@ def migrate(conn: sqlite3.Connection) -> None:
     user_version = conn.execute("PRAGMA user_version").fetchone()[0]
     if "auth_tokens" in tables:
         tcols = {r["name"] for r in conn.execute("PRAGMA table_info(auth_tokens)")}
-        if "family" not in tcols:
-            conn.execute("ALTER TABLE auth_tokens ADD COLUMN family TEXT")
-        if "rotated_at" not in tcols:
-            conn.execute("ALTER TABLE auth_tokens ADD COLUMN rotated_at INTEGER")
+        # The app and the indexer both run this at start. Whichever is
+        # second may find the column already added between its check and
+        # its ALTER; that is fine.
+        for col, ddl in (("family", "TEXT"), ("rotated_at", "INTEGER")):
+            if col in tcols:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE auth_tokens ADD COLUMN {col} {ddl}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
     pcols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
     if "size_bytes" not in pcols:
         conn.execute("ALTER TABLE photos ADD COLUMN size_bytes INTEGER")
