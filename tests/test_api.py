@@ -3304,3 +3304,12 @@ class TestAdminOwnPasswordRevokesOtherSessions:
         assert r.json()["tokens_revoked"] >= 1
         assert client.get("/api/auth/me", headers=here).status_code == 200
         assert client.get("/api/auth/me", headers=elsewhere).status_code == 401
+
+
+class TestMeAdminArea:
+    def test_me_reports_admin_area(self, client, password_hash, monkeypatch):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        assert client.get("/api/auth/me", headers=headers).json()["admin_area"] is True
+        monkeypatch.setenv("DEMO_DISABLE_ADMIN_AREA", "1")
+        assert client.get("/api/auth/me", headers=headers).json()["admin_area"] is False

@@ -32,13 +32,13 @@ colors:
   bg2-light: "#eef0f3"
   panel-light: "#ffffff"
   panel2-light: "#f0f2f5"
-  muted-light: "#6b7078"
+  muted-light: "#646970"
   faint-light: "#9aa0ab"
   border-light: "#e3e5ea"
   border2-light: "#d5d8df"
-  accent-light: "#1f9d4d"
-  accent-strong-light: "#17803e"
-  accent-soft-light: "rgba(31,157,77,.12)"
+  accent-light: "#1a8443"
+  accent-strong-light: "#136b34"
+  accent-soft-light: "rgba(26,132,67,.12)"
   on-accent-light: "#ffffff"
   bad-light: "#d4483e"
   shadow:
@@ -144,10 +144,10 @@ The system is deliberately restrained: no gradients on surfaces, no colorful cha
 The palette is a graphite night spectrum plus one green accent; the light theme is its exact negative. Colors are tokenized as CSS custom properties under `:root` / `:root[data-theme="light"]` with a `prefers-color-scheme: light` intermediary for system-following devices.
 
 ### Primary
-- **Signal Green** (`#5ac272` dark, `#1f9d4d` light): the single accent. Owns primary buttons, active nav state, focus borders, the status "ok" dot, local tags, and selection rings. Its rarity is the point.
+- **Signal Green** (`#5ac272` dark, `#1a8443` light): the single accent. Owns primary buttons, active nav state, focus borders, the status "ok" dot, local tags, and selection rings. Its rarity is the point.
 
 ### Secondary
-- **Signal Green Strong** (`#7edb93` dark, `#17803e` light): the "on-accent" bright variant used for active nav labels, link-buttons, accent text tails on dark photo frosted chips, and highlighted mono values.
+- **Signal Green Strong** (`#7edb93` dark, `#136b34` light): the "on-accent" bright variant used for active nav labels, link-buttons, accent text tails on dark photo frosted chips, and highlighted mono values.
 
 ### Tertiary
 - **Signal Green Soft** (`rgba(90,194,114,.14)` / `rgba(31,157,77,.12)`): the fill for selected rows, active nav, and hover autocomplete items — color presence without text contrast responsibility.
@@ -159,7 +159,7 @@ The palette is a graphite night spectrum plus one green accent; the light theme 
 - **Panel-2** (`#1e2026`): secondary buttons, disabled-ish fills (dark).
 - **Bone** (`#f4f5f7`): page background (light).
 - **Snow** (`#ffffff`): cards/panels (light).
-- **Fog** / **Slate**: text triplet `#f2f3f5`/`#9aa0ab`/`#5c616d` (dark) and `#17191d`/`#6b7078`/`#9aa0ab` (light): primary text, secondary text, tertiary/faint text.
+- **Fog** / **Slate**: text triplet `#f2f3f5`/`#9aa0ab`/`#5c616d` (dark) and `#17191d`/`#646970`/`#9aa0ab` (light): primary text, secondary text, tertiary/faint text.
 - **Hairstroke** (`#26282f`/`#e3e5ea`): the standard 1px structural border.
 
 ### Named Rules
