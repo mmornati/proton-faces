@@ -52,6 +52,15 @@ def _load():
         return app
 
 
+def unload() -> bool:
+    """Drop the loaded FaceAnalysis so its memory can be returned. True if it was loaded."""
+    global _app
+    with _lock:
+        loaded = _app is not None
+        _app = None
+    return loaded
+
+
 def warm_up() -> None:
     """Pre-load the InsightFace sessions and force ONNX graph initialization.
 
