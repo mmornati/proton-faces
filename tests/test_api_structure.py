@@ -242,3 +242,11 @@ def test_service_worker_is_network_first_for_static_assets():
     _, sw = _spa_sources()
     assert "return cached || freshen" not in sw
     assert ".catch(() => caches.match(request))" in sw
+
+
+def test_grid_month_headings_are_escaped_and_skip_ranked_results():
+    """Month headings only make sense for time-ordered lists; search results
+    carry a score and must not get them."""
+    html, _ = _spa_sources()
+    assert 'if (p.score === undefined && p.capture_time)' in html
+    assert '<h3 class="monthsep">${esc(_MONTH_FMT.format(d))}</h3>' in html
