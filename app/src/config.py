@@ -68,6 +68,11 @@ class Settings:
         # reliably deep during a bulk download backlog, which is exactly when
         # the batch wins.
         self.clip_batch_queue_depth = int(os.environ.get("CLIP_BATCH_QUEUE_DEPTH", "8"))
+        # Seconds the indexer may sit with no photo to process before it
+        # releases its ONNX sessions (CLIP image encoder + InsightFace,
+        # several hundred MB). They reload on the next photo, which then
+        # takes a few seconds longer. 0 keeps them loaded forever.
+        self.model_idle_unload_sec = int(os.environ.get("MODEL_IDLE_UNLOAD_SEC", "900"))
         # WebP encoder effort for thumbnails/video posters. 6 (Pillow default)
         # is the slowest; 4 is near-identical size at a fraction of the CPU
         # (issue #101).
