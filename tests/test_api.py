@@ -3313,3 +3313,15 @@ class TestMeAdminArea:
         assert client.get("/api/auth/me", headers=headers).json()["admin_area"] is True
         monkeypatch.setenv("DEMO_DISABLE_ADMIN_AREA", "1")
         assert client.get("/api/auth/me", headers=headers).json()["admin_area"] is False
+
+
+class TestStaticShellCaching:
+    def test_shell_assets_are_revalidated(self, client):
+        for path in ("/", "/sw.js", "/css/design-system.css", "/manifest.json"):
+            r = client.get(path)
+            assert r.status_code == 200, path
+            assert r.headers["cache-control"] == "no-cache", path
+            assert r.headers.get("etag"), path
+
+    def test_api_responses_keep_their_own_policy(self, client):
+        assert client.get("/api/health").headers.get("cache-control") != "no-cache"

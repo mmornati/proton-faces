@@ -193,7 +193,7 @@ def test_service_worker_never_caches_failed_shell():
     _, sw = _spa_sources()
     # Only a real 200 for the app's own entry point may become the shell.
     assert 'if (resp.ok && resp.type === "basic" && url.pathname === "/")' in sw
-    assert 'const VERSION = "pf-shell-v6"' in sw
+    assert 'const VERSION = "pf-shell-v7"' in sw
 
 
 def test_spa_face_layer_is_off_by_default_and_persisted():
@@ -234,3 +234,11 @@ def test_phone_shell_keeps_every_view_reachable():
         assert f'data-act="{act}"' in html
     assert "safe-area-inset-top" in css.split("@media (max-width: 940px)")[1]
     assert '"./qrcode.js"' in sw
+
+
+def test_service_worker_is_network_first_for_static_assets():
+    """A cached stylesheet must never be served ahead of the network: after a
+    deploy it paired the new page with the previous CSS (audit 2026-11)."""
+    _, sw = _spa_sources()
+    assert "return cached || freshen" not in sw
+    assert ".catch(() => caches.match(request))" in sw
