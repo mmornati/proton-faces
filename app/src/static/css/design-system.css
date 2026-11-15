@@ -29,7 +29,7 @@ body {
 .brand { display: flex; align-items: center; gap: 9px; padding: 2px 10px 18px; }
 .logomark { width: 26px; height: 26px; border-radius: var(--radius-sm); display: grid; place-items: center; color: var(--on-accent); font-weight: 800; font-size: 13px; letter-spacing: .02em; background: linear-gradient(135deg, var(--accent-strong), var(--accent)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.16); }
 .brand .name { font-size: 15px; font-weight: 680; letter-spacing: -.01em; }
-.pill-local { font-family: var(--mono); font-size: 9.5px; color: var(--accent); letter-spacing: .14em; text-transform: uppercase; margin-left: auto; }
+.pill-local { font-family: var(--mono); font-size: 11px; color: var(--accent-strong); letter-spacing: .08em; text-transform: uppercase; margin-left: auto; }
 #rail nav { display: flex; flex-direction: column; gap: 2px; }
 /* The "More" tab and its sheet exist for the phone tab bar only. */
 #nav-more { display: none; }
@@ -139,6 +139,18 @@ main { padding: 18px 24px 64px; min-width: 0; }
 .card .duration { position: absolute; bottom: 8px; right: 8px; background: rgba(8,9,11,.62); color: #fff; font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 999px; }
 .card .starbtn { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; padding: 0; display: grid; place-items: center; background: rgba(8,9,11,.5); border: 1px solid rgba(255,255,255,.16); border-radius: 50%; color: #fff; font-size: 13px; line-height: 1; cursor: pointer; }
 .card .starbtn:hover { border-color: var(--accent); }
+.card .starbtn svg { display: block; }
+.card .starbtn.on svg, #dfav.on svg { fill: currentColor; }
+.card .playbadge svg { display: block; margin-left: 2px; }
+/* Month heading inside the photo grid: spans every column, sticks under the top bar. */
+.grid > .monthsep { grid-column: 1 / -1; margin: 14px 0 2px; padding: 6px 2px; font-size: 13px; font-weight: 650; letter-spacing: -.005em; color: var(--text); position: sticky; top: var(--topbar-h, 62px); z-index: 3; background: linear-gradient(var(--bg) 72%, transparent); }
+.grid > .monthsep:first-child { margin-top: 0; }
+.dbtn { display: inline-flex; align-items: center; gap: 7px; }
+.dbtn svg { flex: none; }
+#dfav.on { color: var(--accent-strong); border-color: var(--accent); }
+#darch.on { color: var(--accent-strong); }
+/* People: the edit toggle only exists on phones; desktop cards show their fields. */
+.person .pedit { display: none; }
 .card .starbtn.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 /* ===== Memories ===== */
 .memhead { font-size: 15px; font-weight: 680; margin: 22px 0 8px; letter-spacing: -.01em; }
@@ -473,7 +485,7 @@ main { padding: 18px 24px 64px; min-width: 0; }
   /* "On this day" starts collapsed on phones/PWA to keep the main grid front and center. */
   .memgridwrap { display: none; }
   .memgridwrap.open { display: block; }
-  .people-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .people-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; align-items: start; }
   .albums-grid, .places-grid, .dupgrid { grid-template-columns: repeat(2, 1fr); gap: 6px; }
   #daterailwrap { display: none !important; }
   #statusbar { display: none; }
@@ -485,8 +497,24 @@ main { padding: 18px 24px 64px; min-width: 0; }
   #detailbar { gap: 8px; }
   #detailbar .name { display: none; }
   #dpos { flex: 1; }
-  #dfull { font-size: 0; padding: 8px 12px; }
-  #dfull::after { content: "Full res"; font-size: 13px; }
+  #detailbar .dbtn .lbl { display: none; }
+  #detailbar .dbtn { padding: 0 12px; justify-content: center; }
+  #detailbar .dbtn svg { width: 20px; height: 20px; }
+  #detail { overscroll-behavior: contain; }
+  /* Photos first: the grid carries no per-tile chrome except a set favourite. */
+  .card .facebadge { display: none; }
+  .card .starbtn:not(.on) { display: none; }
+  .card .starbtn { top: 5px; right: 5px; width: 22px; height: 22px; border: 0; }
+  .grid > .monthsep { top: var(--topbar-h, 118px); margin: 12px 0 0; padding: 8px 4px 6px; font-size: 14px; }
+  /* People: cover, name and counts; rename and actions open from the pencil. */
+  .person { position: relative; padding: 14px 8px 12px; }
+  .person .pedit { display: grid; place-items: center; position: absolute; top: 2px; right: 2px; width: 44px; height: 44px; padding: 0; border: 0; background: transparent; color: var(--muted); border-radius: 50%; }
+  .person .pedit[aria-expanded="true"] { color: var(--accent-strong); }
+  .person .pedit:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+  .person:not(.editing) .rename, .person:not(.editing) .pactions { display: none !important; }
+  .person.editing .rename { font-size: 16px; min-height: 44px; width: 100%; margin-top: 8px; }
+  .person.editing .pactions { margin-top: 8px; }
+  .person.editing .pactions .pact { min-width: 40px; min-height: 40px; }
   /* Contain, never cover: the face boxes are positioned on the photo's own box. */
   #detailimgwrap { width: 100%; max-width: none; border-radius: 0; box-shadow: none; display: flex; justify-content: center; background: #000; }
   #detailimgwrap img { width: auto; max-width: 100%; max-height: 64vh; max-height: 64svh; }
