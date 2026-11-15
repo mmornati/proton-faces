@@ -27,7 +27,7 @@ Authentication is via `Authorization: Bearer <token>`. Get a token from `POST /a
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/health` | none | `{ok: true, bridge: {reachable, loggedIn}}` |
-| GET | `/api/status` | none | Aggregated status (footer + `?` overlay data) |
+| GET | `/api/status` | none / any | Without a valid access token: `now` and bridge reachability only. With one: library stats, indexer state, disk usage and config (footer + `?` overlay data). |
 
 ## Photos
 

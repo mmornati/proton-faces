@@ -673,12 +673,20 @@ class TestPublicEndpoints:
         assert r.status_code == 200
         assert r.json()["bridge"] == {"reachable": False, "loggedIn": False}
 
-    def test_status_public(self, client):
+    def test_status_anonymous_is_reachability_only(self, client):
         r = client.get("/api/status")
         assert r.status_code == 200
-        body = r.json()
-        assert "stats" in body and "indexer" in body and "disk" in body
-        assert "config" not in body
+        assert set(r.json()) == {"now", "bridge"}
+
+    def test_status_invalid_bearer_is_reachability_only(self, client):
+        r = client.get("/api/status", headers={"Authorization": "Bearer nope"})
+        assert r.status_code == 200
+        assert set(r.json()) == {"now", "bridge"}
+
+    def test_status_with_bearer_shows_library(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        body = client.get("/api/status", headers=_bearer(client)).json()
+        assert "stats" in body and "indexer" in body and "disk" in body and "config" in body
 
     def test_status_with_bearer_shows_config(self, client, password_hash):
         _seed_user(password_hash=password_hash)
@@ -795,6 +803,12 @@ class TestStatusProxy:
     - The proxied state is TTL-cached so a 60 s UI poll costs at most one
       round-trip to the indexer.
     """
+
+    @pytest.fixture(autouse=True)
+    def _authed_status(self, monkeypatch):
+        # These tests are about the proxy; the stats/indexer blocks need a token.
+        monkeypatch.setattr(api, "_bearer_is_valid", lambda request: True)
+
 
     @staticmethod
     def _proxy_client(handler) -> httpx.Client:
