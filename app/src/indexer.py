@@ -33,7 +33,7 @@ from cluster import _person_means_cached, cluster_once, match_person
 from config import settings
 from faces import detect_faces
 from geocode import reverse_geocode_many
-from sidecar import write_clip_sidecar, write_face_sidecar
+from sidecar import _sidecar_dir, open_staged_matrix, write_clip_sidecar, write_face_sidecar
 from store import (
     TransactionRollback,
     backfill_fullres_images,
@@ -179,36 +179,58 @@ def _sidecar_loop() -> None:
             log.exception("sidecar loop error")
 
 
-def _sidcar_write_face() -> None:
-    """Write face embedding sidecar from the current DB state."""
-    from store import all_face_rows
+def _sidcar_fill(conn, kind: str, count_sql: str, rows_sql: str, on_row) -> np.memmap | None:
+    """Stream ``rows_sql`` into a staged float32 matrix; ``on_row(i, row)`` collects the metadata."""
+    n = conn.execute(count_sql).fetchone()[0]
+    if not n:
+        return None
+    mat = None
+    i = -1
+    for i, r in enumerate(conn.execute(rows_sql)):
+        vec = np.frombuffer(r["embedding"], dtype=np.float32)
+        if mat is None:
+            mat = open_staged_matrix(kind, n, vec.shape[0])
+        mat[i] = vec
+        on_row(i, r)
+    if i + 1 != n:  # cannot happen inside one snapshot; never publish a short matrix
+        raise RuntimeError(f"{kind} sidecar: expected {n} rows, read {i + 1}")
+    return mat
 
-    rows = all_face_rows()
-    if not rows:
-        return
+
+def _sidcar_write_face() -> None:
+    """Write the face embedding sidecar from the current DB state, streamed."""
+    from store import read_snapshot
+
     ids: list[int] = []
     photo_uids: list[str] = []
     person_ids: list[int | None] = []
-    vecs: list[np.ndarray] = []
-    for r in rows:
+
+    def collect(_i, r):
         ids.append(r["id"])
         photo_uids.append(r["photo_uid"])
         person_ids.append(r["person_id"])
-        vecs.append(np.frombuffer(r["embedding"], dtype=np.float32))
-    mat = np.stack(vecs)
-    write_face_sidecar(ids, photo_uids, person_ids, mat)
+
+    with read_snapshot() as conn:
+        mat = _sidcar_fill(
+            conn, "face", "SELECT COUNT(*) FROM faces",
+            "SELECT id, photo_uid, person_id, embedding FROM faces", collect,
+        )
+    if mat is not None:
+        write_face_sidecar(ids, photo_uids, person_ids, mat)
 
 
 def _sidcar_write_clip() -> None:
-    """Write CLIP matrix sidecar from the current DB state."""
-    from store import all_clips
+    """Write the CLIP matrix sidecar from the current DB state, streamed."""
+    from store import read_snapshot
 
-    rows = all_clips()
-    if not rows:
-        return
-    uids = [r["photo_uid"] for r in rows]
-    X = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
-    write_clip_sidecar(uids, X)
+    uids: list[str] = []
+    with read_snapshot() as conn:
+        mat = _sidcar_fill(
+            conn, "clip", "SELECT COUNT(*) FROM clips",
+            "SELECT photo_uid, embedding FROM clips", lambda _i, r: uids.append(r["photo_uid"]),
+        )
+    if mat is not None:
+        write_clip_sidecar(uids, mat)
 
 
 def _sync_config_path() -> Path:
@@ -1348,6 +1370,46 @@ def _sync_albums_once() -> int:
         return n
 
 
+_STALE_TEMP_AGE_SEC = 3600
+_STALE_TEMP_GLOBS = (
+    ("work", "*.download"),   # full-size downloads (whole videos) cut off by a kill
+    ("work", "*.gps"),        # EXIF probe downloads
+    ("thumbs", "*.poster-tmp.*"),
+    ("index", "*.tmp.*"),     # sidecar staging files
+    ("backups", "*.partial"),
+)
+
+
+def sweep_stale_temp_files(now: float | None = None) -> int:
+    """Delete temp files a killed run left behind. Returns how many were removed.
+
+    Every one of these is written and then renamed or deleted by the code
+    that created it; one that is still there an hour later has no owner. A
+    full-size video download cut off by a restart otherwise stays on the
+    data volume forever.
+    """
+    now = time.time() if now is None else now
+    roots = {
+        "work": settings.work_dir,
+        "thumbs": settings.thumb_dir,
+        "index": _sidecar_dir(),
+        "backups": settings.backup_dir,
+    }
+    removed = 0
+    for key, pattern in _STALE_TEMP_GLOBS:
+        root = roots[key]
+        if not root.exists():
+            continue
+        for path in root.glob(pattern):
+            try:
+                if path.is_file() and now - path.stat().st_mtime > _STALE_TEMP_AGE_SEC:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+    return removed
+
+
 # --- public entry point ----------------------------------------------------
 
 _SUPERVISOR_RESTART_SEC = 5.0
@@ -1406,6 +1468,12 @@ def start() -> list[threading.Thread]:
             )
     except Exception as exc:  # pragma: no cover
         log.warning("stuck fullres recovery failed: %s", exc)
+    try:
+        swept = sweep_stale_temp_files()
+        if swept:
+            log.info("removed %d leftover temp files from an earlier run", swept)
+    except Exception as exc:  # pragma: no cover
+        log.warning("temp file sweep failed: %s", exc)
     _rebuild_pending()
     try:
         _sync_albums_once()

@@ -1100,3 +1100,57 @@ class TestIdleModelRelease:
         assert clip.unload() is True and faces.unload() is True
         assert clip._sess_vision is None and faces._app is None
         assert clip.unload() is False and faces.unload() is False
+
+
+class TestStreamedSidecar:
+    def test_face_and_clip_sidecars_round_trip(self, tmp_db, app_settings, tmp_path):
+        import sidecar
+
+        sidecar._set_sidecar_dir(tmp_path / "idx")
+        store.upsert_photos([{"uid": f"s{i}", "name": "n", "media_type": "image/jpeg", "capture_time": i}
+                             for i in range(3)])
+        vecs = [np.full(512, i + 1, dtype=np.float32) for i in range(3)]
+        ids = [store.insert_face(photo_uid=f"s{i}", person_id=None, confidence=0.9, bbox=(0, 0, 1, 1),
+                                 embedding=vecs[i].tobytes()) for i in range(3)]
+        for i in range(3):
+            store.insert_clip(f"s{i}", vecs[i].tobytes())
+        indexer._sidcar_write_face()
+        indexer._sidcar_write_clip()
+        sidecar.reset_state()
+        sidecar._set_sidecar_dir(tmp_path / "idx")
+        face = sidecar.read_face_sidecar()
+        assert list(face["ids"]) == ids
+        assert np.array_equal(np.asarray(face["mat"]), np.stack(vecs))
+        uids, X = sidecar.read_clip_sidecar()
+        assert sorted(uids) == ["s0", "s1", "s2"]
+        assert X.shape == (3, 512)
+        assert not list((tmp_path / "idx").glob("*.tmp.*"))
+
+    def test_empty_tables_write_nothing(self, tmp_db, app_settings, tmp_path):
+        import sidecar
+
+        sidecar._set_sidecar_dir(tmp_path / "idx2")
+        indexer._sidcar_write_face()
+        indexer._sidcar_write_clip()
+        assert list((tmp_path / "idx2").iterdir()) == []
+
+
+class TestStaleTempSweep:
+    def test_removes_old_leftovers_only(self, app_settings, tmp_path):
+        import os
+
+        import sidecar
+
+        sidecar._set_sidecar_dir(tmp_path / "idx3")
+        work = indexer.settings.work_dir
+        work.mkdir(parents=True, exist_ok=True)
+        old = work / "abc.download"
+        fresh = work / "def.download"
+        keep = work / "ghi.webp"
+        for f in (old, fresh, keep):
+            f.write_bytes(b"x")
+        past = time.time() - 7200
+        os.utime(old, (past, past))
+        os.utime(keep, (past, past))
+        assert indexer.sweep_stale_temp_files() == 1
+        assert not old.exists() and fresh.exists() and keep.exists()

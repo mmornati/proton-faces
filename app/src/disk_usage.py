@@ -11,11 +11,16 @@ indexer's own computation).
 """
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
 _DIRSIZE_CACHE_TTL = 3600.0
 _dirsize_cache: dict[str, tuple[float, int]] = {}
+
+
+_dirsize_lock = threading.Lock()
+_dirsize_refreshing: set[str] = set()
 
 
 def dir_size_bytes(path: Path) -> int:
@@ -45,6 +50,25 @@ def cached_dir_size(path: Path) -> int:
     hit = _dirsize_cache.get(key)
     if hit is not None and now - hit[0] < _DIRSIZE_CACHE_TTL:
         return hit[1]
-    n = dir_size_bytes(path)
-    _dirsize_cache[key] = (now, n)
-    return n
+    if hit is None:
+        # First call: nothing to serve yet, so pay for the walk once.
+        n = dir_size_bytes(path)
+        _dirsize_cache[key] = (time.time(), n)
+        return n
+    # Expired: answer with the last value and refresh off the request path.
+    # Walking 80k thumbnails inline made the indexer's /status miss the
+    # app's 3 s proxy timeout once an hour, and every poll during the walk
+    # started another one.
+    with _dirsize_lock:
+        if key not in _dirsize_refreshing:
+            _dirsize_refreshing.add(key)
+            threading.Thread(target=_refresh_dir_size, args=(path, key), name="dirsize", daemon=True).start()
+    return hit[1]
+
+
+def _refresh_dir_size(path: Path, key: str) -> None:
+    try:
+        _dirsize_cache[key] = (time.time(), dir_size_bytes(path))
+    finally:
+        with _dirsize_lock:
+            _dirsize_refreshing.discard(key)

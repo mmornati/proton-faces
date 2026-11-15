@@ -78,9 +78,11 @@ def api_memories(month: int | None = None, day: int | None = None, limit: int = 
 
     from store import memories_for_today
     limit = api._clamp_limit(limit, default=60)
-    now = _dt.datetime.utcnow()
-    m = month if month is not None else now.month
-    d = day if day is not None else now.day
+    # The SPA sends the viewer's local month/day; UTC is only the fallback
+    # for other clients (near midnight it can be the wrong calendar day).
+    now = _dt.datetime.now(_dt.timezone.utc)
+    m = month if month is not None and 1 <= month <= 12 else now.month
+    d = day if day is not None and 1 <= day <= 31 else now.day
     rows = memories_for_today(m, d, limit=limit)
     photos = api._user_photos(user.id, rows)
     for photo, r in zip(photos, rows):

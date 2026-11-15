@@ -1,4 +1,6 @@
 
+import time
+
 import pytest
 
 import admin
@@ -259,3 +261,33 @@ class TestBackupAtomic:
         out = admin.snapshot_backup()
         mode = (admin.settings.backup_dir / out["name"]).stat().st_mode & 0o777
         assert mode == 0o600
+
+
+class TestDirSizeNeverBlocksWhenStale:
+    def test_expired_value_is_served_while_refreshing(self, tmp_path, monkeypatch):
+        import threading
+
+        import disk_usage
+
+        (tmp_path / "a").write_bytes(b"12345")
+        assert disk_usage.cached_dir_size(tmp_path) == 5
+        key = str(tmp_path)
+        disk_usage._dirsize_cache[key] = (0.0, 5)  # expire it
+        (tmp_path / "b").write_bytes(b"123")
+        gate = threading.Event()
+        real = disk_usage.dir_size_bytes
+
+        def slow(path):
+            gate.wait(5)
+            return real(path)
+
+        monkeypatch.setattr(disk_usage, "dir_size_bytes", slow)
+        assert disk_usage.cached_dir_size(tmp_path) == 5      # stale, immediately
+        assert disk_usage.cached_dir_size(tmp_path) == 5      # no second walk started
+        assert len(disk_usage._dirsize_refreshing) == 1
+        gate.set()
+        for _ in range(100):
+            if not disk_usage._dirsize_refreshing:
+                break
+            time.sleep(0.02)
+        assert disk_usage.cached_dir_size(tmp_path) == 8
