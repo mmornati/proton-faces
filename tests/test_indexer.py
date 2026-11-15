@@ -281,8 +281,11 @@ class TestProcessOne:
                 return getattr(self._real, name)
 
             def commit(self, *a, **k):
+                # Only a commit that closes an open transaction writes; the
+                # unlocked pre-reads end in a no-op commit.
+                wrote = self._real.in_transaction
                 result = self._real.commit(*a, **k)
-                self._n_commits += 1
+                self._n_commits += int(wrote)
                 return result
 
         uid = self._seed_work_photo()
@@ -905,3 +908,54 @@ class TestSupervised:
         raw = {indexer._worker_loop, indexer._sync_loop, indexer._downloader_loop, indexer._fullres_loop,
                indexer._cluster_loop, indexer._gps_loop, indexer._albums_loop, indexer._sidecar_loop}
         assert not raw & set(targets.values())
+
+
+class TestInferenceOutsideWriteLock:
+    """Detection and CLIP must not run while the SQLite write lock is held."""
+
+    def _seed(self, uid="lock1"):
+        return TestProcessOne._seed_work_photo(self, uid)
+
+    def test_no_open_transaction_during_inference(self, tmp_db, app_settings, monkeypatch):
+        uid = self._seed()
+        seen = {}
+
+        def detect(bgr):
+            seen["detect"] = getattr(store._local, "in_transaction", False)
+            return []
+
+        def embed(img):
+            seen["embed"] = getattr(store._local, "in_transaction", False)
+            return np.ones(512, dtype=np.float32)
+
+        monkeypatch.setattr(indexer, "detect_faces", detect)
+        monkeypatch.setattr(indexer, "embed_pil", embed)
+        assert indexer._process_one(uid) is True
+        assert seen == {"detect": False, "embed": False}
+        assert store.get_photo(uid)["status"] == "done"
+
+    def test_inference_failure_leaves_photo_retryable(self, tmp_db, app_settings, monkeypatch):
+        uid = self._seed("lock2")
+
+        def boom(bgr):
+            raise RuntimeError("model exploded")
+
+        monkeypatch.setattr(indexer, "detect_faces", boom)
+        with pytest.raises(RuntimeError):
+            indexer._process_one(uid)
+        assert store.get_photo(uid)["status"] == "downloading"
+        assert indexer._work_path(uid).exists()
+
+    def test_face_matched_to_deleted_person_is_left_unassigned(self, tmp_db, app_settings, monkeypatch):
+        uid = self._seed("lock3")
+        emb = np.ones(512, dtype=np.float32)
+        monkeypatch.setattr(
+            indexer, "detect_faces",
+            lambda bgr: [{"embedding": emb, "confidence": 0.9, "bbox": (1, 1, 5, 5)}],
+        )
+        monkeypatch.setattr(indexer, "match_person", lambda e, t: 987654)
+        monkeypatch.setattr(indexer, "embed_pil", lambda img: emb)
+        assert indexer._process_one(uid) is True
+        with store.get_conn() as c:
+            rows = c.execute("SELECT person_id FROM faces WHERE photo_uid=?", (uid,)).fetchall()
+        assert [r[0] for r in rows] == [None]

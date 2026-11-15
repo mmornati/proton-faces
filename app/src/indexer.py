@@ -774,30 +774,61 @@ def _process_one(
     except Exception:  # pragma: no cover - match_person degrades to None
         log.warning("person-means warm-up failed", exc_info=True)
 
-    # One transaction per photo: the claim, the read, every per-face insert,
-    # the clip insert and the final 'done' mark all run on a single
-    # connection and commit once — this collapses the ~6 separate
-    # connections/commits the old per-step flow made. A lost claim raises
-    # TransactionRollback to abort the transaction (the photo keeps its prior
-    # status and is retried); any other exception rolls the whole batch back,
-    # which preserves the crash semantics of the per-step commits this
-    # replaces — an uncommitted photo simply stays in its old status.
+    # Inference runs OUTSIDE any transaction. Holding BEGIN IMMEDIATE across
+    # face detection and CLIP kept the single SQLite writer lock for seconds
+    # per photo: the workers were serialized on it and every other writer
+    # (downloader claims, API logins, favourites) queued behind inference,
+    # up to the 30 s busy_timeout. The photo stays 'downloading' while we
+    # compute, so a crash here needs no recovery; the claim below is still
+    # the only thing that decides which worker's result is kept.
+    if not work.exists():
+        with transaction() as conn:
+            if not claim_photo_for_processing(uid, conn):
+                raise TransactionRollback
+            set_photo_error(uid, "work file missing", conn=conn)
+            return False
+        return None
+
+    if work_img is not None:
+        rgb = work_img
+    else:
+        with Image.open(work) as img:
+            rgb = _oriented(img).convert("RGB")
+    w, h = rgb.size
+
+    # Re-processing a photo (e.g. a reclaimed photo that was falsely marked
+    # deleted and is being restored) must not re-run the expensive face
+    # detector nor leave duplicate face rows behind. If this photo already
+    # has faces from a previous run, keep them — they are still valid, and
+    # skipping detection is exactly what makes reclaiming ~79k photos fast.
+    faces: list[dict] = []
+    had_faces = bool(count_faces_for_photo(uid))
+    if not had_faces:
+        arr = np.asarray(rgb)
+        bgr = arr[:, :, ::-1].copy()  # PIL -> OpenCV BGR
+        faces = detect_faces(bgr)
+        for f in faces:
+            # Assign straight to an existing person when their mean
+            # embedding matches, so a known face never sits unassigned and
+            # can't spawn a duplicate-person cluster. Unmatched faces stay
+            # NULL for the cluster loop / manual review.
+            f["person_id"] = match_person(f["embedding"].tobytes(), settings.face_sim_threshold)
+
+    # Clip embedding: recompute only when the photo has none yet (same
+    # reclaim fast-path as faces above). In batch mode ``_process_batch``
+    # hands a precomputed vector in; a uid it skipped (already-held clip,
+    # failed decode) falls back to this single-image check instead.
+    if clip_vec is None and not clip_exists(uid):
+        clip_vec = embed_pil(rgb)
+
+    # One short transaction per photo: the claim, every per-face insert, the
+    # clip insert and the final 'done' mark commit together. A lost claim
+    # raises TransactionRollback (the computed result is discarded and the
+    # other worker's stands); any other exception rolls everything back and
+    # the photo keeps its prior status.
     with transaction() as conn:
         if not claim_photo_for_processing(uid, conn):
             raise TransactionRollback
-
-        if not work.exists():
-            set_photo_error(uid, "work file missing", conn=conn)
-            return False
-
-        if work_img is not None:
-            rgb = work_img
-        else:
-            with Image.open(work) as img:
-                rgb = _oriented(img).convert("RGB")
-        w, h = rgb.size
-        arr = np.asarray(rgb)
-        bgr = arr[:, :, ::-1].copy()  # PIL -> OpenCV BGR
 
         # GPS/place is enriched by the gps loop (subprocess) — never geocode
         # from a worker thread: reverse_geocoder forks a multiprocessing pool
@@ -810,30 +841,20 @@ def _process_one(
         )
         place = photo["place"] if photo else None
 
-        # Re-processing a photo (e.g. a reclaimed photo that was falsely
-        # marked deleted and is being restored) must not re-run the expensive
-        # face detector nor leave duplicate face rows behind. If this photo
-        # already has faces from a previous run, keep them — they are still
-        # valid, and skipping detection is exactly what makes reclaiming
-        # ~79k photos fast (only the thumbnail is re-downloaded; embeddings
-        # and any person_id assignments are preserved). Clips are upserted in
-        # `insert_clip`, so a fresh detection is only ever needed when no
-        # prior result exists.
+        # Re-check under the write lock: faces may have appeared since the
+        # unlocked read above.
         existing_faces = count_faces_for_photo(uid, conn)
+        matched = 0
         if existing_faces:
             face_count = existing_faces
         else:
-            faces = detect_faces(bgr)
             face_count = len(faces)
-            matched = 0
+            # The person-means cache can name a person an API merge/delete
+            # removed since it was built; inserting that id would fail the
+            # foreign key and roll the whole photo back.
+            live = _live_person_ids({f["person_id"] for f in faces if f.get("person_id") is not None}, conn)
             for f in faces:
-                # Assign straight to an existing person when their mean
-                # embedding matches, so a known face never sits unassigned and
-                # can't spawn a duplicate-person cluster. Unmatched faces stay
-                # NULL for the cluster loop / manual review.
-                person_id = match_person(
-                    f["embedding"].tobytes(), settings.face_sim_threshold
-                )
+                person_id = f.get("person_id") if f.get("person_id") in live else None
                 if person_id is not None:
                     matched += 1
                 insert_face(
@@ -845,35 +866,34 @@ def _process_one(
                     conn=conn,
                 )
 
-        # Clip embedding: recompute only when the photo has none yet (same
-        # reclaim fast-path as faces above — the previous CLIP vector, if
-        # any, is still valid). In batch mode ``_process_batch`` hands a
-        # precomputed vector in; a uid it skipped (already-held clip, failed
-        # decode) falls back to this single-image check instead.
-        if clip_vec is None and clip_exists(uid, conn):
-            pass
-        elif clip_vec is None:
-            clip_vec = embed_pil(rgb)
-
-        # Persist thumbnail into the cache, then remove the work file.
-        final = _thumb_path(uid)
-        work.replace(final)
-
         if clip_vec is not None:
             insert_clip(uid, clip_vec.tobytes(), conn=conn)
+
+        final = _thumb_path(uid)
+        set_photo_done(uid, final.name, gps, place, conn=conn)
+        # Last step before the commit, so a failed write above leaves the
+        # work file in place for the retry.
+        work.replace(final)
 
         # Mark sidecar dirty when new faces or clips were added
         if not existing_faces or clip_vec is not None:
             _sidcar_mark_dirty()
 
-        set_photo_done(uid, final.name, gps, place, conn=conn)
         log.debug(
             "processed %s: %d faces (kept=%d, matched=%d), clip=%s",
-            uid, face_count, bool(existing_faces), matched if not existing_faces else 0,
+            uid, face_count, bool(existing_faces), matched,
             clip_vec is not None,
         )
         return True
     return None
+
+
+def _live_person_ids(ids: set[int], conn) -> set[int]:
+    if not ids:
+        return set()
+    marks = ",".join("?" * len(ids))
+    rows = conn.execute(f"SELECT id FROM people WHERE id IN ({marks})", tuple(ids)).fetchall()
+    return {r[0] for r in rows}
 
 
 def _photo_row(uid: str, conn=None):
