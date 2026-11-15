@@ -409,7 +409,14 @@ def verify_signed_token(path: str, sig: str | None, exp: int | None) -> bool:
         return False
     if exp < int(time.time()):
         return False
-    expected = hmac.new(_signing_secret(), _signed_message(path, exp), hashlib.sha256).hexdigest()
+    try:
+        message = _signed_message(path, exp)
+    except store.SignEpochUnavailable:
+        # Cannot tell whether this URL was revoked: refuse it. The caller
+        # falls back to bearer auth.
+        log.warning("signed URL refused: revocation epoch unavailable")
+        return False
+    expected = hmac.new(_signing_secret(), message, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, sig)
 
 
@@ -933,12 +940,16 @@ def refresh(refresh_token: str, *, user_agent: str | None = None,
         # cookie that refreshed at the same moment: refuse this one, but do
         # not log the other tab out.
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid refresh token")
-    # ROTATE: retire the old refresh token (kept, flagged) before minting a
-    # new pair in the same family.
-    store.mark_token_rotated(refresh_token)
     if not family:
-        # Token issued before families existed: start one now.
+        # Token issued before families existed: start one now. It is also
+        # stamped on the retired row, so a replay of this token later
+        # revokes everything minted from it.
         family = store.new_token_family()
+    # ROTATE: retire the old refresh token (kept, flagged) before minting a
+    # new pair in the same family. The update is the atomic claim: when two
+    # requests race with the same token, only one gets to mint.
+    if not store.mark_token_rotated(refresh_token, family):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid refresh token")
     access = store.issue_token(row["user_id"], "access", access_ttl(),
                                 user_agent=user_agent, ip=ip, family=family)
     new_refresh = store.issue_token(row["user_id"], "refresh", refresh_ttl(),

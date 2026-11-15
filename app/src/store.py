@@ -2031,6 +2031,12 @@ def bump_cache_generation() -> int:
 # disabled or deleted, changes password, or has all sessions revoked.
 _SIGN_EPOCH_KEY = "sign_epoch"
 _SIGN_EPOCH_TTL = 15.0
+_SIGN_EPOCH_MAX_STALE = 300.0
+
+
+class SignEpochUnavailable(RuntimeError):
+    """The signed-URL epoch could not be read and no recent value is cached."""
+
 _sign_epoch_cache: tuple[float, int] | None = None
 
 
@@ -2039,7 +2045,13 @@ def sign_epoch() -> int:
 
     A media request must not cost a query, so each worker re-reads it at most
     every _SIGN_EPOCH_TTL seconds; another worker's bump is honoured within
-    that window. Any read failure keeps the last known value.
+    that window.
+
+    Fails closed: if the value cannot be read, the last known one is used
+    only while it is younger than _SIGN_EPOCH_MAX_STALE; after that (or with
+    nothing cached) this raises SignEpochUnavailable, and signed URLs are
+    neither minted nor accepted. Falling back to epoch 0 would quietly
+    re-validate every URL a bump had revoked.
     """
     global _sign_epoch_cache
     now = time.time()
@@ -2050,8 +2062,10 @@ def sign_epoch() -> int:
         with get_conn() as conn:
             row = conn.execute("SELECT value FROM cache_state WHERE key=?", (_SIGN_EPOCH_KEY,)).fetchone()
         value = int(row[0]) if row else 0
-    except Exception:
-        return cached[1] if cached is not None else 0
+    except Exception as exc:
+        if cached is not None and now - cached[0] < _SIGN_EPOCH_MAX_STALE:
+            return cached[1]
+        raise SignEpochUnavailable("signed-URL epoch could not be read") from exc
     _sign_epoch_cache = (now, value)
     return value
 
@@ -2926,13 +2940,22 @@ def new_token_family() -> str:
     return secrets.token_hex(8)
 
 
-def mark_token_rotated(token: str) -> None:
-    """Retire a refresh token without deleting it (see the schema comment)."""
+def mark_token_rotated(token: str, family: str) -> bool:
+    """Atomically retire a refresh token; True only for the caller that did it.
+
+    The ``rotated_at IS NULL`` guard makes this the single claim on the
+    token: of two concurrent refreshes with the same token exactly one gets
+    True and may mint a new pair. The row is kept (see the schema comment),
+    and a token issued before families existed is stamped with *family* so
+    a later replay of it can revoke what was minted from it.
+    """
     with get_conn() as conn:
-        conn.execute(
-            "UPDATE auth_tokens SET rotated_at=? WHERE token=? AND rotated_at IS NULL",
-            (int(time.time()), _hash_token(token)),
+        cur = conn.execute(
+            "UPDATE auth_tokens SET rotated_at=?, family=COALESCE(family, ?) "
+            "WHERE token=? AND rotated_at IS NULL",
+            (int(time.time()), family, _hash_token(token)),
         )
+        return cur.rowcount == 1
 
 
 def revoke_token_family(family: str | None, token: str | None = None) -> int:
