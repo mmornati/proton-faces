@@ -54,6 +54,22 @@ class TestHealthz:
         assert indexer_client.get("/healthz", headers=_auth()).json() == {"ok": True}
 
 
+class TestHealthzThreadLiveness:
+    def test_503_when_a_recorded_thread_is_dead(self, monkeypatch):
+        monkeypatch.setattr(
+            indexer, "get_indexer_state", lambda: {"threads": {"sync": True, "worker-0": False}}
+        )
+        resp = TestClient(indexer_status.app).get("/healthz")
+        assert resp.status_code == 503
+        assert "worker-0" not in resp.text
+
+    def test_ok_when_all_threads_alive(self, monkeypatch):
+        monkeypatch.setattr(
+            indexer, "get_indexer_state", lambda: {"threads": {"sync": True, "worker-0": True}}
+        )
+        assert TestClient(indexer_status.app).get("/healthz").json() == {"ok": True}
+
+
 class TestStatus:
     def test_status_shape(self, tmp_db, monkeypatch, indexer_client):
         monkeypatch.setattr(

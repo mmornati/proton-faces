@@ -648,6 +648,19 @@ def _downloader_loop() -> None:
 
 # --- recognition worker ---------------------------------------------------
 
+def _mark_error(uid: str, exc: BaseException) -> None:
+    """Flag a photo as errored without letting the flagging itself raise.
+
+    Called from ``except`` handlers. When the failure was a locked database,
+    this write hits the same lock; an exception escaping here used to end the
+    worker thread for good. The row keeps its current status and is retried.
+    """
+    try:
+        set_photo_error(uid, str(exc)[:300])
+    except Exception as mark_exc:
+        log.warning("could not flag %s as error (%s); it will be retried", uid, mark_exc)
+
+
 def _worker_loop() -> None:
     while True:
         try:
@@ -661,12 +674,12 @@ def _worker_loop() -> None:
             continue
         try:
             _process_batch(uids)
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             telemetry.count_error("worker")
             for uid in uids:
                 telemetry.record_photo(None, False)
                 log.exception("failed processing %s: %s", uid, exc)
-                set_photo_error(uid, str(exc)[:300])
+                _mark_error(uid, exc)
 
 
 def _next_work_batch() -> list[str]:
@@ -743,7 +756,7 @@ def _process_batch(uids: list[str]) -> None:
             telemetry.record_photo(batch_share + time.perf_counter() - start, False)
             telemetry.count_error("process")
             log.exception("failed processing %s: %s", uid, exc)
-            set_photo_error(uid, str(exc)[:300])
+            _mark_error(uid, exc)
 
 
 def _process_one(
@@ -1214,6 +1227,32 @@ def _sync_albums_once() -> int:
 
 # --- public entry point ----------------------------------------------------
 
+_SUPERVISOR_RESTART_SEC = 5.0
+
+
+def _supervised(loop):
+    """Wrap a thread's loop so an escaped exception restarts it instead of ending the thread.
+
+    Every loop already catches its own errors; this is the backstop for the
+    ones that slip through (an ``except`` handler that itself raises, a bad
+    config value read outside a ``try``). Nothing else restarts a dead
+    daemon thread, and the container keeps reporting "Up" without it.
+    """
+    def run() -> None:
+        while True:
+            try:
+                loop()
+                return
+            except Exception:
+                telemetry.count_error("thread_restart")
+                log.exception(
+                    "%s thread crashed; restarting in %.0fs",
+                    threading.current_thread().name, _SUPERVISOR_RESTART_SEC,
+                )
+                time.sleep(_SUPERVISOR_RESTART_SEC)
+    return run
+
+
 def start() -> list[threading.Thread]:
     """Start all background threads. Returns the started threads."""
     init_db()
@@ -1250,16 +1289,16 @@ def start() -> list[threading.Thread]:
     except Exception as exc:  # pragma: no cover
         log.warning("initial albums sync failed: %s", exc)
     threads = [
-        threading.Thread(target=_sync_loop, name="sync", daemon=True),
-        threading.Thread(target=_downloader_loop, name="downloader", daemon=True),
-        threading.Thread(target=_fullres_loop, name="fullres", daemon=True),
-        threading.Thread(target=_cluster_loop, name="cluster", daemon=True),
-        threading.Thread(target=_gps_loop, name="gps", daemon=True),
-        threading.Thread(target=_albums_loop, name="albums", daemon=True),
-        threading.Thread(target=_sidecar_loop, name="sidecar", daemon=True),
+        threading.Thread(target=_supervised(_sync_loop), name="sync", daemon=True),
+        threading.Thread(target=_supervised(_downloader_loop), name="downloader", daemon=True),
+        threading.Thread(target=_supervised(_fullres_loop), name="fullres", daemon=True),
+        threading.Thread(target=_supervised(_cluster_loop), name="cluster", daemon=True),
+        threading.Thread(target=_supervised(_gps_loop), name="gps", daemon=True),
+        threading.Thread(target=_supervised(_albums_loop), name="albums", daemon=True),
+        threading.Thread(target=_supervised(_sidecar_loop), name="sidecar", daemon=True),
     ]
     for i in range(settings.workers):
-        threads.append(threading.Thread(target=_worker_loop, name=f"worker-{i}", daemon=True))
+        threads.append(threading.Thread(target=_supervised(_worker_loop), name=f"worker-{i}", daemon=True))
     for t in threads:
         t.start()
     _record_threads(threads)
