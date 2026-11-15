@@ -253,3 +253,40 @@ class TestLazySklearn:
         code = "import sys; sys.path.insert(0, %r); import cluster; print('sklearn' in sys.modules)" % str(src)
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
         assert out.stdout.strip() == "False"
+
+
+class TestClusterWindowRotates:
+    """Noise faces stay unassigned; the capped window must move past them."""
+
+    def test_cursor_advances_and_wraps(self, tmp_db, monkeypatch):
+        import cluster
+
+        seen = []
+
+        def fake(limit=None, after_id=0):
+            seen.append(after_id)
+            ids = [i for i in range(1, 11) if i > after_id][: limit or 99]
+            return [{"id": i, "embedding": np.ones(512, dtype=np.float32).tobytes()} for i in ids]
+
+        class NoiseOnly:
+            def __init__(self, **kw):
+                pass
+
+            def fit_predict(self, X):
+                return np.full(len(X), -1)
+
+        monkeypatch.setattr(cluster, "faces_without_person", fake)
+        monkeypatch.setattr(cluster, "HDBSCAN", NoiseOnly)
+        monkeypatch.setattr(cluster.settings, "min_cluster_size", 2)
+        for _ in range(4):
+            cluster.cluster_once(max_faces=4)
+        # 1-4 → cursor 3; 4-7 → cursor 6; 7-10 → cursor 9; only face 10 left → wrap.
+        assert seen == [0, 3, 6, 9]
+        assert cluster._cluster_cursor == 0
+
+    def test_small_backlog_never_moves_the_cursor(self, tmp_db, monkeypatch):
+        import cluster
+
+        monkeypatch.setattr(cluster, "faces_without_person", lambda limit=None, after_id=0: [])
+        cluster.cluster_once(max_faces=5000)
+        assert cluster._cluster_cursor == 0

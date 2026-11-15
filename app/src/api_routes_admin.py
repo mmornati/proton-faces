@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 import admin
 import api  # noqa: E402  (intentional: see api_common docstring)
@@ -28,6 +28,7 @@ from store import (
     get_user_by_username,
     list_users,
     revoke_all_tokens,
+    revoke_all_tokens_except,
     revoke_pending_2fa_for_user,
     set_totp_enabled,
     set_totp_secret,
@@ -74,7 +75,7 @@ def api_admin_create_user(body: dict = Body(...),
 
 
 @router.patch("/api/admin/users/{user_id}")
-def api_admin_patch_user(user_id: int, body: dict = Body(...),
+def api_admin_patch_user(user_id: int, request: Request, body: dict = Body(...),
                           actor: CurrentUser = Depends(require_role("admin"))):
     """Update a user (admin only)."""
     if api.demo_disable_admin_user_management():
@@ -106,7 +107,12 @@ def api_admin_patch_user(user_id: int, body: dict = Body(...),
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     revoked = 0
-    if password and not (user_id == actor.id):
+    if password and user_id == actor.id:
+        # Changing your own password signs out every other session, exactly
+        # like the self-service route; it used to leave them all valid.
+        current = api._extract_bearer(request)
+        revoked = revoke_all_tokens_except(user_id, current) if current else revoke_all_tokens(user_id)
+    elif password:
         revoked = revoke_all_tokens(user_id)
     row = get_user_by_id(user_id)
     return {"user": api._user_row_public(row), "tokens_revoked": revoked}

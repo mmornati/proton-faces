@@ -11,6 +11,7 @@ These are read by `docker-compose.yml` itself, not by the containers:
 | `DATA_MOUNT` | named volume `data` | Host path or `:volume` that backs `DATA_DIR`. On a server with a big disk, set `DATA_MOUNT=/srv/proton-faces/data`. The directory must be writable by UID 1000. |
 | `AUTH_SESSION_MOUNT` | `./credentials/auth-session.json` | Host path to the Proton session file (issue #32). The file is bind-mounted **only into the proton-bridge container** at `/data/auth-session.json` — the indexer and `app` containers have no path to it. The mount is writable because the SDK refreshes the file on disk. Override if your session lives elsewhere; the directory must be readable (and writable for refresh) by UID 1000. |
 | `PORT` | `8080` | Host port the web UI binds to. |
+| `BIND_ADDRESS` | `0.0.0.0` | Host address that port is published on. Behind a reverse proxy on the same host set `127.0.0.1`: a Docker-published port bypasses host firewalls such as ufw, so the default would also serve plain HTTP beside the proxy. |
 | `SYNC_INTERVAL` | `300` | Default seconds between timeline diffs. |
 | `SYNC_LIMIT` | `0` | Default sync limit (0 = all photos). |
 | `WORKERS` | `3` | Default number of recognition workers. |

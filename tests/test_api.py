@@ -3293,6 +3293,19 @@ class TestBridgeHealthCache:
             api._bridge_health_cache_lock.release()
 
 
+class TestAdminOwnPasswordRevokesOtherSessions:
+    def test_other_sessions_end_current_one_stays(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        here = _bearer(client)
+        elsewhere = _bearer(client)
+        me = client.get("/api/auth/me", headers=here).json()["id"]
+        r = client.patch(f"/api/admin/users/{me}", json={"password": "a-new-password-1"}, headers=here)
+        assert r.status_code == 200
+        assert r.json()["tokens_revoked"] >= 1
+        assert client.get("/api/auth/me", headers=here).status_code == 200
+        assert client.get("/api/auth/me", headers=elsewhere).status_code == 401
+
+
 class TestMeAdminArea:
     def test_me_reports_admin_area(self, client, password_hash, monkeypatch):
         _seed_user(password_hash=password_hash)
