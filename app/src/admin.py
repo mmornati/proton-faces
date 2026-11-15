@@ -66,11 +66,23 @@ def snapshot_backup() -> dict:
         raise FileNotFoundError("index DB not found yet")
     # VACUUM INTO produces a consistent snapshot from a WAL-mode db without
     # blocking writers; the source connection is read-only.
+    # Write under a name the backup listing ignores and rename on success: a
+    # snapshot that dies half way (disk full) used to stay behind as a
+    # truncated "index-*.sqlite3" that counted as a backup and could push a
+    # good one out during pruning.
+    partial = dest.with_name(dest.name + ".partial")
+    partial.unlink(missing_ok=True)
     src = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True)
     try:
-        src.execute(f'VACUUM INTO "{dest}"')
+        src.execute(f'VACUUM INTO "{partial}"')
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     finally:
         src.close()
+    # The snapshot holds password hashes and encrypted TOTP secrets.
+    partial.chmod(0o600)
+    partial.replace(dest)
     sz = dest.stat().st_size
     try:
         with _schedule_path().open("r") as f:
@@ -223,11 +235,15 @@ def _backup_due(sched: dict, now: datetime | None = None) -> bool:
     return last_dt < slot
 
 
+_BACKUP_RETRY_SEC = 3600
+
+
 def _worker_loop() -> None:
+    retry_after = 0.0
     while True:
         try:
             sched = get_schedule()
-            if _backup_due(sched):
+            if _backup_due(sched) and time.time() >= retry_after:
                 log.info("scheduled backup running (hh:mm=%s:%s)",
                          sched.get("hour"), sched.get("minute"))
                 res = snapshot_backup()
@@ -238,7 +254,10 @@ def _worker_loop() -> None:
                 except Exception:
                     log.exception("backup prune failed")
         except Exception:
-            log.exception("scheduled backup failed")
+            # A failed snapshot leaves the schedule "due"; without a pause the
+            # full VACUUM INTO was retried every minute (e.g. on a full disk).
+            retry_after = time.time() + _BACKUP_RETRY_SEC
+            log.exception("scheduled backup failed; next attempt in %d min", _BACKUP_RETRY_SEC // 60)
         # Sleep in small steps so a shutdown is prompt-ish.
         for _ in range(6):
             time.sleep(10)

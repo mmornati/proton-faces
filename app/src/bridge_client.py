@@ -55,6 +55,9 @@ def uid_invalid_reason(uid: str) -> str | None:
 _is_valid_uid = is_valid_uid  # alias for internal use
 
 
+_THUMBNAILS_TIMEOUT_SEC = 330.0
+
+
 class BridgeTransientError(BridgeError):
     """Raised when the bridge returned a transient error (429/502/503/etc.)
     that the caller should retry after a backoff rather than treating as a
@@ -245,7 +248,14 @@ class BridgeClient:
         The bridge is synchronous: by the time it responds, every `ok` uid has
         its WebP written on the shared volume.
         """
-        r = self._client.post(f"{self.base_url}/thumbnails", json={"uids": uids}, headers=self._headers())
+        # Longer than the bridge's own deadline (PROTON_BRIDGE_THUMBNAILS_TIMEOUT_MS,
+        # 300 s by default). With the 120 s client default a slow batch raised
+        # ReadTimeout here while the bridge was still working, and the whole
+        # batch was marked as failed.
+        r = self._client.post(
+            f"{self.base_url}/thumbnails", json={"uids": uids}, headers=self._headers(),
+            timeout=httpx.Timeout(_THUMBNAILS_TIMEOUT_SEC, connect=30.0),
+        )
         self._raise_transient(r)
         r.raise_for_status()
         return r.json()

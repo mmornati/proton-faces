@@ -1167,6 +1167,10 @@ def _video_poster(src: Path, uid: str) -> None:
         seek = ["-ss", f"{duration_sec * 0.1:.2f}"]
 
     dest = _thumb_path(uid)
+    # Build the poster beside its final name and move it into place: the
+    # thumbnail cache never holds a half-written file, and a run that wrote
+    # nothing fails here instead of leaving a 'done' row with no thumbnail.
+    frame = dest.with_name(dest.stem + ".poster-tmp" + dest.suffix)
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         *seek, "-i", str(src),
@@ -1174,16 +1178,21 @@ def _video_poster(src: Path, uid: str) -> None:
         "-vf", "scale='min(512,iw)':'min(512,ih)':force_original_aspect_ratio=decrease",
         "-update", "1",  # write a single image file, not a mov/mjpeg
         "-q:v", "5",      # mjpeg quality (we re-encode to WebP next, this is just a fast frame)
-        str(dest),
+        str(frame),
     ]
-    subprocess.run(cmd, check=True, timeout=120)
-    # Re-encode the extracted frame as actual WebP (ffmpeg's webp muxer is slow;
-    # using Pillow matches the image-thumb pipeline for cache uniformity).
-    if dest.exists():
+    try:
+        subprocess.run(cmd, check=True, timeout=120)
+        if not frame.exists() or frame.stat().st_size == 0:
+            raise RuntimeError("ffmpeg exited 0 but wrote no poster frame")
+        # Re-encode the extracted frame as actual WebP (ffmpeg's webp muxer is
+        # slow; using Pillow matches the image-thumb pipeline for cache uniformity).
         from PIL import Image
-        with Image.open(dest) as img:
+        with Image.open(frame) as img:
             img = img.convert("RGB")
-            img.save(dest, format="WEBP", quality=82, method=settings.webp_method)
+            img.save(frame, format="WEBP", quality=82, method=settings.webp_method)
+        frame.replace(dest)
+    finally:
+        frame.unlink(missing_ok=True)
 
     if duration_sec is not None:
         set_photo_duration(uid, duration_sec)

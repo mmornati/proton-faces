@@ -231,3 +231,31 @@ class TestRunChecks:
         out = admin._bridge_reachability()
         assert out["ok"] is False
         assert out["status"] == "down"
+
+
+class TestBackupAtomic:
+    def test_failed_snapshot_leaves_no_file(self, tmp_db, monkeypatch):
+        import sqlite3
+
+        class Boom:
+            def execute(self, sql):
+                # Simulate a snapshot that dies after creating the file.
+                path = sql.split('"')[1]
+                open(path, "wb").write(b"partial")
+                raise sqlite3.OperationalError("database or disk is full")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(admin.sqlite3, "connect", lambda *a, **k: Boom())
+        import pytest
+
+        with pytest.raises(sqlite3.OperationalError):
+            admin.snapshot_backup()
+        assert list(admin.settings.backup_dir.iterdir()) == []
+        assert admin._backup_rows() == []
+
+    def test_snapshot_is_owner_only(self, tmp_db):
+        out = admin.snapshot_backup()
+        mode = (admin.settings.backup_dir / out["name"]).stat().st_mode & 0o777
+        assert mode == 0o600
