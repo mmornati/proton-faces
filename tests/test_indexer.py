@@ -1039,3 +1039,21 @@ class TestSyncConfigCoercion:
         assert isinstance(cfg["full_scan_interval"], int)
         assert isinstance(cfg["tip_size"], int)
         assert cfg["last_full_scan"] == 123.5
+
+
+class TestVideoPosterAtomic:
+    def test_ffmpeg_writing_nothing_is_an_error(self, app_settings, tmp_path, monkeypatch):
+        import subprocess
+
+        class Done:
+            returncode = 0
+            stdout = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
+        src = tmp_path / "v.mp4"
+        src.write_bytes(b"x")
+        indexer._thumb_path("vid1").parent.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(RuntimeError):
+            indexer._video_poster(src, "vid1")
+        assert not indexer._thumb_path("vid1").exists()
+        assert list(indexer._thumb_path("vid1").parent.iterdir()) == []
