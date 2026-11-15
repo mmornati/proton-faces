@@ -361,9 +361,23 @@ class TestNextWorkBatch:
         monkeypatch.setattr(indexer, "_pending", _FakePending(raise_get=True))
         monkeypatch.setattr(
             indexer, "get_photos",
-            lambda status, limit=500, offset=0: [{"uid": "leftover"}],
+            lambda status, limit=500, offset=0: [{"uid": "in-flight"}, {"uid": "leftover"}],
         )
+        work = indexer._work_path("leftover")
+        work.parent.mkdir(parents=True, exist_ok=True)
+        work.write_bytes(b"x")
+        # "in-flight" has no work file yet (the downloader is still fetching
+        # it) and must be left alone.
         assert indexer._next_work_batch() == ["leftover"]
+
+    def test_fallback_ignores_downloads_still_in_flight(self, app_settings, monkeypatch):
+        monkeypatch.setattr(indexer.settings, "clip_batch_size", 1)
+        monkeypatch.setattr(indexer.settings, "clip_batch_queue_depth", 1)
+        monkeypatch.setattr(indexer, "_pending", _FakePending(raise_get=True))
+        monkeypatch.setattr(
+            indexer, "get_photos", lambda status, limit=500, offset=0: [{"uid": "in-flight"}],
+        )
+        assert indexer._next_work_batch() == []
 
     def test_empty_everywhere_returns_empty(self, app_settings, monkeypatch):
         monkeypatch.setattr(indexer.settings, "clip_batch_size", 1)
@@ -993,3 +1007,35 @@ class TestClusterTickSidecar:
             self._patch(monkeypatch, created=created, gc=gc)
             indexer._cluster_tick()
             assert indexer._sidcar_dirty is True
+
+
+class TestSyncWait:
+    def test_never_scanned_library_starts_quickly(self, monkeypatch):
+        monkeypatch.setattr(indexer.settings, "sync_interval", 600)
+        cfg = {"full_scan_interval": 21600}
+        assert indexer._sync_wait_seconds(cfg, None, first_pass=True) == indexer._SYNC_FIRST_WAIT_SEC
+        # Only on the first pass: a disabled sync must not loop every 5 s.
+        assert indexer._sync_wait_seconds(cfg, None, first_pass=False) == 600
+
+    def test_overdue_scan_is_floored_not_zero(self, monkeypatch):
+        monkeypatch.setattr(indexer.settings, "sync_interval", 600)
+        cfg = {"full_scan_interval": 21600}
+        overdue = time.time() - 30000
+        assert indexer._sync_wait_seconds(cfg, overdue, first_pass=False) == indexer._SYNC_MIN_WAIT_SEC
+
+    def test_scan_due_soon_wakes_for_it(self, monkeypatch):
+        monkeypatch.setattr(indexer.settings, "sync_interval", 600)
+        cfg = {"full_scan_interval": 21600}
+        wait = indexer._sync_wait_seconds(cfg, time.time() - 21600 + 120, first_pass=False)
+        assert 100 < wait <= 120
+
+
+class TestSyncConfigCoercion:
+    def test_bad_values_keep_defaults(self, app_settings, monkeypatch):
+        path = indexer._sync_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"full_scan_interval": None, "tip_size": "ten", "last_full_scan": "123.5"}))
+        cfg = indexer.get_sync_config()
+        assert isinstance(cfg["full_scan_interval"], int)
+        assert isinstance(cfg["tip_size"], int)
+        assert cfg["last_full_scan"] == 123.5

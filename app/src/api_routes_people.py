@@ -16,6 +16,7 @@ import api  # noqa: E402  (intentional: see api_common docstring)
 from auth import CurrentUser, require_role, require_user
 from store import (
     assign_face_person,
+    assign_faces_person_bulk,
     count_faces_for_person,
     create_person,
     face_embedding,
@@ -38,6 +39,8 @@ from store import (
 log = logging.getLogger("api")
 
 router = APIRouter()
+
+_SUGGESTED_CACHE_MAX = 8
 
 # Hard ceilings for the bulk people-merge and map endpoints (see
 # api_common.LIST_MAX_LIMIT for the grid-page ceiling).
@@ -163,8 +166,9 @@ def api_face_suggest(face_id: int, limit: int = 5):
     sims = M @ fe
     order = np.argsort(-sims)
     top_n = max(1, min(limit, 50))
-    live = set(live_person_ids([int(pids[i]) for i in order[:top_n]]))
-    order = order[[int(pids[i]) in live for i in order[:top_n]]]
+    candidates = order[:top_n]
+    live = set(live_person_ids([int(pids[i]) for i in candidates]))
+    order = [i for i in candidates if int(pids[i]) in live]
     by_id = {r["id"]: r for r in people_by_ids([int(pids[i]) for i in order[:top_n]])}
     scored = []
     for i in order[:top_n]:
@@ -230,10 +234,15 @@ def api_assign_face(face_id: int, body: dict = Body(...),
     emb = face_embedding(face_id)
     assigned = 0
     if emb is not None:
-        for sim_row in similar_faces(emb, api.settings.face_sim_threshold, limit=500):
-            if sim_row[2] is None:  # person_id
-                assign_face_person(sim_row[0], person_id)
-                assigned += 1
+        # One guarded bulk write: the similarity cache can lag recent
+        # assignments, and the per-face path cost ~4 commits each.
+        look_alikes = [
+            int(sim_row[0])
+            for sim_row in similar_faces(emb, api.settings.face_sim_threshold, limit=500)
+            if sim_row[2] is None  # person_id
+        ]
+        if look_alikes:
+            assigned = assign_faces_person_bulk(look_alikes, person_id, only_unassigned=True)
     api._invalidate_dups_cache()
     api._invalidate_people_cache()
     return {
@@ -452,14 +461,26 @@ def api_people_duplicates(threshold: float = 0.40, limit: int = 50):
     threshold = api._clamp_threshold(threshold)
     limit = api._clamp_limit(limit, default=50)
     now = time.time()
-    if api._dups_cache is not None and now - api._dups_cache[0] < api._DUP_CACHE_TTL:
-        return api._dups_cache[1]
+    key = (round(threshold, 2), limit)
+
+    def cached():
+        entry = api._dups_cache
+        # The entry remembers which parameters produced it: one slot used to
+        # answer every threshold/limit with the first caller's result.
+        if entry is not None and now - entry[0] < api._DUP_CACHE_TTL and entry[2:] == (key,):
+            return entry[1]
+        return None
+
+    hit = cached()
+    if hit is not None:
+        return hit
     with api._dups_cache_lock:
         now = time.time()
-        if api._dups_cache is not None and now - api._dups_cache[0] < api._DUP_CACHE_TTL:
-            return api._dups_cache[1]
-        resp = api._dups_payload(threshold, limit)
-        api._dups_cache = (now, resp)
+        hit = cached()
+        if hit is not None:
+            return hit
+        resp = api._dups_payload(key[0], limit)
+        api._dups_cache = (now, resp, key)
         return resp
 
 
@@ -469,6 +490,9 @@ def api_people_suggested_merges(threshold: float = 0.40, limit: int = 50, offset
     threshold = api._clamp_threshold(threshold)
     limit = api._clamp_limit(limit, default=50)
     offset = api._clamp_offset(offset)
+    # Two decimals is finer than the UI slider; a raw float key let every
+    # distinct value add a full row list that was never evicted.
+    threshold = round(threshold, 2)
     with api._suggested_cache_lock:
         now = time.time()
         entry = api._suggested_cache.get(threshold)
@@ -477,6 +501,9 @@ def api_people_suggested_merges(threshold: float = 0.40, limit: int = 50, offset
         else:
             full = api._suggested_rows(threshold)
             api._suggested_cache[threshold] = (time.time(), full)
+            while len(api._suggested_cache) > _SUGGESTED_CACHE_MAX:
+                oldest = min(api._suggested_cache, key=lambda k: api._suggested_cache[k][0])
+                api._suggested_cache.pop(oldest, None)
     page = full[offset : offset + limit]
     named = sum(1 for r in full if r["name"])
     return {
