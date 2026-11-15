@@ -378,7 +378,7 @@ def warm_models() -> None:
         log.info("WARM_MODELS=0: skipping ML session warm-up")
         return
     for name, fn in (
-        ("clip", clip.warm_up),
+        ("clip", clip.warm_up_text),
         ("insightface", faces.warm_up),
     ):
         try:

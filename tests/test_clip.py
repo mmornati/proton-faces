@@ -107,7 +107,8 @@ class TestWarmUp:
         vec = np.ones((1, 512), dtype=np.float32)
         vis = _FakeSession(vec)
         txt = _FakeSession(vec)
-        monkeypatch.setattr(clip, "_load", lambda: (vis, txt, _FakeTokenizer()))
+        monkeypatch.setattr(clip, "_load_vision", lambda: vis)
+        monkeypatch.setattr(clip, "_load_text", lambda: (txt, _FakeTokenizer()))
         clip.warm_up()
         assert "pixel_values" in vis.run_calls[0]
         assert vis.run_calls[0]["pixel_values"].shape == (1, 3, 224, 224)
@@ -118,9 +119,41 @@ class TestWarmUp:
         def _boom():
             raise RuntimeError("no model")
 
-        monkeypatch.setattr(clip, "_load", _boom)
+        monkeypatch.setattr(clip, "_load_vision", _boom)
         with pytest.raises(RuntimeError):
             clip.warm_up()
+
+    def test_text_warm_up_never_loads_the_vision_encoder(self, monkeypatch):
+        def _boom():
+            raise AssertionError("vision encoder loaded by the text warm-up")
+
+        txt = _FakeSession(np.ones((1, 512), dtype=np.float32))
+        monkeypatch.setattr(clip, "_load_vision", _boom)
+        monkeypatch.setattr(clip, "_load_text", lambda: (txt, _FakeTokenizer()))
+        clip.warm_up_text()
+        assert "input_ids" in txt.run_calls[0]
+
+
+class TestSplitLoading:
+    """Each process loads only the encoder it uses."""
+
+    def test_embed_text_does_not_load_vision(self, monkeypatch):
+        def _boom():
+            raise AssertionError("vision encoder loaded for a text query")
+
+        txt = _FakeSession(np.ones((1, 512), dtype=np.float32))
+        monkeypatch.setattr(clip, "_load_vision", _boom)
+        monkeypatch.setattr(clip, "_load_text", lambda: (txt, _FakeTokenizer()))
+        assert clip.embed_text("a beach").shape == (512,)
+
+    def test_embed_image_does_not_load_text(self, monkeypatch):
+        def _boom():
+            raise AssertionError("text encoder loaded for an image")
+
+        vis = _FakeSession(np.ones((1, 512), dtype=np.float32))
+        monkeypatch.setattr(clip, "_load_vision", lambda: vis)
+        monkeypatch.setattr(clip, "_load_text", _boom)
+        assert clip.embed_pil(_rgb_image()).shape == (512,)
 
 
 class TestEmbed:
@@ -129,7 +162,8 @@ class TestEmbed:
         vec = np.ones((1, 512), dtype=np.float32) * 3.0
         vis = _FakeSession(vec)
         txt = _FakeSession(vec)
-        monkeypatch.setattr(clip, "_load", lambda: (vis, txt, _FakeTokenizer()))
+        monkeypatch.setattr(clip, "_load_vision", lambda: vis)
+        monkeypatch.setattr(clip, "_load_text", lambda: (txt, _FakeTokenizer()))
         return vis, txt
 
     def test_embed_image_returns_normalized(self, fake_sessions, tmp_path):
@@ -183,7 +217,8 @@ class TestEmbedBatch:
     def fake_sessions(self, monkeypatch):
         vis = _MeanSession()
         txt = _FakeSession(np.ones((1, 512), dtype=np.float32) * 3.0)
-        monkeypatch.setattr(clip, "_load", lambda: (vis, txt, _FakeTokenizer()))
+        monkeypatch.setattr(clip, "_load_vision", lambda: vis)
+        monkeypatch.setattr(clip, "_load_text", lambda: (txt, _FakeTokenizer()))
         return vis, txt
 
     def test_empty_returns_none(self, fake_sessions):

@@ -42,6 +42,7 @@ from store import (
     clip_exists,
     confirm_deletions,
     count_faces_for_photo,
+    current_cache_generation,
     delete_empty_people,
     deleted_photos_to_purge,
     get_photos,
@@ -1200,18 +1201,37 @@ def _exif_gps_to_deg(value, ref: str | None) -> float | None:
 
 # --- cluster loop ----------------------------------------------------------
 
+_sidcar_seen_generation: int | None = None
+
+
+def _cluster_tick() -> None:
+    """One clustering pass; marks the sidecar dirty only if people changed.
+
+    The sidecar carries each face's person_id, so it must follow clustering
+    here and merges/assignments made through the API (which bump the shared
+    people generation). It used to be marked dirty on every tick, which on an
+    idle library re-read every face and clip row and rewrote ~500 MB of
+    sidecar files every CLUSTER_INTERVAL for nothing.
+    """
+    global _sidcar_seen_generation
+    with telemetry.job_run("cluster"):
+        created = cluster_once(settings.cluster_max_faces)
+        # Sweep placeholder rows left empty by face deletions/reassignments.
+        gc = delete_empty_people()
+    if gc:
+        log.info("swept %d empty people rows", gc)
+    _runtime["last_cluster"] = time.time()
+    generation = current_cache_generation()
+    if created or gc or generation != _sidcar_seen_generation:
+        _sidcar_seen_generation = generation
+        _sidcar_mark_dirty()
+
+
 def _cluster_loop() -> None:
     while True:
         time.sleep(settings.cluster_interval)
         try:
-            with telemetry.job_run("cluster"):
-                cluster_once(settings.cluster_max_faces)
-                # Sweep placeholder rows left empty by face deletions/reassignments.
-                gc = delete_empty_people()
-            if gc:
-                log.info("swept %d empty people rows", gc)
-            _runtime["last_cluster"] = time.time()
-            _sidcar_mark_dirty()
+            _cluster_tick()
         except Exception as exc:  # pragma: no cover
             log.exception("cluster loop error: %s", exc)
 

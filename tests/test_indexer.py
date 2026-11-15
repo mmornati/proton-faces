@@ -959,3 +959,37 @@ class TestInferenceOutsideWriteLock:
         with store.get_conn() as c:
             rows = c.execute("SELECT person_id FROM faces WHERE photo_uid=?", (uid,)).fetchall()
         assert [r[0] for r in rows] == [None]
+
+
+class TestClusterTickSidecar:
+    """An idle library must not rewrite the sidecar every cluster interval."""
+
+    def _patch(self, monkeypatch, created=0, gc=0):
+        monkeypatch.setattr(indexer, "cluster_once", lambda max_faces: created)
+        monkeypatch.setattr(indexer, "delete_empty_people", lambda: gc)
+        monkeypatch.setattr(indexer, "_sidcar_dirty", False)
+
+    def test_first_tick_marks_dirty_then_idle_ticks_do_not(self, tmp_db, monkeypatch):
+        self._patch(monkeypatch)
+        indexer._cluster_tick()
+        assert indexer._sidcar_dirty is True
+        monkeypatch.setattr(indexer, "_sidcar_dirty", False)
+        indexer._cluster_tick()
+        indexer._cluster_tick()
+        assert indexer._sidcar_dirty is False
+
+    def test_api_side_change_marks_dirty(self, tmp_db, monkeypatch):
+        self._patch(monkeypatch)
+        indexer._cluster_tick()
+        monkeypatch.setattr(indexer, "_sidcar_dirty", False)
+        store.bump_cache_generation()
+        indexer._cluster_tick()
+        assert indexer._sidcar_dirty is True
+
+    def test_new_people_or_sweep_marks_dirty(self, tmp_db, monkeypatch):
+        self._patch(monkeypatch)
+        indexer._cluster_tick()
+        for created, gc in ((2, 0), (0, 3)):
+            self._patch(monkeypatch, created=created, gc=gc)
+            indexer._cluster_tick()
+            assert indexer._sidcar_dirty is True
