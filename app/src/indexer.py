@@ -13,6 +13,7 @@ Runs in the background of the FastAPI process:
 """
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import os
@@ -676,6 +677,55 @@ def _mark_error(uid: str, exc: BaseException) -> None:
 
 _IDLE_FALLBACK_SCAN = 50
 
+# Idle model release. The sessions load on the first photo and used to stay
+# for the life of the process: a library that receives a few photos a week
+# held ~1 GB of model memory around the clock.
+_last_work_ts = 0.0
+_models_idle_lock = threading.Lock()
+
+
+def _note_work() -> None:
+    global _last_work_ts
+    _last_work_ts = time.time()
+
+
+def _release_idle_models(now: float | None = None) -> bool:
+    """Unload CLIP and InsightFace once no photo has been processed for a while."""
+    global _last_work_ts
+    limit = settings.model_idle_unload_sec
+    if limit <= 0 or not _last_work_ts:
+        return False
+    now = time.time() if now is None else now
+    if now - _last_work_ts < limit or _pending.qsize():
+        return False
+    if not _models_idle_lock.acquire(blocking=False):
+        return False
+    try:
+        import clip
+        import faces
+
+        released = clip.unload()
+        released = faces.unload() or released
+        _last_work_ts = 0.0
+        if not released:
+            return False
+        gc.collect()
+        _trim_heap()
+        log.info("released idle ML models after %ds without work", int(limit))
+        return True
+    finally:
+        _models_idle_lock.release()
+
+
+def _trim_heap() -> None:
+    """Ask glibc to hand freed pages back to the OS (no-op elsewhere)."""
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
 
 def _worker_loop() -> None:
     while True:
@@ -686,8 +736,13 @@ def _worker_loop() -> None:
             time.sleep(5)
             continue
         if not uids:
+            try:
+                _release_idle_models()
+            except Exception:  # pragma: no cover - never let housekeeping stop a worker
+                log.warning("idle model release failed", exc_info=True)
             time.sleep(5)
             continue
+        _note_work()
         try:
             _process_batch(uids)
         except Exception as exc:

@@ -422,4 +422,21 @@ app.include_router(_admin_router)
 app.include_router(_status_router)
 
 # --- Static UI -------------------------------------------------------------
-app.mount("/", StaticFiles(directory=_STATIC, html=True), name="static")
+class _ShellStaticFiles(StaticFiles):
+    """The SPA shell, always revalidated.
+
+    Without a Cache-Control header a CDN applies its own default to .js/.css
+    (Cloudflare: cache at the edge and tell browsers max-age=4h) while the
+    HTML stays uncached. After a deploy that paired the new page with the
+    previous stylesheet, script and service worker for hours. ``no-cache``
+    lets browsers keep a copy but check the ETag first (a 304 when nothing
+    changed) and keeps shared caches from serving it unvalidated.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
+
+app.mount("/", _ShellStaticFiles(directory=_STATIC, html=True), name="static")

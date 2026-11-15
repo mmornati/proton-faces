@@ -6,7 +6,7 @@
  *    goes straight to the network, untouched, so per-user data and signed
  *    URLs are never intercepted or replayed.
  */
-const VERSION = "pf-shell-v6";
+const VERSION = "pf-shell-v7";
 const SHELL_ASSETS = [
   "./",
   "./manifest.json",
@@ -75,19 +75,18 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Matching static assets (manifest, icons and anything else in-scope).
+  // Static assets (styles, scripts, manifest, icons): network first, cache
+  // only as the offline fallback. Serving the cached copy first paired a
+  // freshly deployed page with the previous stylesheet until the next load.
   event.respondWith(
-    caches.match(request).then((cached) => {
-      const freshen = fetch(request)
-        .then((resp) => {
-          if (resp.ok) {
-            const copy = resp.clone();
-            caches.open(VERSION).then((cache) => cache.put(request, copy));
-          }
-          return resp;
-        })
-        .catch(() => cached);
-      return cached || freshen;
-    })
+    fetch(request)
+      .then((resp) => {
+        if (resp.ok) {
+          const copy = resp.clone();
+          caches.open(VERSION).then((cache) => cache.put(request, copy));
+        }
+        return resp;
+      })
+      .catch(() => caches.match(request))
   );
 });

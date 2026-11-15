@@ -87,6 +87,7 @@ def _reset_module_state():
         import indexer
 
         indexer._sidcar_seen_generation = None
+        indexer._last_work_ts = 0.0
     except ImportError:
         pass
     bridge_client._async_client = None

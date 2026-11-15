@@ -1057,3 +1057,46 @@ class TestVideoPosterAtomic:
             indexer._video_poster(src, "vid1")
         assert not indexer._thumb_path("vid1").exists()
         assert list(indexer._thumb_path("vid1").parent.iterdir()) == []
+
+
+class TestIdleModelRelease:
+    def _stub(self, monkeypatch, loaded=True):
+        import clip
+        import faces
+
+        calls = []
+        monkeypatch.setattr(clip, "unload", lambda: calls.append("clip") or loaded)
+        monkeypatch.setattr(faces, "unload", lambda: calls.append("faces") or loaded)
+        monkeypatch.setattr(indexer, "_trim_heap", lambda: calls.append("trim"))
+        monkeypatch.setattr(indexer, "_pending", _FakePending(raise_get=True))
+        return calls
+
+    def test_releases_after_the_idle_limit(self, monkeypatch):
+        calls = self._stub(monkeypatch)
+        monkeypatch.setattr(indexer.settings, "model_idle_unload_sec", 900)
+        indexer._last_work_ts = 1000.0
+        assert indexer._release_idle_models(now=1000.0 + 899) is False
+        assert calls == []
+        assert indexer._release_idle_models(now=1000.0 + 901) is True
+        assert calls == ["clip", "faces", "trim"]
+        # Nothing left to release until work happens again.
+        assert indexer._release_idle_models(now=1000.0 + 5000) is False
+
+    def test_never_before_any_work_and_never_when_disabled(self, monkeypatch):
+        calls = self._stub(monkeypatch)
+        monkeypatch.setattr(indexer.settings, "model_idle_unload_sec", 900)
+        assert indexer._release_idle_models(now=10**9) is False
+        monkeypatch.setattr(indexer.settings, "model_idle_unload_sec", 0)
+        indexer._last_work_ts = 1.0
+        assert indexer._release_idle_models(now=10**9) is False
+        assert calls == []
+
+    def test_unload_drops_the_sessions(self):
+        import clip
+        import faces
+
+        clip._sess_vision = object()
+        faces._app = object()
+        assert clip.unload() is True and faces.unload() is True
+        assert clip._sess_vision is None and faces._app is None
+        assert clip.unload() is False and faces.unload() is False

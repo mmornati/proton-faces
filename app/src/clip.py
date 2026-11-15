@@ -112,6 +112,21 @@ def _load_text():
         return _sess_text, _tokenizer
 
 
+def unload() -> bool:
+    """Drop the loaded sessions so their memory can be returned. True if any was loaded.
+
+    A call already running on another thread keeps its own reference to the
+    session and finishes normally; the next call reloads.
+    """
+    global _sess_vision, _sess_text, _tokenizer
+    with _lock:
+        loaded = _sess_vision is not None or _sess_text is not None
+        _sess_vision = None
+        _sess_text = None
+        _tokenizer = None
+    return loaded
+
+
 def warm_up_text() -> None:
     """Pre-load the text encoder and force ONNX graph initialization.
 
