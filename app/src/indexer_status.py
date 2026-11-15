@@ -115,7 +115,15 @@ def _require_indexer_token(request: Request) -> None:
 
 @app.get("/healthz")
 def healthz() -> dict:
-    """Liveness probe — auth-free so compose healthchecks work without the token."""
+    """Liveness probe — auth-free so compose healthchecks work without the token.
+
+    503 when a pipeline thread recorded at start() is no longer alive: the
+    process is up but not indexing. Thread names are not secret, but the
+    body stays minimal because the route is unauthenticated.
+    """
+    threads = indexer.get_indexer_state().get("threads") or {}
+    if not all(threads.values()):
+        raise HTTPException(status_code=503, detail="indexer thread down")
     return {"ok": True}
 
 

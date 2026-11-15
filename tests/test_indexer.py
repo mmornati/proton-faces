@@ -813,3 +813,95 @@ class TestEnrichPlacesChunked:
         assert indexer.enrich_places() == 4
         assert store.get_photo("g2")["place"] is None
         assert store.get_photo("g4")["place"] == "Place14.0"
+
+
+class TestWorkerSurvivesLockedDatabase:
+    """A locked DB used to end worker threads: the error handler's own write raised."""
+
+    def test_mark_error_swallows_failing_write(self, monkeypatch):
+        import sqlite3
+
+        def locked(uid, error):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(indexer, "set_photo_error", locked)
+        indexer._mark_error("u1", RuntimeError("boom"))
+
+    def test_worker_loop_keeps_running_when_flagging_fails(self, monkeypatch):
+        import sqlite3
+
+        class Stop(BaseException):
+            pass
+
+        batches = iter([["u1"], ["u2"]])
+
+        def next_batch():
+            try:
+                return next(batches)
+            except StopIteration:
+                raise Stop() from None
+
+        processed = []
+
+        def process(uids):
+            processed.append(uids)
+            raise sqlite3.OperationalError("database is locked")
+
+        def locked(uid, error):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(indexer, "_next_work_batch", next_batch)
+        monkeypatch.setattr(indexer, "_process_batch", process)
+        monkeypatch.setattr(indexer, "set_photo_error", locked)
+        with pytest.raises(Stop):
+            indexer._worker_loop()
+        assert processed == [["u1"], ["u2"]]
+
+    def test_process_batch_continues_after_a_failed_flag(self, monkeypatch):
+        import sqlite3
+
+        seen = []
+
+        def process_one(uid, work_img=None, clip_vec=None):
+            seen.append(uid)
+            raise sqlite3.OperationalError("database is locked")
+
+        def locked(uid, error):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(indexer, "_process_one", process_one)
+        monkeypatch.setattr(indexer, "set_photo_error", locked)
+        indexer._process_batch(["a", "b"])
+        assert seen == ["a", "b"]
+
+
+class TestSupervised:
+    def test_restarts_loop_after_escaped_exception(self, monkeypatch):
+        monkeypatch.setattr(indexer, "_SUPERVISOR_RESTART_SEC", 0)
+        calls = []
+
+        def loop():
+            calls.append(1)
+            if len(calls) < 3:
+                raise RuntimeError("escaped")
+
+        indexer._supervised(loop)()
+        assert len(calls) == 3
+
+    def test_start_wraps_every_thread_target(self, monkeypatch):
+        import threading
+        targets = {}
+        monkeypatch.setattr(threading.Thread, "start", lambda self: targets.setdefault(self.name, self._target))
+        monkeypatch.setattr(indexer, "init_db", lambda: None)
+        monkeypatch.setattr(indexer, "_db_conn", lambda: __import__("contextlib").nullcontext(
+            type("C", (), {"execute": lambda *a, **k: None})()))
+        monkeypatch.setattr(indexer, "backfill_fullres_images", lambda: 0)
+        monkeypatch.setattr(indexer, "reset_stuck_fullres", lambda retry_after_sec: (0, 0))
+        monkeypatch.setattr(indexer, "_rebuild_pending", lambda: None)
+        monkeypatch.setattr(indexer, "_sync_albums_once", lambda: None)
+        monkeypatch.setattr(indexer, "_record_threads", lambda threads: None)
+        indexer.start()
+        assert "worker-0" in targets and "sync" in targets
+        raw = {indexer._worker_loop, indexer._sync_loop, indexer._downloader_loop, indexer._fullres_loop,
+               indexer._cluster_loop, indexer._gps_loop, indexer._albums_loop, indexer._sidecar_loop}
+        assert not raw & set(targets.values())
