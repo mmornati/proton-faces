@@ -50,6 +50,16 @@ def api_status(request: Request) -> dict:
     except Exception:
         bridge_ok = False
         bridge_logged_in = False
+    out = {"now": _time.time(), "bridge": {"reachable": bridge_ok, "loggedIn": bridge_logged_in}}
+    # Anonymous callers (compose healthcheck, the login screen) get reachability
+    # only. Library size, disk usage, thread state and raw sync error strings
+    # describe a private archive and its internals, so they need a live token.
+    try:
+        authed = api._bearer_is_valid(request)
+    except Exception:
+        authed = False
+    if not authed:
+        return out
     s = api._cached_stats()
     rt = api._merged_indexer_state()
     disk = rt.get("disk") or {}
@@ -62,27 +72,21 @@ def api_status(request: Request) -> dict:
         db_bytes = disk["db_bytes"]
     else:
         db_bytes = api.settings.db_path.stat().st_size if api.settings.db_path.exists() else 0
-    out = {
-        "now": _time.time(),
-        "bridge": {"reachable": bridge_ok, "loggedIn": bridge_logged_in},
+    out.update({
         "stats": s,
         "indexer": rt,
         "disk": {
             "thumb_dir_bytes": thumbs_bytes,
             "db_bytes": db_bytes,
         },
-    }
-    try:
-        if api._bearer_is_valid(request):
-            out["config"] = {
-                "sync_interval": api.settings.sync_interval,
-                "cluster_interval": api.settings.cluster_interval,
-                "gps_interval": api.settings.gps_interval,
-                "workers": api.settings.workers,
-                "face_sim_threshold": api.settings.face_sim_threshold,
-                "min_cluster_size": api.settings.min_cluster_size,
-                "photos_dir": api.settings.photos_dir or None,
-            }
-    except Exception:
-        pass
+        "config": {
+            "sync_interval": api.settings.sync_interval,
+            "cluster_interval": api.settings.cluster_interval,
+            "gps_interval": api.settings.gps_interval,
+            "workers": api.settings.workers,
+            "face_sim_threshold": api.settings.face_sim_threshold,
+            "min_cluster_size": api.settings.min_cluster_size,
+            "photos_dir": api.settings.photos_dir or None,
+        },
+    })
     return out

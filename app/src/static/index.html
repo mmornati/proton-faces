@@ -351,8 +351,7 @@ function _isAuthFreePath(path) {
       || path === "/api/auth/2fa/verify"
       || path === "/api/auth/refresh"
       || path === "/api/auth/limits"
-      || path === "/api/health"
-      || path === "/api/status";
+      || path === "/api/health";
 }
 
 async function _errDetail(r) {
@@ -504,6 +503,20 @@ async function fetchMe() {
 
 // --- login screen ----------------------------------------------------------
 
+// The hint beside the login title used to stay on "checking bridge…" forever.
+async function _paintLoginBridgeHint() {
+  const hint = $("#login-bridge-hint");
+  if (!hint) return;
+  hint.textContent = "checking bridge…";
+  try {
+    const h = await (await fetch("/api/health")).json();
+    const b = h && h.bridge;
+    hint.textContent = !b || !b.reachable ? "bridge unreachable" : (b.loggedIn ? "bridge connected" : "bridge not signed in");
+  } catch (e) {
+    hint.textContent = "server unreachable";
+  }
+}
+
 function showLogin() {
   const lm = $("#loginmodal");
   if (lm) lm.classList.add("open");
@@ -520,6 +533,7 @@ function showLogin() {
   // with an un-focusable required control.
   $("#login-code").required = false;
   $("#loginmodaltitle").textContent = "Sign in to proton-faces";
+  _paintLoginBridgeHint();
   // Focus the username field on first show.
   setTimeout(() => { const u = $("#login-username"); if (u) u.focus(); }, 0);
 }
@@ -3549,7 +3563,15 @@ document.addEventListener("keydown", (e) => {
 
 async function refresh() {
   try {
-    const s = await api("/api/status");
+    let s = await api("/api/status");
+    // No stats block means the server did not accept the access token (it
+    // answers 200 with reachability only). Any authed call runs the
+    // refresh-on-401 path; then ask again.
+    if (!s.stats) {
+      await api("/api/auth/me");
+      s = await api("/api/status");
+      if (!s.stats) throw new Error("status unavailable");
+    }
     lastStatus = s;
     const p = s.stats.photos;
     $("#counts").textContent = (() => {
