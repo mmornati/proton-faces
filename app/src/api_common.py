@@ -508,9 +508,9 @@ def _merge_propagate(person_id: int, threshold: float | None = None) -> int:
     # Collect first, assign once: the per-face path costs ~4 commits and a
     # full cache invalidation each, i.e. ~2,000 commits for one merge click.
     face_ids = [int(sim_row[0]) for sim_row in similar_faces(emb.tobytes(), thr, limit=500) if sim_row[2] is None]
-    if face_ids:
-        assign_faces_person_bulk(face_ids, person_id)
-    return len(face_ids)
+    if not face_ids:
+        return 0
+    return assign_faces_person_bulk(face_ids, person_id, only_unassigned=True)
 
 
 # --- Search helpers --------------------------------------------------------

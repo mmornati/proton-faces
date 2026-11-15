@@ -1008,7 +1008,14 @@ def backfill_fullres_images() -> int:
 
 def set_photo_error(uid: str, error: str, conn: sqlite3.Connection | None = None) -> None:
     with _with_conn(conn) as c:
-        c.execute("UPDATE photos SET status='error', error=? WHERE uid=?", (error, uid))
+        # Count the failure: the sync loop re-queues 'error' rows only while
+        # retry_count is under the park limit, and nothing else ever moved it
+        # for worker/download errors — a permanently failing photo (or a
+        # full-size video download) was retried on every scan forever.
+        c.execute(
+            "UPDATE photos SET status='error', error=?, retry_count=COALESCE(retry_count, 0) + 1 WHERE uid=?",
+            (error, uid),
+        )
 
 
 def set_photos_error(uids: list[str], error: str) -> int:
@@ -1021,7 +1028,8 @@ def set_photos_error(uids: list[str], error: str) -> int:
             chunk = uids[start : start + _SQL_CHUNK]
             placeholders = ",".join("?" * len(chunk))
             n += conn.execute(
-                f"UPDATE photos SET status='error', error=? WHERE uid IN ({placeholders})",
+                "UPDATE photos SET status='error', error=?, retry_count=COALESCE(retry_count, 0) + 1 "
+                f"WHERE uid IN ({placeholders})",
                 [error, *chunk],
             ).rowcount
     return n
@@ -1377,23 +1385,32 @@ def assign_face_person(face_id: int, person_id: int) -> None:
     invalidate_embedding_cache()
 
 
-def assign_faces_person_bulk(face_ids: list[int], person_id: int) -> None:
-    """Assign many faces to `person_id` in a single transaction.
+def assign_faces_person_bulk(face_ids: list[int], person_id: int, only_unassigned: bool = False) -> int:
+    """Assign many faces to `person_id` in a single transaction; returns rows changed.
 
     Chunked so each generated `UPDATE ... IN (...)` stays under SQLite's 999
     placeholder limit. Runs on one connection/commit instead of one per face.
+
+    ``only_unassigned`` makes the write skip faces that already belong to
+    someone. Callers that picked their faces from a cache (similarity
+    propagation, clustering) must pass it: the cache can be minutes stale,
+    and without the guard a face the user just assigned to one person was
+    silently moved to another.
     """
+    guard = " AND person_id IS NULL" if only_unassigned else ""
+    changed = 0
     for start in range(0, len(face_ids), _SQL_CHUNK):
         chunk = face_ids[start : start + _SQL_CHUNK]
         qmarks = ",".join("?" * len(chunk))
         with get_conn() as conn:
-            conn.execute(
-                "UPDATE faces SET person_id=? WHERE id IN (" + qmarks + ")",
+            changed += conn.execute(
+                "UPDATE faces SET person_id=? WHERE id IN (" + qmarks + ")" + guard,
                 (person_id, *chunk),
-            )
+            ).rowcount
     if face_ids:
         _recount_person(person_id)
     invalidate_embedding_cache()
+    return changed
 
 
 def unassign_face(face_id: int) -> None:

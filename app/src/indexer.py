@@ -234,9 +234,21 @@ def get_sync_config() -> dict:
     if not isinstance(data, dict):
         log.warning("sync_config not a dict; using defaults")
         return cfg
+    # Coerce to the type of the default and drop anything that will not
+    # convert: the sync loop does arithmetic on these outside any try, so a
+    # hand-edited null or string used to end the sync thread.
+    coerce = {"enabled": bool, "tip_size": int, "full_scan_interval": int, "deletion_threshold": float}
     for key in _SYNC_CONFIG_KEYS:
-        if key in data:
-            cfg[key] = data[key]
+        if key not in data:
+            continue
+        value = data[key]
+        try:
+            if key == "last_full_scan":
+                cfg[key] = None if value is None else float(value)
+            else:
+                cfg[key] = coerce[key](value)
+        except (TypeError, ValueError):
+            log.warning("sync_config %s=%r is not usable; keeping %r", key, value, cfg[key])
     return cfg
 
 
@@ -662,6 +674,9 @@ def _mark_error(uid: str, exc: BaseException) -> None:
         log.warning("could not flag %s as error (%s); it will be retried", uid, mark_exc)
 
 
+_IDLE_FALLBACK_SCAN = 50
+
+
 def _worker_loop() -> None:
     while True:
         try:
@@ -708,10 +723,14 @@ def _next_work_batch() -> list[str]:
     except queue.Empty:
         # No queued thumbnails; pick any 'downloading' photo left over
         # from a previous run and reprocess it.
-        row = get_photos("downloading", limit=1)
-        if not row:
-            return []
-        return [row[0]["uid"]]
+        # Only rows whose thumbnail is already on disk: the downloader marks
+        # a photo 'downloading' BEFORE the bridge call, so the newest such
+        # rows are still in flight. Claiming one flagged it "work file
+        # missing" and it waited for the next full scan.
+        for row in get_photos("downloading", limit=_IDLE_FALLBACK_SCAN):
+            if _work_path(row["uid"]).exists():
+                return [row["uid"]]
+        return []
 
 
 def _process_batch(uids: list[str]) -> None:
@@ -1357,7 +1376,30 @@ def _run_full_scan_and_cleanup() -> None:
             log.warning("cleanup_deleted failed: %s", exc)
 
 
+_SYNC_FIRST_WAIT_SEC = 5.0
+_SYNC_MIN_WAIT_SEC = 30.0
+
+
+def _sync_wait_seconds(cfg: dict | None, last_full: float | None, first_pass: bool) -> float:
+    """How long the sync loop sleeps before its next pass.
+
+    - A library that has never been scanned starts almost immediately on the
+      first pass; it used to wait a whole SYNC_INTERVAL with an empty UI.
+    - An overdue full scan is never retried faster than _SYNC_MIN_WAIT_SEC.
+      The old ``max(0, remaining)`` returned 0 when overdue, so with auto-sync
+      off (or a scan failing fast) the loop spun at 100% CPU.
+    """
+    interval = float(settings.sync_interval)
+    if first_pass and last_full is None:
+        return min(interval, _SYNC_FIRST_WAIT_SEC)
+    if cfg and cfg.get("full_scan_interval", 0) > 0 and last_full is not None:
+        remaining = cfg["full_scan_interval"] - (time.time() - last_full)
+        return min(interval, max(_SYNC_MIN_WAIT_SEC, remaining))
+    return interval
+
+
 def _sync_loop() -> None:
+    first_pass = True
     while True:
         # Decide how long to sleep before the next wakeup. When a full scan is
         # scheduled, wake at the earlier of (next full-scan deadline, tip
@@ -1369,13 +1411,8 @@ def _sync_loop() -> None:
         except Exception:
             cfg = None
             last_full = None
-        timeout = settings.sync_interval
-        if cfg and cfg.get("full_scan_interval", 0) > 0 and last_full is not None:
-            try:
-                remaining = cfg["full_scan_interval"] - (time.time() - last_full)
-                timeout = min(settings.sync_interval, max(0.0, remaining))
-            except Exception:
-                pass
+        timeout = _sync_wait_seconds(cfg, last_full, first_pass)
+        first_pass = False
 
         triggered = _sync_wakeup.wait(timeout=timeout)
         _sync_wakeup.clear()

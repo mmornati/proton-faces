@@ -1968,6 +1968,70 @@ class TestBinaryEndpointAuth:
         assert r.status_code == 200
         assert r.json()["suggestions"][0]["person_id"] == pa
 
+    def test_face_suggest_with_more_people_than_limit(self, client, password_hash):
+        # Regression: indexing the full ranking with a top-N mask raised
+        # IndexError (HTTP 500) as soon as people outnumbered `limit`.
+        _seed_user(password_hash=password_hash)
+        for i in range(8):
+            uid = f"s{i}"
+            _seed_done_photo(uid)
+            face = _seed_face(uid, emb=_emb(20 + i))
+            person = store.create_person(name=f"P{i}", cover_uid=uid, cover_face_id=face)
+            store.assign_face_person(face, person)
+        _seed_done_photo("probe")
+        probe = _seed_face("probe", emb=_emb(23))
+        r = client.get(f"/api/faces/{probe}/suggest", params={"limit": 5}, headers=_bearer(client))
+        assert r.status_code == 200
+        assert 1 <= len(r.json()["suggestions"]) <= 5
+
+    def test_people_duplicates_cache_is_keyed_by_parameters(self, client, password_hash, monkeypatch):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        calls = []
+
+        def payload(threshold, limit):
+            calls.append((threshold, limit))
+            return {"threshold": threshold, "limit": limit}
+
+        monkeypatch.setattr(api, "_dups_payload", payload)
+        api._dups_cache = None
+        a = client.get("/api/people/duplicates", params={"threshold": 0.4}, headers=headers).json()
+        b = client.get("/api/people/duplicates", params={"threshold": 0.7}, headers=headers).json()
+        client.get("/api/people/duplicates", params={"threshold": 0.7}, headers=headers)
+        assert (a["threshold"], b["threshold"]) == (0.4, 0.7)
+        assert len(calls) == 2
+
+    def test_suggested_merges_cache_is_bounded(self, client, password_hash, monkeypatch):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        monkeypatch.setattr(api, "_suggested_rows", lambda threshold: [])
+        for i in range(40):
+            client.get("/api/people/suggested-merges", params={"threshold": 0.3 + i * 0.0137}, headers=headers)
+        assert len(api._suggested_cache) <= 8
+
+
+class TestStaleCacheDoesNotStealFaces:
+    def test_bulk_assign_skips_faces_already_assigned(self, tmp_db):
+        store.upsert_photos([{"uid": "g1", "name": "g1", "media_type": "image/jpeg", "capture_time": 1}])
+        taken = _seed_face("g1", emb=_emb(1))
+        free = _seed_face("g1", emb=_emb(2))
+        alice = store.create_person(name="Alice", cover_uid="g1", cover_face_id=taken)
+        bob = store.create_person(name="Bob", cover_uid="g1", cover_face_id=free)
+        store.assign_face_person(taken, alice)
+        changed = store.assign_faces_person_bulk([taken, free], bob, only_unassigned=True)
+        assert changed == 1
+        with store.get_conn() as c:
+            rows = dict(c.execute("SELECT id, person_id FROM faces").fetchall())
+        assert rows[taken] == alice and rows[free] == bob
+
+    def test_error_marks_consume_the_retry_budget(self, tmp_db):
+        store.upsert_photos([{"uid": "e1", "name": "e1", "media_type": "image/jpeg", "capture_time": 1}])
+        for _ in range(3):
+            store.set_photo_error("e1", "boom")
+        store.set_photos_error(["e1"], "boom")
+        with store.get_conn() as c:
+            assert c.execute("SELECT retry_count FROM photos WHERE uid='e1'").fetchone()[0] == 4
+
 
 # --- search ---------------------------------------------------------------
 

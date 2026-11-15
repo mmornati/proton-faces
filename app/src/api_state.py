@@ -74,7 +74,7 @@ def _recent_full_res_failures() -> int:
 
 # --- TTL caches (all start empty) ------------------------------------------
 
-_dups_cache: tuple[float, dict] | None = None
+_dups_cache: tuple | None = None  # (ts, payload, (threshold, limit))
 _dups_cache_lock = threading.Lock()
 
 _suggested_cache: dict[float, tuple[float, list]] = {}

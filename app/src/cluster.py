@@ -194,7 +194,7 @@ def cluster_once(max_faces: int = 5000) -> int:
             cover_uid=cover_row["photo_uid"],
             cover_face_id=cover_row["id"],
         )
-        assign_faces_person_bulk([rows[i]["id"] for i in idxs], person_id)
+        assign_faces_person_bulk([rows[i]["id"] for i in idxs], person_id, only_unassigned=True)
         n_created += 1
         log.debug("cluster -> person %s with %d faces", person_id, len(idxs))
 
