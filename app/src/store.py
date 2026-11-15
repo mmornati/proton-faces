@@ -1363,13 +1363,14 @@ def all_face_rows() -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def faces_without_person(limit: int | None = 5000) -> list[sqlite3.Row]:
+def faces_without_person(limit: int | None = 5000, after_id: int = 0) -> list[sqlite3.Row]:
+    """Unassigned faces in id order, optionally starting after ``after_id``."""
     with get_conn() as conn:
-        sql = "SELECT * FROM faces WHERE person_id IS NULL ORDER BY id"
-        args: tuple = ()
+        sql = "SELECT * FROM faces WHERE person_id IS NULL AND id > ? ORDER BY id"
+        args: tuple = (after_id,)
         if limit is not None:
             sql += " LIMIT ?"
-            args = (limit,)
+            args = (after_id, limit)
         return conn.execute(sql, args).fetchall()
 
 

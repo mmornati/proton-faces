@@ -239,7 +239,11 @@ services:
       indexer:
         condition: service_started
     ports:
-      - "${PORT:-8080}:8080"
+      # Published on every interface by default so a LAN-only install works
+      # out of the box. Behind a reverse proxy set BIND_ADDRESS=127.0.0.1:
+      # a published port bypasses host firewalls (ufw) and would otherwise
+      # serve plain HTTP beside the proxy, skipping TLS and its rate limits.
+      - "${BIND_ADDRESS:-0.0.0.0}:${PORT:-8080}:8080"
     volumes:
       - ${DATA_MOUNT:-data}:/data
       # DEV-ONLY: local source override. See indexer service above for the

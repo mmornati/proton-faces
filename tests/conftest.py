@@ -81,6 +81,7 @@ def _reset_module_state():
     cluster._person_means_stack = None
     cluster._person_means_refreshing = False
     cluster._person_means_ts = 0.0
+    cluster._cluster_cursor = 0
     bridge_client._bridge = None
     try:
         import indexer
