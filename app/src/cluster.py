@@ -14,9 +14,9 @@ import threading
 import time
 
 import numpy as np
-from sklearn.cluster import HDBSCAN
 
 from config import settings
+
 from store import (
     assign_faces_person_bulk,
     create_person,
@@ -25,6 +25,20 @@ from store import (
 )
 
 log = logging.getLogger("cluster")
+
+# Resolved on first clustering run, not at import: `api` imports this module
+# through `indexer` for the status route, and sklearn costs ~100 MB of
+# resident memory in every API worker that never clusters anything.
+HDBSCAN = None
+
+
+def _hdbscan():
+    global HDBSCAN
+    if HDBSCAN is None:
+        from sklearn.cluster import HDBSCAN as _cls
+
+        HDBSCAN = _cls
+    return HDBSCAN
 
 
 def _decode(row) -> np.ndarray:
@@ -154,7 +168,7 @@ def cluster_once(max_faces: int = 5000) -> int:
     norms = np.linalg.norm(X, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     X /= norms
-    labels = HDBSCAN(
+    labels = _hdbscan()(
         min_cluster_size=settings.min_cluster_size,
         # min_samples > 1 suppresses singleton/pair clusters that HDBSCAN
         # would otherwise emit as noise-or-cluster when every point is a

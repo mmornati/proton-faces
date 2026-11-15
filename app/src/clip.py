@@ -62,59 +62,76 @@ def _intra_op_threads() -> int:
         return 1
 
 
-def _load():
-    global _sess_vision, _sess_text, _tokenizer
+def _load_vision():
+    """The image encoder. The indexer needs only this one."""
+    global _sess_vision
     if _sess_vision is not None:
-        return _sess_vision, _sess_text, _tokenizer
+        return _sess_vision
     with _lock:
         if _sess_vision is not None:
-            return _sess_vision, _sess_text, _tokenizer
+            return _sess_vision
         start = time.perf_counter()
         import onnxruntime as ort
 
-        clip_dir = _model_dir()
-        vision_path = clip_dir / "vision_model.onnx"
-        text_path = clip_dir / "text_model.onnx"
-        tokenizer_path = clip_dir / "tokenizer.json"
-
+        vision_path = _model_dir() / "vision_model.onnx"
         _sess_vision = ort.InferenceSession(
             str(vision_path),
             sess_options=_session_options(ort),
             providers=["CPUExecutionProvider"],
         )
+        telemetry.record_model_load("clip_vision", time.perf_counter() - start)
+        log.info("CLIP ONNX loaded (%s)", vision_path.name)
+        return _sess_vision
+
+
+def _load_text():
+    """The text encoder and its tokenizer. The API needs only these."""
+    global _sess_text, _tokenizer
+    if _sess_text is not None:
+        return _sess_text, _tokenizer
+    with _lock:
+        if _sess_text is not None:
+            return _sess_text, _tokenizer
+        start = time.perf_counter()
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
+
+        clip_dir = _model_dir()
+        text_path = clip_dir / "text_model.onnx"
+        tokenizer = Tokenizer.from_file(str(clip_dir / "tokenizer.json"))
+        tokenizer.enable_truncation(max_length=_SEQ)
+        tokenizer.enable_padding(length=_SEQ, pad_id=_PAD_ID, pad_token="<|endoftext|>")
+        _tokenizer = tokenizer
         _sess_text = ort.InferenceSession(
             str(text_path),
             sess_options=_session_options(ort),
             providers=["CPUExecutionProvider"],
         )
+        telemetry.record_model_load("clip_text", time.perf_counter() - start)
+        log.info("CLIP ONNX loaded (%s)", text_path.name)
+        return _sess_text, _tokenizer
 
-        from tokenizers import Tokenizer
 
-        _tokenizer = Tokenizer.from_file(str(tokenizer_path))
-        _tokenizer.enable_truncation(max_length=_SEQ)
-        _tokenizer.enable_padding(
-            length=_SEQ, pad_id=_PAD_ID, pad_token="<|endoftext|>"
-        )
-        telemetry.record_model_load("clip", time.perf_counter() - start)
-        log.info("CLIP ONNX loaded (%s, %s)", vision_path.name, text_path.name)
-        return _sess_vision, _sess_text, _tokenizer
+def warm_up_text() -> None:
+    """Pre-load the text encoder and force ONNX graph initialization.
+
+    The API only ever embeds search queries, so this is all it warms: the
+    image encoder (the larger of the two) stays unloaded there. Call once
+    per worker process at startup; failures propagate to the caller (the
+    app logs + continues, keeping the lazy path as fallback).
+    """
+    sess_text, tokenizer = _load_text()
+    input_ids = np.asarray([tokenizer.encode("a beach").ids], dtype=np.int64)
+    sess_text.run(None, {"input_ids": input_ids})
+    log.info("CLIP ONNX warm-up done (text)")
 
 
 def warm_up() -> None:
-    """Pre-load the CLIP sessions and force ONNX graph initialization.
-
-    Runs a dummy 224x224 image through the vision model and a dummy prompt
-    through the text model so the first /api/search after boot doesn't pay
-    the session/weight load inside the request. Call once per worker process
-    at startup; failures propagate to the caller (the app logs + continues,
-    keeping the lazy path as fallback).
-    """
-    sess_vision, sess_text, tokenizer = _load()
+    """Pre-load both encoders (vision + text)."""
+    sess_vision = _load_vision()
     pixel_values = np.zeros((1, 3, _SIZE, _SIZE), dtype=np.float32)
     sess_vision.run(None, {"pixel_values": pixel_values})
-    input_ids = np.asarray([tokenizer.encode("a beach").ids], dtype=np.int64)
-    sess_text.run(None, {"input_ids": input_ids})
-    log.info("CLIP ONNX warm-up done (vision + text)")
+    warm_up_text()
 
 
 def _preprocess(img: Image.Image) -> np.ndarray:
@@ -136,7 +153,6 @@ def _l2norm(v: np.ndarray) -> np.ndarray:
 
 def embed_image(path: str) -> np.ndarray | None:
     """Embed a local image file into a normalized 512-d CLIP vector."""
-    sess, _, _ = _load()
     try:
         img = Image.open(path).convert("RGB")
     except Exception as exc:  # pragma: no cover
@@ -154,7 +170,7 @@ def embed_batch(images: list[Image.Image]) -> np.ndarray | None:
     """
     if not images:
         return None
-    sess, _, _ = _load()
+    sess = _load_vision()
     pixel_values = np.concatenate([_preprocess(img) for img in images], axis=0)  # (N,3,224,224)
     out = sess.run(None, {"pixel_values": pixel_values})[0]  # image_embeds (N,512)
     return _l2norm(out).astype(np.float32)
@@ -167,7 +183,7 @@ def embed_pil(img: Image.Image) -> np.ndarray | None:
 
 def embed_text(text: str) -> np.ndarray:
     """Embed a free-text query into a normalized 512-d CLIP vector."""
-    _, sess, tokenizer = _load()
+    sess, tokenizer = _load_text()
     ids = tokenizer.encode(text).ids
     input_ids = np.array([ids], dtype=np.int64)
     out = sess.run(None, {"input_ids": input_ids})[0]  # text_embeds

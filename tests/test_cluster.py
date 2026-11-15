@@ -241,3 +241,15 @@ class TestPersonMeansPublish:
         assert len(means) == 3 and len(pids) == mat.shape[0] == 3
         assert set(pids.tolist()) == set(means.keys())
         assert not hasattr(cluster, "_person_means_mat")
+
+
+class TestLazySklearn:
+    def test_importing_cluster_does_not_import_sklearn(self):
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1] / "app" / "src"
+        code = "import sys; sys.path.insert(0, %r); import cluster; print('sklearn' in sys.modules)" % str(src)
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+        assert out.stdout.strip() == "False"

@@ -179,7 +179,7 @@ class TestWarmModels:
     def test_disabled_when_warm_models_off(self, monkeypatch):
         monkeypatch.setattr(api.settings, "warm_models", False)
         called = []
-        monkeypatch.setattr(api.clip, "warm_up", lambda: called.append("clip"))
+        monkeypatch.setattr(api.clip, "warm_up_text", lambda: called.append("clip"))
         monkeypatch.setattr(api.faces, "warm_up", lambda: called.append("faces"))
         api.warm_models()
         assert called == []
@@ -187,7 +187,7 @@ class TestWarmModels:
     def test_calls_both_when_enabled(self, monkeypatch):
         monkeypatch.setattr(api.settings, "warm_models", True)
         called = []
-        monkeypatch.setattr(api.clip, "warm_up", lambda: called.append("clip"))
+        monkeypatch.setattr(api.clip, "warm_up_text", lambda: called.append("clip"))
         monkeypatch.setattr(api.faces, "warm_up", lambda: called.append("faces"))
         api.warm_models()
         assert called == ["clip", "faces"]
@@ -198,7 +198,7 @@ class TestWarmModels:
         def _boom():
             raise RuntimeError("no model")
 
-        monkeypatch.setattr(api.clip, "warm_up", _boom)
+        monkeypatch.setattr(api.clip, "warm_up_text", _boom)
         monkeypatch.setattr(api.faces, "warm_up", lambda: None)
         api.warm_models()  # must not raise; lazy path remains the fallback
 

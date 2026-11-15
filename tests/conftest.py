@@ -81,6 +81,12 @@ def _reset_module_state():
     cluster._person_means_refreshing = False
     cluster._person_means_ts = 0.0
     bridge_client._bridge = None
+    try:
+        import indexer
+
+        indexer._sidcar_seen_generation = None
+    except ImportError:
+        pass
     bridge_client._async_client = None
     telemetry.shutdown()
     faces._app = None
