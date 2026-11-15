@@ -16,7 +16,6 @@ import time
 import numpy as np
 
 from config import settings
-
 from store import (
     assign_faces_person_bulk,
     create_person,
