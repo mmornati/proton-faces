@@ -1,5 +1,6 @@
 
 import logging
+import sqlite3
 import time
 
 import pyotp
@@ -93,6 +94,12 @@ class TestPassword:
 
 
 class TestSignedTokens:
+
+    @pytest.fixture(autouse=True)
+    def _db(self, tmp_db):
+        # Signing reads the revocation epoch from the store and fails closed
+        # without one, so these need an initialised database.
+        return tmp_db
     def test_valid_token(self):
         sig, exp = auth.make_signed_token("/api/photos/abc/thumb", ttl_seconds=300)
         assert auth.verify_signed_token("/api/photos/abc/thumb", sig, exp) is True
@@ -293,9 +300,49 @@ class TestLoginRefresh:
         access, refresh, _, _, _ = auth.login("dave", "s3cret!")
         new_access, new_refresh, user = auth.refresh(refresh)
         assert user.username == "dave"
-        assert store.lookup_token(refresh) is None  # old refresh revoked
+        # The old refresh token is retired (kept and flagged so a replay is
+        # recognised) and can never be exchanged again.
+        assert store.lookup_token(refresh)["rotated_at"] is not None
+        with pytest.raises(HTTPException) as exc:
+            auth.refresh(refresh)
+        assert exc.value.status_code == 401
         assert store.lookup_token(new_refresh)["kind"] == "refresh"
         assert store.lookup_token(new_access)["kind"] == "access"
+
+    def test_replay_inside_grace_window_does_not_end_the_login(self, tmp_db):
+        store.create_user("gina", auth.hash_password("s3cret!"))
+        _, refresh, _, _, _ = auth.login("gina", "s3cret!")
+        new_access, new_refresh, _ = auth.refresh(refresh)
+        with pytest.raises(HTTPException):
+            auth.refresh(refresh)  # second tab, same moment
+        assert store.lookup_token(new_access) is not None
+        assert store.lookup_token(new_refresh) is not None
+
+    def test_replay_after_grace_window_revokes_the_whole_login(self, tmp_db):
+        store.create_user("hugo", auth.hash_password("s3cret!"))
+        access, refresh, _, _, _ = auth.login("hugo", "s3cret!")
+        other_access, other_refresh, _, _, _ = auth.login("hugo", "s3cret!")  # another device
+        new_access, new_refresh, _ = auth.refresh(refresh)
+        # A thief (or the victim) presents the retired token later.
+        with store.get_conn() as c:
+            c.execute("UPDATE auth_tokens SET rotated_at = rotated_at - 3600 WHERE rotated_at IS NOT NULL")
+        with pytest.raises(HTTPException) as exc:
+            auth.refresh(refresh)
+        assert exc.value.status_code == 401
+        # Every token of that login is gone, rotated-forward ones included…
+        for tok in (access, refresh, new_access, new_refresh):
+            assert store.lookup_token(tok) is None
+        # …while the user's other login is untouched.
+        assert store.lookup_token(other_access) is not None
+        assert store.lookup_token(other_refresh) is not None
+
+    def test_tokens_issued_before_families_still_refresh(self, tmp_db):
+        store.create_user("ivy", auth.hash_password("s3cret!"))
+        uid = store.get_user_by_username("ivy")["id"]
+        legacy = store.issue_token(uid, "refresh", 3600)  # family NULL, as before the upgrade
+        new_access, new_refresh, _ = auth.refresh(legacy)
+        assert store.lookup_token(new_refresh)["family"]
+        assert store.lookup_token(new_access)["family"] == store.lookup_token(new_refresh)["family"]
 
     def test_refresh_rejects_access_token(self, tmp_db):
         store.create_user("erin", auth.hash_password("s3cret!"))
@@ -527,6 +574,12 @@ class TestSignedOrToken:
 
 
 class TestSigningSecretRequired:
+
+    @pytest.fixture(autouse=True)
+    def _db(self, tmp_db):
+        # Signing reads the revocation epoch from the store and fails closed
+        # without one, so these need an initialised database.
+        return tmp_db
     def test_raises_when_unset_and_not_demo(self, monkeypatch):
         monkeypatch.delenv("SIGNING_SECRET", raising=False)
         monkeypatch.delenv("DEMO_MODE", raising=False)
@@ -551,6 +604,12 @@ class TestSigningSecretRequired:
 
 
 class TestDemoModeEphemeralSecret:
+
+    @pytest.fixture(autouse=True)
+    def _db(self, tmp_db):
+        # Signing reads the revocation epoch from the store and fails closed
+        # without one, so these need an initialised database.
+        return tmp_db
     def test_demo_mode_falls_back_to_ephemeral(self, monkeypatch, caplog):
         monkeypatch.delenv("SIGNING_SECRET", raising=False)
         monkeypatch.setenv("DEMO_MODE", "1")
@@ -793,3 +852,124 @@ class TestTotpReplay:
         store.set_totp_last_counter(uid, 42)
         store.set_totp_secret(uid, None)
         assert store.get_totp_last_counter(uid) is None
+
+
+class TestSignedUrlEpoch:
+    PATH = "/api/photos/abc/thumb"
+
+    def test_urls_minted_before_any_bump_use_the_legacy_message(self, tmp_db):
+        import hashlib
+        import hmac
+
+        sig, exp = auth.make_signed_token(self.PATH)
+        legacy = hmac.new(auth._signing_secret(), f"{self.PATH}|{exp}".encode(), hashlib.sha256).hexdigest()
+        assert sig == legacy
+
+    def test_bump_invalidates_outstanding_urls(self, tmp_db):
+        sig, exp = auth.make_signed_token(self.PATH)
+        assert auth.verify_signed_token(self.PATH, sig, exp)
+        store.bump_sign_epoch()
+        assert not auth.verify_signed_token(self.PATH, sig, exp)
+        sig2, exp2 = auth.make_signed_token(self.PATH)
+        assert sig2 != sig and auth.verify_signed_token(self.PATH, sig2, exp2)
+
+    def test_security_events_bump_the_epoch(self, tmp_db):
+        store.create_user("jo", auth.hash_password("s3cret!"))
+        uid = store.get_user_by_username("jo")["id"]
+        start = store.sign_epoch()
+        store.update_user(uid, display_name="Jo")           # cosmetic: no bump
+        assert store.sign_epoch() == start
+        store.update_user(uid, password_hash=auth.hash_password("n3w-secret!"))
+        store.update_user(uid, disabled=True)
+        store.revoke_all_tokens(uid)
+        store.delete_user(uid)
+        assert store.sign_epoch() == start + 4
+
+    def test_epoch_is_cached_between_reads(self, tmp_db, monkeypatch):
+        assert store.sign_epoch() == 0
+        with store.get_conn() as c:   # another worker bumps behind our back
+            c.execute("INSERT INTO cache_state (key, value) VALUES ('sign_epoch', 7)")
+        assert store.sign_epoch() == 0          # still inside the TTL
+        store._sign_epoch_cache = (0.0, 0)      # TTL elapsed
+        assert store.sign_epoch() == 7
+
+
+class TestTokenSchemaMigration:
+    def test_old_auth_tokens_table_gains_the_new_columns(self, tmp_db):
+        # Rebuild the table the way a pre-upgrade database has it, with a
+        # live session in it, then run the normal startup path again.
+        store.create_user("kim", auth.hash_password("s3cret!"))
+        uid = store.get_user_by_username("kim")["id"]
+        with store.get_conn() as c:
+            c.execute("DROP TABLE auth_tokens")
+            c.execute(
+                "CREATE TABLE auth_tokens (token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, kind TEXT NOT NULL,"
+                " expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, user_agent TEXT, ip TEXT)"
+            )
+            c.execute(
+                "INSERT INTO auth_tokens VALUES (?, ?, 'refresh', ?, ?, NULL, NULL)",
+                (store._hash_token("legacy-refresh"), uid, int(time.time()) + 3600, int(time.time())),
+            )
+        store._close_local_conns()
+        store.init_db()
+        with store.get_conn() as c:
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(auth_tokens)")}
+        assert {"family", "rotated_at"} <= cols
+        # The pre-upgrade session keeps working and joins a family on refresh.
+        _, new_refresh, user = auth.refresh("legacy-refresh")
+        assert user.username == "kim"
+        assert store.lookup_token(new_refresh)["family"]
+
+
+class TestAuthReviewFindings:
+    def test_only_one_of_two_racing_refreshes_gets_a_pair(self, tmp_db, monkeypatch):
+        store.create_user("lea", auth.hash_password("s3cret!"))
+        _, refresh, _, _, _ = auth.login("lea", "s3cret!")
+        # Both requests pass the lookup before either has rotated.
+        row = store.lookup_token(refresh)
+        monkeypatch.setattr(store, "lookup_token", lambda t: row if t == refresh else None)
+        auth.refresh(refresh)
+        with pytest.raises(HTTPException) as exc:
+            auth.refresh(refresh)
+        assert exc.value.status_code == 401
+        with store.get_conn() as c:
+            n = c.execute("SELECT COUNT(*) FROM auth_tokens WHERE kind='refresh' AND rotated_at IS NULL").fetchone()[0]
+        assert n == 1
+
+    def test_replay_of_a_pre_family_token_revokes_what_it_minted(self, tmp_db):
+        store.create_user("max", auth.hash_password("s3cret!"))
+        uid = store.get_user_by_username("max")["id"]
+        legacy = store.issue_token(uid, "refresh", 3600)
+        new_access, new_refresh, _ = auth.refresh(legacy)
+        assert store.lookup_token(legacy)["family"] == store.lookup_token(new_refresh)["family"]
+        with store.get_conn() as c:
+            c.execute("UPDATE auth_tokens SET rotated_at = rotated_at - 3600 WHERE rotated_at IS NOT NULL")
+        with pytest.raises(HTTPException):
+            auth.refresh(legacy)
+        assert store.lookup_token(new_access) is None
+        assert store.lookup_token(new_refresh) is None
+
+    def test_unreadable_epoch_fails_closed(self, tmp_db, monkeypatch):
+        path = "/api/photos/abc/thumb"
+        sig, exp = auth.make_signed_token(path)
+        store.bump_sign_epoch()                      # revoke it
+        assert not auth.verify_signed_token(path, sig, exp)
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def broken():
+            raise sqlite3.OperationalError("disk I/O error")
+            yield
+
+        monkeypatch.setattr(store, "get_conn", broken)
+        # A recent cached value is still trusted…
+        store._sign_epoch_cache = (time.time() - 60, 1)
+        assert not auth.verify_signed_token(path, sig, exp)
+        # …but with nothing usable cached, nothing verifies and nothing is minted.
+        store._sign_epoch_cache = None
+        assert not auth.verify_signed_token(path, sig, exp)
+        with pytest.raises(store.SignEpochUnavailable):
+            auth.make_signed_token(path)
+        store._sign_epoch_cache = (time.time() - 3600, 0)   # too old to trust
+        assert not auth.verify_signed_token(path, sig, exp)

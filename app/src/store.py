@@ -201,8 +201,14 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
     expires_at  INTEGER NOT NULL,
     created_at  INTEGER NOT NULL,
     user_agent  TEXT,
-    ip          TEXT
+    ip          TEXT,
+    -- One login = one family. A refresh token is not deleted when it is
+    -- rotated: rotated_at is set and the row stays until it expires, so a
+    -- later replay of it is recognised and the whole family is revoked.
+    family      TEXT,
+    rotated_at  INTEGER
 );
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_family ON auth_tokens(family);
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_exp  ON auth_tokens(expires_at);
 
@@ -450,6 +456,19 @@ def migrate(conn: sqlite3.Connection) -> None:
     # _SCHEMA_VERSION they have already run, so re-running the correlated
     # UPDATEs over all people on every startup is pure waste (issue #104).
     user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if "auth_tokens" in tables:
+        tcols = {r["name"] for r in conn.execute("PRAGMA table_info(auth_tokens)")}
+        # The app and the indexer both run this at start. Whichever is
+        # second may find the column already added between its check and
+        # its ALTER; that is fine.
+        for col, ddl in (("family", "TEXT"), ("rotated_at", "INTEGER")):
+            if col in tcols:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE auth_tokens ADD COLUMN {col} {ddl}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
     pcols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
     if "size_bytes" not in pcols:
         conn.execute("ALTER TABLE photos ADD COLUMN size_bytes INTEGER")
@@ -2006,6 +2025,65 @@ def bump_cache_generation() -> int:
         return int(conn.execute("SELECT value FROM cache_state WHERE key=?", (_GENERATION_KEY,)).fetchone()[0])
 
 
+# Signed-URL epoch. It is mixed into the HMAC of every signed media URL, so
+# bumping it invalidates all outstanding ones at once (they otherwise stay
+# valid for up to an hour, with no way to revoke them). Bumped when a user is
+# disabled or deleted, changes password, or has all sessions revoked.
+_SIGN_EPOCH_KEY = "sign_epoch"
+_SIGN_EPOCH_TTL = 15.0
+_SIGN_EPOCH_MAX_STALE = 300.0
+
+
+class SignEpochUnavailable(RuntimeError):
+    """The signed-URL epoch could not be read and no recent value is cached."""
+
+_sign_epoch_cache: tuple[float, int] | None = None
+
+
+def sign_epoch() -> int:
+    """Current signed-URL epoch (0 until first bumped). Cached per process.
+
+    A media request must not cost a query, so each worker re-reads it at most
+    every _SIGN_EPOCH_TTL seconds; another worker's bump is honoured within
+    that window.
+
+    Fails closed: if the value cannot be read, the last known one is used
+    only while it is younger than _SIGN_EPOCH_MAX_STALE; after that (or with
+    nothing cached) this raises SignEpochUnavailable, and signed URLs are
+    neither minted nor accepted. Falling back to epoch 0 would quietly
+    re-validate every URL a bump had revoked.
+    """
+    global _sign_epoch_cache
+    now = time.time()
+    cached = _sign_epoch_cache
+    if cached is not None and now - cached[0] < _SIGN_EPOCH_TTL:
+        return cached[1]
+    try:
+        with get_conn() as conn:
+            row = conn.execute("SELECT value FROM cache_state WHERE key=?", (_SIGN_EPOCH_KEY,)).fetchone()
+        value = int(row[0]) if row else 0
+    except Exception as exc:
+        if cached is not None and now - cached[0] < _SIGN_EPOCH_MAX_STALE:
+            return cached[1]
+        raise SignEpochUnavailable("signed-URL epoch could not be read") from exc
+    _sign_epoch_cache = (now, value)
+    return value
+
+
+def bump_sign_epoch() -> int:
+    """Invalidate every outstanding signed media URL."""
+    global _sign_epoch_cache
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO cache_state (key, value) VALUES (?, 1) "
+            "ON CONFLICT(key) DO UPDATE SET value = value + 1",
+            (_SIGN_EPOCH_KEY,),
+        )
+        value = int(conn.execute("SELECT value FROM cache_state WHERE key=?", (_SIGN_EPOCH_KEY,)).fetchone()[0])
+    _sign_epoch_cache = (time.time(), value)
+    return value
+
+
 def current_cache_generation() -> int:
     with get_conn() as conn:
         row = conn.execute("SELECT value FROM cache_state WHERE key=?", (_GENERATION_KEY,)).fetchone()
@@ -2826,13 +2904,19 @@ def update_user(user_id: int, *, display_name: str | None = None,
     params.append(user_id)
     with get_conn() as conn:
         cur = conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", params)
-        return cur.rowcount > 0
+        changed = cur.rowcount > 0
+    if changed and (disabled or password_hash is not None):
+        bump_sign_epoch()
+    return changed
 
 
 def delete_user(user_id: int) -> bool:
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM users WHERE id=?", (user_id,))
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+    if deleted:
+        bump_sign_epoch()
+    return deleted
 
 
 def touch_last_login(user_id: int) -> None:
@@ -2851,8 +2935,42 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def new_token_family() -> str:
+    import secrets
+    return secrets.token_hex(8)
+
+
+def mark_token_rotated(token: str, family: str) -> bool:
+    """Atomically retire a refresh token; True only for the caller that did it.
+
+    The ``rotated_at IS NULL`` guard makes this the single claim on the
+    token: of two concurrent refreshes with the same token exactly one gets
+    True and may mint a new pair. The row is kept (see the schema comment),
+    and a token issued before families existed is stamped with *family* so
+    a later replay of it can revoke what was minted from it.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE auth_tokens SET rotated_at=?, family=COALESCE(family, ?) "
+            "WHERE token=? AND rotated_at IS NULL",
+            (int(time.time()), family, _hash_token(token)),
+        )
+        return cur.rowcount == 1
+
+
+def revoke_token_family(family: str | None, token: str | None = None) -> int:
+    """Delete every token of a login family (or just *token* for pre-family rows)."""
+    with get_conn() as conn:
+        if family:
+            return conn.execute("DELETE FROM auth_tokens WHERE family=?", (family,)).rowcount
+        if token:
+            return conn.execute("DELETE FROM auth_tokens WHERE token=?", (_hash_token(token),)).rowcount
+    return 0
+
+
 def issue_token(user_id: int, kind: str, expires_in: int, *,
-                user_agent: str | None = None, ip: str | None = None) -> str:
+                user_agent: str | None = None, ip: str | None = None,
+                family: str | None = None) -> str:
     """Mint a new opaque bearer token (32 random bytes hex-encoded).
 
     The raw token is returned to the caller (and ultimately to the HTTP
@@ -2863,9 +2981,9 @@ def issue_token(user_id: int, kind: str, expires_in: int, *,
     now = int(time.time())
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO auth_tokens (token, user_id, kind, expires_at, created_at, user_agent, ip) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (_hash_token(token), user_id, kind, now + expires_in, now, user_agent, ip),
+            "INSERT INTO auth_tokens (token, user_id, kind, expires_at, created_at, user_agent, ip, family) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (_hash_token(token), user_id, kind, now + expires_in, now, user_agent, ip, family),
         )
     return token
 
@@ -2878,7 +2996,7 @@ def lookup_token(token: str) -> sqlite3.Row | None:
     """
     with get_conn() as conn:
         return conn.execute(
-            """SELECT t.token, t.user_id, t.kind, t.expires_at,
+            """SELECT t.token, t.user_id, t.kind, t.expires_at, t.family, t.rotated_at,
                       u.username, u.display_name, u.role, u.disabled
                FROM auth_tokens t JOIN users u ON u.id = t.user_id
                WHERE t.token = ?""",
@@ -2896,7 +3014,9 @@ def revoke_all_tokens(user_id: int) -> int:
     """Sign the user out of every device. Returns number of tokens deleted."""
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM auth_tokens WHERE user_id=?", (user_id,))
-        return cur.rowcount
+        n = cur.rowcount
+    bump_sign_epoch()
+    return n
 
 
 def revoke_all_tokens_except(user_id: int, keep_token: str) -> int:
