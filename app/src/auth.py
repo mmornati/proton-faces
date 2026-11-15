@@ -385,9 +385,22 @@ def make_signed_token(path: str, ttl_seconds: int = 300) -> tuple[str, int]:
     """
     now = int(time.time())
     exp = max(now + ttl_seconds, (now // 3600 + 1) * 3600)
-    msg = f"{path}|{exp}".encode("utf-8")
-    sig = hmac.new(_signing_secret(), msg, hashlib.sha256).hexdigest()
+    sig = hmac.new(_signing_secret(), _signed_message(path, exp), hashlib.sha256).hexdigest()
     return sig, exp
+
+
+def _signed_message(path: str, exp: int) -> bytes:
+    """What a signed URL's MAC covers: the path, its expiry and the epoch.
+
+    The epoch (``store.sign_epoch``) never appears in the URL. It lets the
+    server revoke every outstanding signed URL when a user is disabled,
+    deleted, changes password or has all sessions revoked — before this a
+    signed link kept working until its hour ran out. Epoch 0 (never bumped)
+    signs exactly the pre-epoch message, so URLs minted before an upgrade
+    stay valid.
+    """
+    epoch = store.sign_epoch()
+    return (f"{path}|{exp}|{epoch}" if epoch else f"{path}|{exp}").encode("utf-8")
 
 
 def verify_signed_token(path: str, sig: str | None, exp: int | None) -> bool:
@@ -396,8 +409,7 @@ def verify_signed_token(path: str, sig: str | None, exp: int | None) -> bool:
         return False
     if exp < int(time.time()):
         return False
-    msg = f"{path}|{exp}".encode("utf-8")
-    expected = hmac.new(_signing_secret(), msg, hashlib.sha256).hexdigest()
+    expected = hmac.new(_signing_secret(), _signed_message(path, exp), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, sig)
 
 
@@ -819,10 +831,11 @@ def login(username: str, password: str, *, user_agent: str | None = None,
         pending = store.create_pending_2fa(row["id"], _2fa_pending_ttl())
         return None, None, _user_from_row(row), True, pending
     record_login_success(ip, username)
+    family = store.new_token_family()
     access = store.issue_token(row["id"], "access", access_ttl(),
-                                user_agent=user_agent, ip=ip)
+                                user_agent=user_agent, ip=ip, family=family)
     refresh = store.issue_token(row["id"], "refresh", refresh_ttl(),
-                                 user_agent=user_agent, ip=ip)
+                                 user_agent=user_agent, ip=ip, family=family)
     store.touch_last_login(row["id"])
     return access, refresh, _user_from_row(row), False, None
 
@@ -868,12 +881,16 @@ def verify_2fa(pending_token: str, code: str, *, user_agent: str | None = None,
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid 2FA code")
     store.set_totp_last_counter(user_row["id"], counter)
     record_login_success(ip, username)
+    family = store.new_token_family()
     access = store.issue_token(user_row["id"], "access", access_ttl(),
-                                user_agent=user_agent, ip=ip)
+                                user_agent=user_agent, ip=ip, family=family)
     refresh = store.issue_token(user_row["id"], "refresh", refresh_ttl(),
-                                 user_agent=user_agent, ip=ip)
+                                 user_agent=user_agent, ip=ip, family=family)
     store.touch_last_login(user_row["id"])
     return access, refresh, _user_from_row(user_row)
+
+
+_REFRESH_REUSE_GRACE_SEC = 10
 
 
 def refresh(refresh_token: str, *, user_agent: str | None = None,
@@ -888,19 +905,44 @@ def refresh(refresh_token: str, *, user_agent: str | None = None,
     mints a new one. If a stolen refresh token is used by the attacker,
     the legitimate user's next refresh call sees "invalid refresh token"
     and is forced to re-login — surfacing the theft.
+
+    Reuse detection: a rotated token is flagged, not deleted. Presenting it
+    again is always refused, and outside a short grace window it also revokes
+    every token of that login (its "family"), so a thief's rotated-forward
+    session dies instead of living on. The grace window only keeps two tabs
+    that refresh at the same moment from ending each other's login.
     """
     row = store.lookup_token(refresh_token)
     if row is None or row["kind"] != "refresh" or row["disabled"]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid refresh token")
-    if row["expires_at"] < __import__("time").time():
+    now = time.time()
+    if row["expires_at"] < now:
         store.revoke_token(refresh_token)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="refresh expired")
-    # ROTATE: revoke the old refresh token before minting a new pair.
-    store.revoke_token(refresh_token)
+    family = row["family"]
+    if row["rotated_at"] is not None:
+        # This token was already exchanged once. It never works again (F-11).
+        if now - row["rotated_at"] > _REFRESH_REUSE_GRACE_SEC:
+            # Replay of a retired token: either the holder of a stolen copy,
+            # or the real user after a thief rotated it. The two cannot be
+            # told apart, so the whole login is ended.
+            revoked = store.revoke_token_family(family, refresh_token)
+            log.warning("refresh token reuse for user_id=%s: revoked %d token(s) of that login",
+                        row["user_id"], revoked)
+        # Inside the grace window it is most likely two tabs sharing the
+        # cookie that refreshed at the same moment: refuse this one, but do
+        # not log the other tab out.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid refresh token")
+    # ROTATE: retire the old refresh token (kept, flagged) before minting a
+    # new pair in the same family.
+    store.mark_token_rotated(refresh_token)
+    if not family:
+        # Token issued before families existed: start one now.
+        family = store.new_token_family()
     access = store.issue_token(row["user_id"], "access", access_ttl(),
-                                user_agent=user_agent, ip=ip)
+                                user_agent=user_agent, ip=ip, family=family)
     new_refresh = store.issue_token(row["user_id"], "refresh", refresh_ttl(),
-                                     user_agent=user_agent, ip=ip)
+                                     user_agent=user_agent, ip=ip, family=family)
     user = CurrentUser(id=row["user_id"], username=row["username"],
                        display_name=row["display_name"] or row["username"],
                        role=row["role"])

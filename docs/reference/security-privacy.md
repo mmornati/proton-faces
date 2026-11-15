@@ -50,6 +50,8 @@ Proton doesn't publish an OAuth/OIDC provider, so each family member gets a **lo
 - **Opaque bearer tokens** — 32 random bytes, hex-encoded. Not JWT.
 - **Access tokens** — TTL `AUTH_ACCESS_TTL` (default 8 h).
 - **Refresh tokens** — TTL `AUTH_REFRESH_TTL` (default 30 d).
+- **Refresh rotation with reuse detection.** Every `/api/auth/refresh` retires the presented refresh token and issues a new pair. A retired token never works again. If one is presented more than 10 s after it was retired, every token from that login (access and refresh, on that device) is revoked: a stolen refresh token cannot be rotated forward quietly. Inside the 10 s window the request is simply refused, so two tabs refreshing at the same moment do not end each other's session. Other devices' logins are unaffected.
+- **Signed media URLs can be revoked.** The `?sig=&exp=` links for thumbnails and full-size media are valid for up to an hour, but their signature also covers a server-side epoch. Disabling or deleting a user, any password change, or revoking a user's sessions bumps it, and every outstanding signed link stops working (each API worker notices within 15 s). Open pages show broken thumbnails until they reload. A plain logout does not bump the epoch.
 - Tokens are stored in `auth_tokens` (SQLite). The short-lived **access** token is kept in `localStorage` under `pf.auth`; the **refresh** token is held in the HttpOnly `SameSite=Strict` `pf_refresh` cookie (FP-1) so page-level XSS cannot exfiltrate it. The cookie's `Secure` flag is controlled by `AUTH_COOKIE_SECURE`.
 - Failed username probes run a dummy bcrypt hash to keep wall time comparable to a real failure (defense against username enumeration).
 - **Optional per-user 2FA (TOTP, authenticator app).** Each user can enroll from the account menu (click your username, bottom-left → **Enable 2FA**; QR code or manual secret); a 6-digit code is then required at every login. The TOTP secret is encrypted at rest (AES-256-GCM, key derived from `SIGNING_SECRET`), and the pending-login token expires after `AUTH_2FA_PENDING_TTL` (default 5 minutes). Recovery paths: an admin can force-disable 2FA for a user from the UI, or anyone with host access can run `python main.py --disable-2fa <username>` from the CLI (e.g. when the only admin is locked out).
@@ -91,7 +93,7 @@ Every API request (except the auth-free ones listed in the [API reference](api.m
 4. Checks the user isn't disabled.
 5. Returns a 401 otherwise — with a `WWW-Authenticate: Bearer` header.
 
-There is no automatic token rotation; the access token stays valid until expiry or explicit revocation (`POST /api/auth/logout` or `POST /api/admin/users/{id}/logout`).
+Access tokens are not rotated; one stays valid until expiry or explicit revocation (`POST /api/auth/logout`, `POST /api/admin/users/{id}/logout`, a password change, or reuse detection on its refresh token — see above).
 
 ## CORS / CSRF
 
