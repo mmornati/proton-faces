@@ -3,8 +3,12 @@
 # ML model weights are baked in at build time so the container has no
 # runtime download step: InsightFace buffalo_l + OpenCLIP ViT-B-32.
 #
-# Python 3.12 + numpy>=1.26: insightface >=2.0 ships a py3-none wheel with
-# no cp312 blocker and no reliance on numpy aliases removed in 1.24+.
+# Python version: the newest one onnxruntime ships wheels for. onnxruntime
+# has no source distribution, so a base image newer than its wheels fails at
+# `pip install` (3.15 did, with onnxruntime 1.32.0 offering cp311-cp314
+# only). Dependabot is told to hold the base image in .github/dependabot.yml;
+# bump both together. Everything else in requirements*.txt already has
+# cp315 or abi3 wheels, or builds from source (reverse_geocoder).
 
 FROM python:3.14-slim
 

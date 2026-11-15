@@ -13,6 +13,14 @@ updates:
     directory: "/app"
     schedule:
       interval: "weekly"
+    ignore:
+      # The app image cannot move past Python 3.14 yet: onnxruntime publishes
+      # binary wheels only (no sdist) and, as of 1.32.0, none for cp315, so
+      # `pip install` fails on a 3.15 base image. Remove this block once
+      # https://pypi.org/project/onnxruntime/#files lists cp315 wheels, and
+      # raise the onnxruntime range in app/requirements-ml.txt to that release.
+      - dependency-name: "python"
+        versions: [">=3.15"]
   - package-ecosystem: "docker"
     directory: "/bridge"
     schedule:
