@@ -2,6 +2,8 @@
 
 The `app` and `indexer` processes can export OpenTelemetry metrics over OTLP/HTTP to a collector you run. It is **off by default**: without `OTEL_EXPORTER_OTLP_ENDPOINT` the SDK is not even imported, and nothing leaves the host. Demo installs are unchanged.
 
+Only the metrics listed on this page are ever exported. FastAPI's own OpenTelemetry instrumentation (request traces, HTTP metrics, exception logs) is switched off in both processes, and `FASTAPI_OTEL_AUTO_CONFIGURE` has no effect here: request traces would carry photo and person identifiers in their URLs.
+
 `/api/status` stays the source for health and photo counts. These metrics add what it can't show: latency, throughput and per-job history.
 
 ## Enable it

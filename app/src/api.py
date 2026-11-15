@@ -395,6 +395,7 @@ app = FastAPI(
     docs_url="/docs" if _EXPOSE_API_DOCS else None,
     redoc_url="/redoc" if _EXPOSE_API_DOCS else None,
     openapi_url="/openapi.json" if _EXPOSE_API_DOCS else None,
+    telemetry=telemetry.FRAMEWORK_TELEMETRY_OFF,
 )
 
 app.add_middleware(CompressionMiddleware, minimum_size=1024)
