@@ -20,13 +20,13 @@ router = APIRouter()
 @router.get("/api/health", dependencies=[])
 def api_health():
     """Liveness probe — always 200 if the process is up."""
-    bridge = {"reachable": False, "loggedIn": False}
+    # Cached: the route is unauthenticated, so it must not turn every
+    # anonymous request into a bridge round trip.
     try:
-        h = api.get_bridge().health()
-        bridge = {"reachable": True, "loggedIn": bool(h.get("loggedIn"))}
+        reachable, logged_in = api._cached_bridge_health()
     except Exception:
-        pass
-    return {"ok": True, "bridge": bridge}
+        reachable, logged_in = False, False
+    return {"ok": True, "bridge": {"reachable": reachable, "loggedIn": logged_in}}
 
 
 @router.get("/api/stats")

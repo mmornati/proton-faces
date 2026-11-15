@@ -346,18 +346,21 @@ def _cached_bridge_health() -> tuple[bool, bool]:
     now = time.time()
     if api._bridge_health_cache is not None and now - api._bridge_health_cache[0] < api._BRIDGE_HEALTH_CACHE_TTL:
         return api._bridge_health_cache[1]
-    with api._bridge_health_cache_lock:
-        now = time.time()
-        if api._bridge_health_cache is not None and now - api._bridge_health_cache[0] < api._BRIDGE_HEALTH_CACHE_TTL:
-            return api._bridge_health_cache[1]
+    # One caller refreshes; the rest get the last known state instead of
+    # queueing on the lock behind a slow bridge.
+    if not api._bridge_health_cache_lock.acquire(blocking=False):
+        return api._bridge_health_cache[1] if api._bridge_health_cache is not None else (False, False)
+    try:
         try:
             b = api.get_bridge().health()
             state = (bool(b.get("ok")), bool(b.get("loggedIn")))
         except Exception as exc:
             log.warning("bridge health failed: %s", exc)
             state = (False, False)
-        api._bridge_health_cache = (now, state)
+        api._bridge_health_cache = (time.time(), state)
         return state
+    finally:
+        api._bridge_health_cache_lock.release()
 
 
 # --- Duplicates payload (blockwise pairwise scan) --------------------------

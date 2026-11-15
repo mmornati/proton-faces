@@ -491,7 +491,7 @@ class Test2FAEndpoints:
         """Full self-service enrollment: setup → confirm. Returns the secret."""
         _seed_user(username=username, password_hash=password_hash)
         headers = _bearer(client, username=username)
-        r = client.post("/api/auth/2fa/setup", headers=headers)
+        r = client.post("/api/auth/2fa/setup", json={"password": "password123"}, headers=headers)
         assert r.status_code == 200, r.text
         secret = r.json()["secret"]
         assert r.json()["otpauth_uri"].startswith("otpauth://totp/")
@@ -540,10 +540,50 @@ class Test2FAEndpoints:
         assert client.post("/api/auth/2fa/confirm", json={"code": "123456"}).status_code == 401
         assert client.post("/api/auth/2fa/disable", json={}).status_code == 401
 
+    def test_setup_requires_current_password(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        assert client.post("/api/auth/2fa/setup", headers=headers).status_code == 400
+        r = client.post("/api/auth/2fa/setup", json={"password": "wrong-password"}, headers=headers)
+        assert r.status_code == 400
+        assert store.get_totp_secret(store.get_user_by_username("admin")["id"]) is None
+
+    def test_setup_refused_while_2fa_enabled(self, client, password_hash):
+        # An access token alone must not be able to swap the authenticator.
+        self._enroll_via_api(client, password_hash)
+        user_id = store.get_user_by_username("admin")["id"]
+        before = store.get_totp_secret(user_id)
+        headers = {"Authorization": f"Bearer {store.issue_token(user_id, 'access', 600)}"}
+        r = client.post("/api/auth/2fa/setup", json={"password": "password123"}, headers=headers)
+        assert r.status_code == 409
+        assert store.get_totp_secret(user_id) == before
+        assert store.get_user_by_id(user_id)["totp_enabled"]
+
+    def test_reauth_budget_locks_password_guessing(self, client, password_hash):
+        _seed_user(password_hash=password_hash)
+        headers = _bearer(client)
+        for _ in range(5):
+            r = client.post("/api/auth/password", headers=headers,
+                            json={"current_password": "nope-nope", "new_password": "another-pass-1"})
+            assert r.status_code == 401
+        r = client.post("/api/auth/password", headers=headers,
+                        json={"current_password": "password123", "new_password": "another-pass-1"})
+        assert r.status_code == 429
+        assert "Retry-After" in r.headers
+
+    def test_disable_code_guessing_is_throttled(self, client, password_hash):
+        self._enroll_via_api(client, password_hash)
+        user_id = store.get_user_by_username("admin")["id"]
+        headers = {"Authorization": f"Bearer {store.issue_token(user_id, 'access', 600)}"}
+        for _ in range(5):
+            assert client.post("/api/auth/2fa/disable", json={"code": "000000"}, headers=headers).status_code == 400
+        assert client.post("/api/auth/2fa/disable", json={"code": "000000"}, headers=headers).status_code == 429
+        assert store.get_user_by_id(user_id)["totp_enabled"]
+
     def test_confirm_wrong_code_does_not_enable(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         headers = _bearer(client)
-        r = client.post("/api/auth/2fa/setup", headers=headers)
+        r = client.post("/api/auth/2fa/setup", json={"password": "password123"}, headers=headers)
         secret = r.json()["secret"]
         r = client.post("/api/auth/2fa/confirm", json={"code": "000000"}, headers=headers)
         assert r.status_code == 400
@@ -3093,3 +3133,73 @@ class TestHygieneBatch:
                     "vendor/markercluster/leaflet.markercluster.js",
                     "vendor/markercluster/MarkerCluster.Default.css"):
             assert (static / rel).is_file(), rel
+
+
+class TestLoginHardening:
+    def test_non_string_credentials_are_400_not_500(self, client):
+        for body in ({"username": {"$ne": 1}, "password": [1]}, {"username": "admin", "password": 5},
+                     {"username": None, "password": "x"}):
+            assert client.post("/api/auth/login", json=body).status_code == 400
+
+    def test_lockout_backoff_is_capped(self):
+        import auth
+        for _ in range(60):
+            auth.record_login_failure("1.2.3.4", "victim")
+        attempt = auth._login_attempts[("1.2.3.4", "victim")]
+        assert attempt.lockout_count == 12
+        assert attempt.locked_until - time.time() <= auth._LOGIN_LOCKOUT_MAX_SEC + 1
+
+    def test_client_ip_header_keys_the_limiter(self, client, password_hash, monkeypatch):
+        import auth
+        import config
+        _seed_user(password_hash=password_hash)
+        monkeypatch.setattr(config.settings, "client_ip_header", "CF-Connecting-IP")
+        bad = {"username": "admin", "password": "wrong-password"}
+        attacker = {"CF-Connecting-IP": "203.0.113.9"}
+        owner = {"CF-Connecting-IP": "198.51.100.7"}
+        for _ in range(5):
+            assert client.post("/api/auth/login", json=bad, headers=attacker).status_code == 401
+        assert client.post("/api/auth/login", json=bad, headers=attacker).status_code == 429
+        # The owner, arriving from another address, is not locked out.
+        good = {"username": "admin", "password": "password123"}
+        assert client.post("/api/auth/login", json=good, headers=owner).status_code == 200
+        assert ("203.0.113.9", "admin") in auth._login_attempts
+
+    def test_client_ip_header_ignored_when_invalid_or_unset(self, monkeypatch):
+        import auth
+        import config
+
+        class Req:
+            headers = {"CF-Connecting-IP": "not-an-ip"}
+            client = type("C", (), {"host": "10.0.0.1"})()
+
+        assert auth.client_ip(Req()) == "10.0.0.1"
+        monkeypatch.setattr(config.settings, "client_ip_header", "CF-Connecting-IP")
+        assert auth.client_ip(Req()) == "10.0.0.1"
+        Req.headers = {"CF-Connecting-IP": "203.0.113.9"}
+        assert auth.client_ip(Req()) == "203.0.113.9"
+
+
+class TestBridgeHealthCache:
+    def test_health_route_uses_cache(self, client, monkeypatch):
+        calls = []
+
+        class B:
+            def health(self):
+                calls.append(1)
+                return {"ok": True, "loggedIn": True}
+
+        monkeypatch.setattr(api, "get_bridge", lambda: B())
+        api._bridge_health_cache = None
+        for _ in range(4):
+            assert client.get("/api/health").json()["bridge"] == {"reachable": True, "loggedIn": True}
+        assert len(calls) == 1
+
+    def test_concurrent_caller_gets_stale_value_instead_of_waiting(self, monkeypatch):
+        import api_common
+        api._bridge_health_cache = (0.0, (True, True))
+        assert api._bridge_health_cache_lock.acquire(blocking=False)
+        try:
+            assert api_common._cached_bridge_health() == (True, True)
+        finally:
+            api._bridge_health_cache_lock.release()

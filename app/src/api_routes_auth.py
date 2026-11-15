@@ -19,6 +19,8 @@ import store
 from auth import (
     MAX_PASSWORD_BYTES,
     CurrentUser,
+    check_reauth_allowed,
+    client_ip,
     decrypt_totp_secret,
     encrypt_totp_secret,
     generate_totp_secret,
@@ -27,10 +29,11 @@ from auth import (
     make_signed_token,
     match_totp_code,
     password_too_long,
+    reauth_password_ok,
+    record_reauth_failure,
     require_user,
     totp_uri,
     verify_2fa,
-    verify_password,
 )
 from auth import access_ttl as auth_access_ttl
 from auth import refresh as refresh_tokens
@@ -44,15 +47,23 @@ router = APIRouter()
 SIGN_MAX_PATHS = 1000
 
 
+def _str_field(body: dict, name: str) -> str:
+    value = body.get(name)
+    return value.strip() if isinstance(value, str) else ""
+
+
 @router.post("/api/auth/login", dependencies=[])
 def api_login(request: Request, body: dict = Body(...)):
     """Exchange username+password for an access+refresh token pair."""
-    username = (body.get("username") or "").strip()
-    password = body.get("password") or ""
+    username = body.get("username")
+    password = body.get("password")
+    if not isinstance(username, str) or not isinstance(password, str):
+        raise HTTPException(400, "username and password required")
+    username = username.strip()
     if not username or not password:
         raise HTTPException(400, "username and password required")
     ua = request.headers.get("user-agent")
-    ip = request.client.host if request.client else None
+    ip = client_ip(request)
     access, refresh, user, needs_2fa, pending = login(username, password, user_agent=ua, ip=ip)
     if needs_2fa:
         return {
@@ -84,12 +95,12 @@ def api_login(request: Request, body: dict = Body(...)):
 @router.post("/api/auth/2fa/verify", dependencies=[])
 def api_2fa_verify(request: Request, body: dict = Body(...)):
     """Second step of a 2FA login: redeem a pending token + 6-digit code."""
-    pending = (body.get("pending_token") or "").strip()
-    code = (body.get("code") or "").strip()
+    pending = _str_field(body, "pending_token")
+    code = _str_field(body, "code")
     if not pending or not code:
         raise HTTPException(400, "pending_token and code required")
     ua = request.headers.get("user-agent")
-    ip = request.client.host if request.client else None
+    ip = client_ip(request)
     access, refresh, user = verify_2fa(pending, code, user_agent=ua, ip=ip)
     resp = JSONResponse({
         "access_token": access,
@@ -108,10 +119,20 @@ def api_2fa_verify(request: Request, body: dict = Body(...)):
 
 
 @router.post("/api/auth/2fa/setup")
-def api_2fa_setup(request: Request, user: CurrentUser = Depends(require_user)):
-    """Start 2FA enrollment: generate a fresh TOTP secret."""
+def api_2fa_setup(request: Request, body: dict = Body(default={}),
+                  user: CurrentUser = Depends(require_user)):
+    """Start 2FA enrollment: generate a fresh TOTP secret.
+
+    Needs the current password, and refuses while 2FA is on: an access token
+    alone must not be enough to bind the account to a new authenticator.
+    """
     if api.demo_disable_admin_area():
         raise HTTPException(404, "not found")
+    row = store.get_user_by_id(user.id)
+    if row is not None and row["totp_enabled"]:
+        raise HTTPException(409, "2FA is already enabled — disable it first")
+    if not reauth_password_ok(user.id, user.username, body.get("password")):
+        raise HTTPException(400, "current password required to enable 2FA")
     secret_b32 = generate_totp_secret()
     store.set_totp_secret(user.id, encrypt_totp_secret(secret_b32))
     store.set_totp_enabled(user.id, False)
@@ -128,9 +149,10 @@ def api_2fa_confirm(request: Request, body: dict = Body(...),
     """Activate 2FA after the user confirms a valid code from their app."""
     if api.demo_disable_admin_area():
         raise HTTPException(404, "not found")
-    code = (body.get("code") or "").strip()
+    code = _str_field(body, "code")
     if not code:
         raise HTTPException(400, "code required")
+    check_reauth_allowed(user.id)
     secret_enc = store.get_totp_secret(user.id)
     if not secret_enc:
         raise HTTPException(400, "no 2FA setup in progress — call /api/auth/2fa/setup first")
@@ -140,6 +162,7 @@ def api_2fa_confirm(request: Request, body: dict = Body(...),
         raise HTTPException(400, "invalid 2FA setup state")
     counter = match_totp_code(secret_b32, code, last_counter=store.get_totp_last_counter(user.id))
     if counter is None:
+        record_reauth_failure(user.id)
         raise HTTPException(400, "invalid code — check the time on your device and try again")
     store.set_totp_last_counter(user.id, counter)
     store.set_totp_enabled(user.id, True)
@@ -152,22 +175,25 @@ def api_2fa_disable(request: Request, body: dict = Body(default={}),
     """Turn off 2FA for the current user."""
     if api.demo_disable_admin_area():
         raise HTTPException(404, "not found")
-    code = (body.get("code") or "").strip()
-    password = body.get("password") or ""
+    code = _str_field(body, "code")
+    password = body.get("password")
     secret_enc = store.get_totp_secret(user.id)
     if not secret_enc:
         raise HTTPException(400, "2FA is not enabled")
     if code:
+        check_reauth_allowed(user.id)
         try:
             secret_b32 = decrypt_totp_secret(secret_enc)
         except Exception:
             raise HTTPException(400, "invalid 2FA state")
         counter = match_totp_code(secret_b32, code, last_counter=store.get_totp_last_counter(user.id))
         if counter is None:
+            record_reauth_failure(user.id)
             raise HTTPException(400, "invalid code")
+        # Spend the code: a captured one must not be replayable in its window.
+        store.set_totp_last_counter(user.id, counter)
     elif password:
-        row = store.get_user_by_username(user.username)
-        if row is None or not verify_password(password, row["password_hash"]):
+        if not reauth_password_ok(user.id, user.username, password):
             raise HTTPException(400, "invalid password")
     else:
         raise HTTPException(400, "code or password required to disable 2FA")
@@ -186,7 +212,7 @@ def api_refresh(request: Request, body: dict = Body(default={})):
     if not rt:
         raise HTTPException(400, "refresh_token required")
     ua = request.headers.get("user-agent")
-    ip = request.client.host if request.client else None
+    ip = client_ip(request)
     access, new_refresh, user = refresh_tokens(rt, user_agent=ua, ip=ip)
     resp = JSONResponse({
         "access_token": access,
@@ -242,8 +268,7 @@ def api_change_password(request: Request, body: dict = Body(...),
     new = body.get("new_password")
     if not isinstance(current, str) or not isinstance(new, str):
         raise HTTPException(400, "current_password and new_password are required")
-    row = store.get_user_by_username(user.username)
-    if row is None or not verify_password(current, row["password_hash"]):
+    if not reauth_password_ok(user.id, user.username, current):
         raise HTTPException(401, "current password is incorrect")
     if len(new) < 8:
         raise HTTPException(400, "new password must be at least 8 characters")

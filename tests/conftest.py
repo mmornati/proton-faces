@@ -76,6 +76,7 @@ def _reset_module_state():
     auth._signing_secret.__dict__.pop("_ephemeral", None)
     auth._login_attempts = {}
     auth._ip_attempts = {}
+    auth._reauth_attempts = {}
     cluster._person_means = None
     cluster._person_means_stack = None
     cluster._person_means_refreshing = False
