@@ -109,9 +109,36 @@ class TestOffByDefault:
         env["DATA_DIR"] = str(tmp_path)
         env["SIGNING_SECRET"] = "x" * 32
         code = (
-            "import sys, api, indexer, telemetry\n"
+            "import sys, api, indexer, indexer_status, telemetry\n"
             "assert telemetry.setup(telemetry.APP_SERVICE) is False\n"
-            "assert not [m for m in sys.modules if m.startswith('opentelemetry')]\n"
+            # FastAPI >= 0.162 imports the OpenTelemetry *API* package itself;
+            # with no SDK behind it that is a set of no-op proxies. What must
+            # stay unloaded is everything that can export.
+            "loaded = [m for m in sys.modules if m.startswith(('opentelemetry.sdk', 'opentelemetry.exporter'))]\n"
+            "assert not loaded, loaded\n"
+            "from opentelemetry import metrics, trace\n"
+            "assert type(trace.get_tracer_provider()).__name__ == 'ProxyTracerProvider'\n"
+            "assert type(metrics.get_meter_provider()).__name__ == '_ProxyMeterProvider'\n"
+            # ...and FastAPI's own instrumentation is switched off on both apps.
+            "assert not api.app._native_telemetry.enabled()\n"
+            "assert not indexer_status.app._native_telemetry.enabled()\n"
+        )
+        proc = subprocess.run([sys.executable, "-c", code], cwd=APP_SRC, env=env, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+
+    def test_framework_auto_configure_cannot_be_enabled_from_the_environment(self, tmp_path):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("OTEL_")}
+        env.update({
+            "DATA_DIR": str(tmp_path), "SIGNING_SECRET": "x" * 32,
+            "FASTAPI_OTEL_AUTO_CONFIGURE": "true",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:9/v1/traces",
+        })
+        code = (
+            "import sys, api, indexer_status\n"
+            "for a in (api.app, indexer_status.app):\n"
+            "    assert a._telemetry['auto_configure'] is False\n"
+            "    assert not (a._telemetry['tracing'] or a._telemetry['metrics'] or a._telemetry['logs'])\n"
+            "assert not [m for m in sys.modules if m.startswith('opentelemetry.exporter')]\n"
         )
         proc = subprocess.run([sys.executable, "-c", code], cwd=APP_SRC, env=env, capture_output=True, text=True)
         assert proc.returncode == 0, proc.stderr

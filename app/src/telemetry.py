@@ -47,6 +47,22 @@ def enabled() -> bool:
     return _provider is not None
 
 
+# FastAPI >= 0.162 ships its own OpenTelemetry instrumentation (request
+# spans, HTTP metrics, validation/exception logs with stack traces) and can
+# attach OTLP exporters from the environment when
+# FASTAPI_OTEL_AUTO_CONFIGURE=true. This project promises that nothing is
+# exported except the metrics listed in docs/reference/observability.md, and
+# only when OTEL_EXPORTER_OTLP_ENDPOINT is set — so every FastAPI app here
+# is built with this, which also overrides that environment switch.
+FRAMEWORK_TELEMETRY_OFF = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+    "operation_spans": False,
+    "auto_configure": False,
+}
+
+
 def setup(default_service_name: str, reader=None) -> bool:
     """Start exporting from this process. Idempotent; never raises.
 

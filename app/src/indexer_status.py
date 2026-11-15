@@ -32,13 +32,16 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi import status as http_status
 
 import indexer
+import telemetry
 from config import settings
 from disk_usage import cached_dir_size
 from store import stats
 
 log = logging.getLogger("indexer_status")
 
-app = FastAPI(title="proton-faces-indexer-status", version="0.1.0")
+app = FastAPI(
+    title="proton-faces-indexer-status", version="0.1.0", telemetry=telemetry.FRAMEWORK_TELEMETRY_OFF,
+)
 
 
 def _indexer_token() -> bytes:
