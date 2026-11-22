@@ -2,7 +2,7 @@
 # Everything needed to run the API, store, auth and indexing pipeline
 # except the optional heavy ML inference stack (see requirements-ml.txt).
 
-fastapi>=0.162.5,<0.163
+fastapi>=0.165.0,<0.166
 starlette>=1.10.0,<1.11
 uvicorn[standard]>=0.54.0,<0.55
 httpx>=0.28.1,<0.29
