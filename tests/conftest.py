@@ -30,6 +30,7 @@ import bridge_client  # noqa: E402
 import cluster  # noqa: E402
 import config  # noqa: E402
 import faces  # noqa: E402
+import full_cache  # noqa: E402
 import geocode  # noqa: E402
 import store  # noqa: E402
 import telemetry  # noqa: E402
@@ -44,6 +45,7 @@ def app_settings(monkeypatch, tmp_path):
         "work_dir": data_dir / "work",
         "thumb_dir": data_dir / "thumbs",
         "crops_dir": data_dir / "crops",
+        "full_cache_dir": data_dir / "fullcache",
         "backup_dir": data_dir / "_backups",
         "models_dir": data_dir / "models",
     }
@@ -73,6 +75,7 @@ def _reset_module_state():
     store._person_means_cache_ts = 0.0
     store._person_means_matrix = None
     store._sign_epoch_cache = None
+    full_cache._last_evict_ts = 0.0
     store._close_local_conns()
     auth._signing_secret.__dict__.pop("_ephemeral", None)
     auth._login_attempts = {}

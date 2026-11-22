@@ -188,16 +188,22 @@ class Settings:
         # SDK reads the other OTEL_* variables itself (see telemetry.py).
         self.otel_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
         self.otel_sdk_disabled = _env_bool("OTEL_SDK_DISABLED", False)
+        # Disk budget (MB) for full-resolution images kept after a first /full
+        # fetch (data/fullcache, least recently served evicted first). 0 turns
+        # the cache off and every /full goes back to Proton.
+        self.full_cache_max_mb = max(0, int(os.environ.get("FULL_CACHE_MAX_MB", "2048")))
 
         # Derived paths
         self.work_dir = self.data_dir / "work"
         self.thumb_dir = self.data_dir / "thumbs"
         self.crops_dir = self.data_dir / "crops"
+        self.full_cache_dir = self.data_dir / "fullcache"
         self.backup_dir = self.data_dir / "_backups"
         self.models_dir = Path(os.environ.get("MODELS_DIR", str(self.data_dir / "models"))).resolve()
         self.db_path = self.data_dir / "index.sqlite3"
 
-        for d in (self.data_dir, self.work_dir, self.thumb_dir, self.crops_dir, self.backup_dir, self.models_dir):
+        for d in (self.data_dir, self.work_dir, self.thumb_dir, self.crops_dir, self.full_cache_dir,
+                  self.backup_dir, self.models_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     # Thread-safety knobs

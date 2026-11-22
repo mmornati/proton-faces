@@ -503,9 +503,8 @@ async function logout() {
 function _signOutLocal() {
   localStorage.removeItem(AUTH_STORAGE);
   _me = null;
-  // Shared-device hygiene: drop everything the service worker cached. The
-  // shell is re-cached on the next load; signed media never enters Cache
-  // Storage (sw.js skips /api and the binary suffixes) but clearing is cheap.
+  // Shared-device hygiene: drop everything the service worker cached — the
+  // shell (re-cached on the next load) and the thumbnail cache.
   try {
     if (window.caches) caches.keys().then((ks) => Promise.all(ks.map((k) => caches.delete(k)))).catch(() => {});
   } catch (e) { /* ignore */ }

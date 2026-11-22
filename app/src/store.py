@@ -257,6 +257,16 @@ def _cache_kb() -> int:
         return 8000
 
 
+def _mmap_bytes() -> int:
+    """SQLITE_MMAP_MB as bytes. Unlike cache_size, mmap'd pages live in the
+    OS page cache and are shared by every connection and process, so sizing
+    it to the whole index is the cheap way to keep hot pages in RAM."""
+    try:
+        return max(0, int(os.environ.get("SQLITE_MMAP_MB", "256"))) * 1024 * 1024
+    except ValueError:
+        return 256 * 1024 * 1024
+
+
 # Thread-local persistent connections: each thread gets one connection per db
 # path and keeps it for the lifetime of the thread.  This avoids the
 # connect/PRAGMA/close cycle on every call — the ~2 MB page cache survives
@@ -308,9 +318,10 @@ def _get_persistent_conn(db_path: str, timeout: int = 30) -> sqlite3.Connection:
         # The page cache is PER CONNECTION and connections are thread-local:
         # the API's threadpool can hold dozens, so it gets a small cache
         # (SQLITE_CACHE_KB, default 8 MB) while the indexer, with a handful of
-        # long-lived threads, sets a large one via compose. mmap is shared.
+        # long-lived threads, sets a large one via compose. mmap is shared
+        # (SQLITE_MMAP_MB).
         conn.execute(f"PRAGMA cache_size=-{_cache_kb()}")
-        conn.execute("PRAGMA mmap_size=268435456")     # 256 MB mmap
+        conn.execute(f"PRAGMA mmap_size={_mmap_bytes()}")
         conn.execute("PRAGMA temp_store=MEMORY")
         conns[db_path] = conn
     return conn

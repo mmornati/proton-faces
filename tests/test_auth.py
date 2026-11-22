@@ -473,10 +473,10 @@ class TestLogin2FA:
         assert auth.decrypt_totp_secret(stored) == secret
 
     def test_totp_uri_shape(self):
-        uri = auth.totp_uri("JBSWY3DPEHPK3PXP", "bob")
+        uri = auth.totp_uri("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", "bob")
         assert uri.startswith("otpauth://totp/")
         assert "issuer=proton-faces" in uri
-        assert "secret=JBSWY3DPEHPK3PXP" in uri
+        assert "secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP" in uri
 
     def test_verify_totp_code_rejects_garbage(self):
         secret = auth.generate_totp_secret()
