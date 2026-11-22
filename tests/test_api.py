@@ -1224,6 +1224,54 @@ class TestPhotos:
         assert r.status_code == 200
         assert r.headers["content-type"] == "image/jpeg"
 
+    def test_full_photo_cached_after_first_fetch(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        body = b"\xff\xd8\xff" + b"x" * 200_000
+        monkeypatch.setattr(bridge_client, "_bridge", CustomFullBridge(FakeResp(body)))
+        headers = _bearer(client)
+        assert client.get("/api/photos/p1/full", headers=headers).content == body
+        assert (config.settings.full_cache_dir / "p1.jpg").read_bytes() == body
+        monkeypatch.setattr(bridge_client, "_bridge", FailingFullBridge(RuntimeError("bridge down")))
+        r = client.get("/api/photos/p1/full", headers=headers)
+        assert r.status_code == 200
+        assert r.content == body
+        assert r.headers["content-type"] == "image/jpeg"
+        assert r.headers["cache-control"] == "no-store"
+
+    def test_full_photo_cache_skips_video_and_ranges(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        monkeypatch.setattr(bridge_client, "_bridge", CustomFullBridge(FakeResp(b"vid", content_type="video/mp4")))
+        headers = _bearer(client)
+        client.get("/api/photos/p1/full", headers=headers)
+        monkeypatch.setattr(bridge_client, "_bridge", CustomFullBridge(FakeResp(b"\xff\xd8\xffpart")))
+        client.get("/api/photos/p1/full", headers={**headers, "Range": "bytes=0-10"})
+        assert list(config.settings.full_cache_dir.iterdir()) == []
+
+    def test_full_photo_cache_rejects_truncated_body(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        resp = FakeResp(b"\xff\xd8\xffshort", headers={"content-length": "999"})
+        monkeypatch.setattr(bridge_client, "_bridge", CustomFullBridge(resp))
+        client.get("/api/photos/p1/full", headers=_bearer(client))
+        assert list(config.settings.full_cache_dir.iterdir()) == []
+
+    def test_full_photo_cache_disabled(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        monkeypatch.setattr(config.settings, "full_cache_max_mb", 0)
+        client.get("/api/photos/p1/full", headers=_bearer(client))
+        assert list(config.settings.full_cache_dir.iterdir()) == []
+
+    def test_full_photo_cache_not_served_for_deleted(self, client, monkeypatch, password_hash):
+        _seed_user(password_hash=password_hash)
+        _seed_done_photo("p1")
+        (config.settings.full_cache_dir / "p1.jpg").write_bytes(b"\xff\xd8\xffstale")
+        store.mark_deleted(["p1"])
+        monkeypatch.setattr(bridge_client, "_bridge", FailingFullBridge(RuntimeError("gone")))
+        assert client.get("/api/photos/p1/full", headers=_bearer(client)).status_code == 502
+
     def test_full_photo_404(self, client, password_hash):
         _seed_user(password_hash=password_hash)
         assert client.get("/api/photos/missing/full", headers=_bearer(client)).status_code == 404

@@ -1933,3 +1933,27 @@ class TestSmallPeopleHelpers:
         with store.get_conn() as conn:
             assert conn.execute("SELECT person_id FROM faces WHERE id=?", (f1,)).fetchone()[0] is None
         assert store.delete_people_bulk([]) == 0
+
+
+class TestSqliteMmap:
+    def test_default_is_256_mb(self, monkeypatch):
+        monkeypatch.delenv("SQLITE_MMAP_MB", raising=False)
+        assert store._mmap_bytes() == 256 * 1024 * 1024
+
+    def test_env_override_and_zero(self, monkeypatch):
+        monkeypatch.setenv("SQLITE_MMAP_MB", "2048")
+        assert store._mmap_bytes() == 2048 * 1024 * 1024
+        monkeypatch.setenv("SQLITE_MMAP_MB", "0")
+        assert store._mmap_bytes() == 0
+
+    def test_invalid_or_negative_falls_back(self, monkeypatch):
+        monkeypatch.setenv("SQLITE_MMAP_MB", "lots")
+        assert store._mmap_bytes() == 256 * 1024 * 1024
+        monkeypatch.setenv("SQLITE_MMAP_MB", "-5")
+        assert store._mmap_bytes() == 0
+
+    def test_pragma_applied_on_new_connection(self, tmp_db, monkeypatch):
+        monkeypatch.setenv("SQLITE_MMAP_MB", "64")
+        store._close_local_conns()
+        with store.get_conn() as conn:
+            assert conn.execute("PRAGMA mmap_size").fetchone()[0] == 64 * 1024 * 1024

@@ -76,6 +76,8 @@ Set inside `compose.yml` for each service. Most match the compose-level defaults
 | `API_THREADPOOL_SIZE` | `16` | Threads the API runs sync routes on (anyio's default is 40). Each thread keeps its own SQLite connection and page cache, so this bounds memory more than throughput. |
 | `SQLITE_CACHE_KB` | `8000` | Per-connection SQLite page cache in KB. Connections are thread-local, so the app's cost is `API_THREADPOOL_SIZE × SQLITE_CACHE_KB`. |
 | `INDEXER_SQLITE_CACHE_KB` | `64000` | Value compose passes as `SQLITE_CACHE_KB` to the indexer, which has only a handful of long-lived threads. |
+| `SQLITE_MMAP_MB` | `256` | SQLite memory-mapped I/O window in MB. Pages live in the OS page cache, shared by every connection and process (reclaimable, not counted as anonymous RSS), so setting it to roughly the size of `index.sqlite3` keeps the whole index readable from RAM. `0` disables mmap. |
+| `FULL_CACHE_MAX_MB` | `2048` | Disk budget in MB for full-resolution images kept under `DATA_DIR/fullcache` after their first `/full` fetch; later views are served from disk instead of a Proton download + decrypt. Images only (videos and Range requests are never stored), least recently viewed evicted first, deleted photos purged with their thumbnails. `0` disables the cache. |
 | `ADMIN_PASSWORD` | unset → prompt | Pre-set the first admin's password so `--create-admin` runs non-interactively (e.g. from an init container). At least 8 characters or the command rejects it. |
 
 ## Performance tuning

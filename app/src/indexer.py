@@ -1877,6 +1877,8 @@ def cleanup_deleted() -> None:
             p = settings.thumb_dir / r["thumb_path"]
             if p.exists():
                 p.unlink(missing_ok=True)
+    import full_cache
+    full_cache.remove([r["uid"] for r in rows])
     # One batched pass instead of a no-op UPDATE + commit per historical
     # deletion on every full scan. Faces and CLIP vectors go with the
     # thumbnail so deleted photos leave the search matrices and people

@@ -193,7 +193,19 @@ def test_service_worker_never_caches_failed_shell():
     _, sw = _spa_sources()
     # Only a real 200 for the app's own entry point may become the shell.
     assert 'if (resp.ok && resp.type === "basic" && url.pathname === "/")' in sw
-    assert 'const VERSION = "pf-shell-v7"' in sw
+    assert 'const VERSION = "pf-shell-v8"' in sw
+
+
+def test_service_worker_thumb_cache_is_bounded_and_signed_only():
+    html, sw = _spa_sources()
+    # Only unexpired signed thumbnail requests are answered from the cache.
+    assert "if (THUMB_PATH.test(url.pathname) && _signedAndUnexpired(url))" in sw
+    assert "/thumb$/" in sw and "/full" not in sw.split("THUMB_PATH =")[1].split("\n")[0]
+    assert "const THUMB_CACHE_MAX = 4000;" in sw
+    assert 'resp.ok && resp.status === 200 && resp.type === "basic"' in sw
+    # The activate step keeps it; logout wipes every cache, this one included.
+    assert "k !== VERSION && k !== THUMB_CACHE" in sw
+    assert "caches.keys().then((ks) => Promise.all(ks.map((k) => caches.delete(k))))" in html
 
 
 def test_spa_face_layer_is_off_by_default_and_persisted():

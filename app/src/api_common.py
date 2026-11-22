@@ -768,11 +768,20 @@ def _serve_thumb(uid: str, row) -> Response:
 
 
 async def _serve_full(uid: str, row, request: Request) -> Response:
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import FileResponse, StreamingResponse
 
-    from bridge_client import BridgeTransientError, get_bridge
+    import full_cache
+    from bridge_client import BridgeTransientError, get_bridge, is_valid_uid
 
     range_header = request.headers.get("range")
+    # Long uids would not fit a file name; deleted photos must not outlive
+    # Proton through the cache.
+    use_cache = is_valid_uid(uid) and len(uid) <= 200 and row["status"] != "deleted"
+    if use_cache:
+        hit = full_cache.lookup(uid)
+        if hit is not None:
+            path, cached_type = hit
+            return FileResponse(path, media_type=cached_type, headers={"Cache-Control": "no-store"})
     async with api._full_semaphore:
         try:
             resp = await asyncio.wait_for(
@@ -839,14 +848,33 @@ async def _serve_full(uid: str, row, request: Request) -> Response:
             raise HTTPException(502, "bridge fetch failed")
         headers["Content-Type"] = _sniff_image_type(first_chunk) or "application/octet-stream"
 
+    # Only whole bodies are kept: a 206 holds a slice of the original.
+    tee = None
+    if use_cache and resp.status_code == 200 and not range_header:
+        tee = full_cache.writer(uid, headers["Content-Type"])
+    expected_len = None
+    if headers.get("content-length", "").isdigit():
+        expected_len = int(headers["content-length"])
+
     async def gen():
+        complete = False
         try:
             if first_chunk:
+                if tee:
+                    tee.write(first_chunk)
                 yield first_chunk
             async for chunk in chunks:
+                if tee:
+                    tee.write(chunk)
                 yield chunk
+            complete = True
         finally:
             await resp.aclose()
+            if tee:
+                if complete:
+                    await asyncio.to_thread(tee.commit, expected_len)
+                else:
+                    tee.abort()
 
     return StreamingResponse(
         gen(),
